@@ -96,6 +96,9 @@ impl BuiltinSandbox {
         // Create a boa context
         let mut context = Context::default();
 
+        super::js_builtins::register_all(&mut context)
+            .map_err(|e| SandboxError::InternalError(format!("Failed to register builtins: {}", e)))?;
+
         // Set up the runtime limit for instruction count (approximate timeout)
         // boa doesn't have a native timeout mechanism, so we measure wall time
         let _ = timeout; // used for checking below
@@ -315,7 +318,11 @@ impl CodeSandbox for BuiltinSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hmac::{Hmac, Mac};
+    use regex::Regex;
     use serde_json::json;
+    use sha2::Sha256;
+    use uuid::Uuid;
 
     fn default_sandbox() -> BuiltinSandbox {
         BuiltinSandbox::new(BuiltinSandboxConfig::default())
@@ -874,5 +881,198 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.output["text"], json!("Hello 'world' \"test\" \\ new"));
+    }
+
+    // ---- Builtin API tests ----
+
+    #[tokio::test]
+    async fn test_builtin_uuidv4() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: uuidv4() }; }".to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        let value = result.output["value"].as_str().unwrap();
+        assert!(Uuid::parse_str(value).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_builtin_btoa_atob() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: atob(btoa('hello')) }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["value"], json!("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_builtin_datetime_now() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: datetime.now() }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        let value = result.output["value"].as_f64().unwrap();
+        assert!(value > 1_500_000_000_000.0);
+    }
+
+    #[tokio::test]
+    async fn test_builtin_datetime_format() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: datetime.format() }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        let value = result.output["value"].as_str().unwrap();
+        let re = Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$").unwrap();
+        assert!(re.is_match(value));
+    }
+
+    #[tokio::test]
+    async fn test_builtin_crypto_md5() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: crypto.md5('hello') }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.output["value"],
+            json!("5d41402abc4b2a76b9719d911017c592")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_builtin_crypto_sha256() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: crypto.sha256('hello') }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.output["value"],
+            json!("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_builtin_crypto_hmac() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: crypto.hmacSha256('secret', 'hello') }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"secret").unwrap();
+        mac.update(b"hello");
+        let expected = hex::encode(mac.finalize().into_bytes());
+
+        assert_eq!(result.output["value"], json!(expected));
+    }
+
+    #[tokio::test]
+    async fn test_builtin_crypto_aes() {
+        let sandbox = default_sandbox();
+        let code = r#"function main(inputs) {
+            var key = "000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f";
+            var enc = crypto.aesEncrypt("hello", key);
+            var dec = crypto.aesDecrypt(enc.ciphertext, key, enc.iv);
+            return { value: dec };
+        }"#;
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: code.to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["value"], json!("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_builtin_random_int() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: randomInt(1, 10) }; }"
+                    .to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        let value = result.output["value"].as_i64().unwrap();
+        assert!(value >= 1 && value <= 10);
+    }
+
+    #[tokio::test]
+    async fn test_builtin_random_bytes() {
+        let sandbox = default_sandbox();
+        let result = sandbox
+            .execute(SandboxRequest {
+                code: "function main(inputs) { return { value: randomBytes(16) }; }".to_string(),
+                language: CodeLanguage::JavaScript,
+                inputs: json!({}),
+                config: ExecutionConfig::default(),
+            })
+            .await
+            .unwrap();
+
+        let value = result.output["value"].as_str().unwrap();
+        assert_eq!(value.len(), 32);
+        let re = Regex::new(r"^[0-9a-f]+$").unwrap();
+        assert!(re.is_match(value));
     }
 }

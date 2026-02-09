@@ -46,4 +46,5 @@ e2e::e2e_test_cases!(
     case_042_http_with_code_pipeline => "042_http_with_code_pipeline",
     case_043_http_ifelse_status => "043_http_ifelse_status",
     case_044_http_no_auth => "044_http_no_auth",
+    case_045_js_builtins => "045_js_builtins",
 );

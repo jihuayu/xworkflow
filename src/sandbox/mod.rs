@@ -7,6 +7,7 @@ pub mod types;
 pub mod error;
 pub mod manager;
 pub mod builtin;
+pub mod js_builtins;
 
 pub use types::*;
 pub use error::SandboxError;

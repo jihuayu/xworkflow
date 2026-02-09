@@ -1,0 +1,46 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": []
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "JS Builtins",
+        "code": "function main(inputs) { var key = \"000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f\"; var enc = crypto.aesEncrypt(\"hello\", key); var dec = crypto.aesDecrypt(enc.ciphertext, key, enc.iv); return { md5_ok: crypto.md5(\"hello\") === \"5d41402abc4b2a76b9719d911017c592\", sha256_ok: crypto.sha256(\"hello\") === \"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\", hmac_len_ok: crypto.hmacSha256(\"secret\", \"hello\").length === 64, aes_ok: dec === \"hello\", b64_ok: atob(btoa(\"hello\")) === \"hello\", uuid_len_ok: uuidv4().length === 36, random_int_ok: randomInt(5, 5) === 5, random_float_type_ok: typeof randomFloat() === \"number\", random_bytes_len_ok: randomBytes(16).length === 32, datetime_ok: datetime.timestamp() > 0 }; }",
+        "language": "javascript",
+        "variables": []
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "md5_ok", "value_selector": ["code1", "md5_ok"] },
+          { "variable": "sha256_ok", "value_selector": ["code1", "sha256_ok"] },
+          { "variable": "hmac_len_ok", "value_selector": ["code1", "hmac_len_ok"] },
+          { "variable": "aes_ok", "value_selector": ["code1", "aes_ok"] },
+          { "variable": "b64_ok", "value_selector": ["code1", "b64_ok"] },
+          { "variable": "uuid_len_ok", "value_selector": ["code1", "uuid_len_ok"] },
+          { "variable": "random_int_ok", "value_selector": ["code1", "random_int_ok"] },
+          { "variable": "random_float_type_ok", "value_selector": ["code1", "random_float_type_ok"] },
+          { "variable": "random_bytes_len_ok", "value_selector": ["code1", "random_bytes_len_ok"] },
+          { "variable": "datetime_ok", "value_selector": ["code1", "datetime_ok"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "end" }
+  ]
+}
