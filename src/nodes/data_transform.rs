@@ -9,6 +9,7 @@ use crate::dsl::schema::{
 };
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
+use crate::nodes::utils::selector_from_value;
 use crate::template::{render_jinja2, render_template};
 
 // ================================
@@ -285,10 +286,29 @@ impl NodeExecutor for HttpRequestExecutor {
 }
 
 // ================================
-// Code Node (stub – requires external sandbox)
+// Code Node (sandbox-backed execution)
 // ================================
 
-pub struct CodeNodeExecutor;
+pub struct CodeNodeExecutor {
+    sandbox_manager: std::sync::Arc<crate::sandbox::SandboxManager>,
+}
+
+impl CodeNodeExecutor {
+    pub fn new() -> Self {
+        let manager = crate::sandbox::SandboxManager::new(
+            crate::sandbox::SandboxManagerConfig::default(),
+        );
+        Self {
+            sandbox_manager: std::sync::Arc::new(manager),
+        }
+    }
+}
+
+impl Default for CodeNodeExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl NodeExecutor for CodeNodeExecutor {
@@ -298,31 +318,99 @@ impl NodeExecutor for CodeNodeExecutor {
         config: &Value,
         variable_pool: &VariablePool,
     ) -> Result<NodeRunResult, NodeError> {
-        let _code = config.get("code").and_then(|v| v.as_str()).unwrap_or("");
-        let language = config.get("language").and_then(|v| v.as_str()).unwrap_or("python3");
+        let code = config.get("code").and_then(|v| v.as_str()).unwrap_or("");
+        let language_str = config
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("javascript");
+
+        // Map language string to CodeLanguage enum
+        let language = match language_str {
+            "javascript" | "js" | "javascript3" => crate::sandbox::CodeLanguage::JavaScript,
+            "typescript" | "ts" => crate::sandbox::CodeLanguage::TypeScript,
+            "python" | "python3" => crate::sandbox::CodeLanguage::Python,
+            other => {
+                return Err(NodeError::ConfigError(format!(
+                    "Unsupported code language: {}",
+                    other
+                )));
+            }
+        };
 
         // Build inputs from variable mappings
-        let mut inputs = HashMap::new();
+        let mut inputs_map = serde_json::Map::new();
         if let Some(vars_val) = config.get("variables") {
             if let Ok(mappings) = serde_json::from_value::<Vec<VariableMapping>>(vars_val.clone()) {
                 for m in &mappings {
                     let val = variable_pool.get(&m.value_selector);
-                    inputs.insert(m.variable.clone(), val.to_value());
+                    inputs_map.insert(m.variable.clone(), val.to_value());
                 }
             }
         }
+        // Support inputs map: { var: selector }
+        if let Some(inputs_val) = config.get("inputs") {
+            if let Some(map) = inputs_val.as_object() {
+                for (var, sel_val) in map {
+                    if let Some(selector) = selector_from_value(sel_val) {
+                        let val = variable_pool.get(&selector);
+                        inputs_map.insert(var.clone(), val.to_value());
+                    }
+                }
+            }
+        }
+        let inputs = Value::Object(inputs_map.clone());
 
-        // In a real implementation, this would POST to a sandbox.
-        // For now, return a stub result.
+        // Build execution config
+        let timeout_secs = config
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30);
+
+        let exec_config = crate::sandbox::ExecutionConfig {
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            ..crate::sandbox::ExecutionConfig::default()
+        };
+
+        // Execute via sandbox
+        let request = crate::sandbox::SandboxRequest {
+            code: code.to_string(),
+            language,
+            inputs: inputs.clone(),
+            config: exec_config,
+        };
+
+        let result = self
+            .sandbox_manager
+            .execute(request)
+            .await
+            .map_err(|e| NodeError::SandboxError(e.to_string()))?;
+
+        if !result.success {
+            return Err(NodeError::ExecutionError(
+                result
+                    .error
+                    .unwrap_or_else(|| "Unknown sandbox error".to_string()),
+            ));
+        }
+
+        // Convert output to HashMap
         let mut outputs = HashMap::new();
-        outputs.insert(
-            "result".to_string(),
-            Value::String(format!("[Code execution stub: {} code not sandboxed]", language)),
-        );
+        if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
+            outputs.insert(output_key.to_string(), result.output);
+        } else if let Value::Object(obj) = &result.output {
+            for (k, v) in obj {
+                outputs.insert(k.clone(), v.clone());
+            }
+        } else {
+            outputs.insert("result".to_string(), result.output);
+        }
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            inputs,
+            inputs: inputs_map
+                .into_iter()
+                .map(|(k, v)| (k, v))
+                .collect(),
             outputs,
             edge_source_handle: "source".to_string(),
             ..Default::default()
@@ -403,15 +491,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_code_node_stub() {
+    async fn test_code_node_javascript() {
+        let pool = VariablePool::new();
+        let config = serde_json::json!({
+            "code": "function main(inputs) { return { result: 42 }; }",
+            "language": "javascript"
+        });
+
+        let executor = CodeNodeExecutor::new();
+        let result = executor.execute("code1", &config, &pool).await.unwrap();
+        assert_eq!(result.outputs.get("result"), Some(&Value::Number(serde_json::Number::from(42))));
+    }
+
+    #[tokio::test]
+    async fn test_code_node_with_variables() {
+        let mut pool = VariablePool::new();
+        pool.set(
+            &["src".to_string(), "val".to_string()],
+            Segment::Float(10.0),
+        );
+
+        let config = serde_json::json!({
+            "code": "function main(inputs) { return { doubled: inputs.x * 2 }; }",
+            "language": "javascript",
+            "variables": [{"variable": "x", "value_selector": ["src", "val"]}]
+        });
+
+        let executor = CodeNodeExecutor::new();
+        let result = executor.execute("code2", &config, &pool).await.unwrap();
+        assert_eq!(result.outputs.get("doubled"), Some(&Value::Number(serde_json::Number::from(20))));
+    }
+
+    #[tokio::test]
+    async fn test_code_node_unsupported_language() {
         let pool = VariablePool::new();
         let config = serde_json::json!({
             "code": "def main(): return {'result': 42}",
-            "language": "python3"
+            "language": "ruby"
         });
 
-        let executor = CodeNodeExecutor;
-        let result = executor.execute("code1", &config, &pool).await.unwrap();
-        assert!(result.outputs.contains_key("result"));
+        let executor = CodeNodeExecutor::new();
+        let result = executor.execute("code3", &config, &pool).await;
+        assert!(result.is_err());
     }
 }

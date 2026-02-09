@@ -38,7 +38,7 @@ impl NodeExecutorRegistry {
         registry.register("variable-assigner", Box::new(super::data_transform::LegacyVariableAggregatorExecutor));
         registry.register("assigner", Box::new(super::data_transform::VariableAssignerExecutor));
         registry.register("http-request", Box::new(super::data_transform::HttpRequestExecutor));
-        registry.register("code", Box::new(super::data_transform::CodeNodeExecutor));
+        registry.register("code", Box::new(super::data_transform::CodeNodeExecutor::new()));
         // Stub executors for types that need external services
         registry.register("llm", Box::new(StubExecutor("llm")));
         registry.register("knowledge-retrieval", Box::new(StubExecutor("knowledge-retrieval")));
@@ -46,11 +46,11 @@ impl NodeExecutorRegistry {
         registry.register("parameter-extractor", Box::new(StubExecutor("parameter-extractor")));
         registry.register("tool", Box::new(StubExecutor("tool")));
         registry.register("document-extractor", Box::new(StubExecutor("document-extractor")));
-        registry.register("list-operator", Box::new(StubExecutor("list-operator")));
+        registry.register("list-operator", Box::new(super::subgraph_nodes::ListOperatorNodeExecutor::new()));
         registry.register("agent", Box::new(StubExecutor("agent")));
         registry.register("human-input", Box::new(StubExecutor("human-input")));
-        registry.register("iteration", Box::new(StubExecutor("iteration")));
-        registry.register("loop", Box::new(StubExecutor("loop")));
+        registry.register("iteration", Box::new(super::subgraph_nodes::IterationNodeExecutor::new()));
+        registry.register("loop", Box::new(super::subgraph_nodes::LoopNodeExecutor::new()));
         registry
     }
 

@@ -4,6 +4,7 @@ pub mod error;
 pub mod evaluator;
 pub mod graph;
 pub mod nodes;
+pub mod sandbox;
 pub mod template;
 pub mod scheduler;
 

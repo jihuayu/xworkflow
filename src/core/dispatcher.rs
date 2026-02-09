@@ -663,9 +663,9 @@ nodes:
               comparison_operator: is
               value: "true"
   - id: code_a
-    data: { type: code, title: A, code: "x", language: python3 }
+    data: { type: code, title: A, code: "function main(inputs) { return { result: 'from_a' }; }", language: javascript }
   - id: code_b
-    data: { type: code, title: B, code: "x", language: python3 }
+    data: { type: code, title: B, code: "function main(inputs) { return { result: 'from_b' }; }", language: javascript }
   - id: agg
     data:
       type: variable-aggregator

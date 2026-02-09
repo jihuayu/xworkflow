@@ -9,6 +9,7 @@ use crate::dsl::schema::{
 use crate::error::NodeError;
 use crate::evaluator::evaluate_cases;
 use crate::nodes::executor::NodeExecutor;
+use crate::nodes::utils::selector_from_value;
 use crate::template::render_template;
 
 // ================================
@@ -71,7 +72,22 @@ impl NodeExecutor for EndNodeExecutor {
         let mut inputs = HashMap::new();
 
         if let Some(outputs_val) = config.get("outputs") {
-            if let Ok(output_vars) = serde_json::from_value::<Vec<OutputVariable>>(outputs_val.clone()) {
+            if let Some(arr) = outputs_val.as_array() {
+                for ov in arr {
+                    let variable = ov.get("variable").and_then(|v| v.as_str()).unwrap_or("");
+                    let selector_val = ov.get("value_selector").or_else(|| ov.get("variable_selector"));
+                    let selector = selector_val.and_then(selector_from_value);
+
+                    if !variable.is_empty() {
+                        if let Some(sel) = selector {
+                            let val = variable_pool.get(&sel);
+                            let json_val = val.to_value();
+                            outputs.insert(variable.to_string(), json_val.clone());
+                            inputs.insert(variable.to_string(), json_val);
+                        }
+                    }
+                }
+            } else if let Ok(output_vars) = serde_json::from_value::<Vec<OutputVariable>>(outputs_val.clone()) {
                 for ov in &output_vars {
                     let val = variable_pool.get(&ov.value_selector);
                     let json_val = val.to_value();
