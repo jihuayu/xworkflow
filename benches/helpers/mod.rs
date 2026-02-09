@@ -13,7 +13,7 @@ pub fn bench_context() -> RuntimeContext {
 }
 
 pub fn bench_runtime() -> Runtime {
-    Runtime::Builder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()

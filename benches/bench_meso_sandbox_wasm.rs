@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use serde_json::Value;
 use wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
 
-use xworkflow::sandbox::{CodeLanguage, ExecutionConfig, SandboxRequest, WasmSandbox, WasmSandboxConfig};
+use xworkflow::sandbox::{CodeLanguage, CodeSandbox, ExecutionConfig, SandboxRequest, WasmSandbox, WasmSandboxConfig};
 
 mod helpers;
 use helpers::bench_runtime;

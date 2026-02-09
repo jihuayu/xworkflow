@@ -293,7 +293,7 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "      title: Code 1").ok();
     writeln!(
         &mut yaml,
-        "      code: |\n        function main(inputs) { return { text: inputs.query || \"\" }; }"
+        "      code: |\n        function main(inputs) {{ return {{ text: inputs.query || \\\"\\\" }}; }}"
     )
     .ok();
     writeln!(&mut yaml, "      language: javascript").ok();
@@ -328,7 +328,7 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "      title: Code Yes").ok();
     writeln!(
         &mut yaml,
-        "      code: |\n        function main(inputs) { return { text: \"yes\" }; }"
+        "      code: |\n        function main(inputs) {{ return {{ text: \\\"yes\\\" }}; }}"
     )
     .ok();
     writeln!(&mut yaml, "      language: javascript").ok();
@@ -339,7 +339,7 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "      title: Code No").ok();
     writeln!(
         &mut yaml,
-        "      code: |\n        function main(inputs) { return { text: \"no\" }; }"
+        "      code: |\n        function main(inputs) {{ return {{ text: \\\"no\\\" }}; }}"
     )
     .ok();
     writeln!(&mut yaml, "      language: javascript").ok();
