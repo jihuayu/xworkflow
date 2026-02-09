@@ -482,6 +482,10 @@ pub struct LlmNodeData {
     pub context: Option<ContextConfig>,
     #[serde(default)]
     pub vision: Option<VisionConfig>,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+    #[serde(default)]
+    pub stream: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -492,6 +496,8 @@ pub struct ModelConfig {
     pub mode: Option<String>,
     #[serde(default)]
     pub completion_params: Option<CompletionParams>,
+    #[serde(default)]
+    pub credentials: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -523,6 +529,15 @@ pub struct VisionConfig {
     pub variable_selector: Option<VariableSelector>,
     #[serde(default)]
     pub detail: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct MemoryConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub window_size: Option<i32>,
+    #[serde(default)]
+    pub variable_selector: Option<VariableSelector>,
 }
 
 // ================================

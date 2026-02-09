@@ -6,7 +6,9 @@ use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
+use crate::llm::LlmProviderRegistry;
 use crate::plugin::{PluginManager, PluginNodeExecutor};
+use crate::llm::LlmNodeExecutor;
 
 /// Trait for node execution. Each node type implements this.
 #[async_trait]
@@ -43,7 +45,7 @@ impl NodeExecutorRegistry {
         registry.register("http-request", Box::new(super::data_transform::HttpRequestExecutor));
         registry.register("code", Box::new(super::data_transform::CodeNodeExecutor::new()));
         // Stub executors for types that need external services
-        registry.register("llm", Box::new(StubExecutor("llm")));
+        // LLM executor is injected via set_llm_provider_registry
         registry.register("knowledge-retrieval", Box::new(StubExecutor("knowledge-retrieval")));
         registry.register("question-classifier", Box::new(StubExecutor("question-classifier")));
         registry.register("parameter-extractor", Box::new(StubExecutor("parameter-extractor")));
@@ -73,6 +75,13 @@ impl NodeExecutorRegistry {
 
     pub fn register(&mut self, node_type: &str, executor: Box<dyn NodeExecutor>) {
         self.executors.insert(node_type.to_string(), executor);
+    }
+
+    pub fn set_llm_provider_registry(&mut self, registry: std::sync::Arc<LlmProviderRegistry>) {
+        self.executors.insert(
+            "llm".to_string(),
+            Box::new(LlmNodeExecutor::new(registry)),
+        );
     }
 
     pub fn get(&self, node_type: &str) -> Option<&dyn NodeExecutor> {

@@ -13,6 +13,7 @@ use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::plugin::PluginManager;
+use crate::llm::LlmProviderRegistry;
 
 /// Execution status of a workflow
 #[derive(Debug, Clone)]
@@ -61,6 +62,7 @@ pub struct WorkflowRunner {
   config: EngineConfig,
   context: RuntimeContext,
   plugin_manager: Option<Arc<PluginManager>>,
+  llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
 }
 
 impl WorkflowRunner {
@@ -74,6 +76,7 @@ impl WorkflowRunner {
       config: EngineConfig::default(),
       context: RuntimeContext::default(),
       plugin_manager: None,
+      llm_provider_registry: None,
     }
   }
 }
@@ -87,6 +90,7 @@ pub struct WorkflowRunnerBuilder {
   config: EngineConfig,
   context: RuntimeContext,
   plugin_manager: Option<Arc<PluginManager>>,
+  llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
 }
 
 impl WorkflowRunnerBuilder {
@@ -125,6 +129,11 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  pub fn llm_providers(mut self, registry: Arc<LlmProviderRegistry>) -> Self {
+    self.llm_provider_registry = Some(registry);
+    self
+  }
+
   pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
     validate_workflow_schema(&self.schema)?;
     let graph = build_graph(&self.schema)?;
@@ -159,14 +168,17 @@ impl WorkflowRunnerBuilder {
       );
     }
 
-    let registry = if let Some(pm) = &self.plugin_manager {
+    let mut registry = if let Some(pm) = &self.plugin_manager {
       NodeExecutorRegistry::new_with_plugins(pm.clone())
     } else {
       NodeExecutorRegistry::new()
     };
+    if let Some(llm_reg) = &self.llm_provider_registry {
+      registry.set_llm_provider_registry(llm_reg.clone());
+    }
     let (tx, mut rx) = mpsc::channel(256);
     let config = self.config;
-    let context = Arc::new(self.context);
+    let context = Arc::new(self.context.with_event_tx(tx.clone()));
 
     let status = Arc::new(Mutex::new(ExecutionStatus::Running));
     let events = Arc::new(Mutex::new(Vec::new()));

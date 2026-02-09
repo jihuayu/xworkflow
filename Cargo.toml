@@ -27,6 +27,8 @@ minijinja = { version = "2.0", features = ["builtins"] }
 
 # HTTP client (for LLM APIs and persistence services)
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
+tokio-stream = "0.1"
+eventsource-stream = "0.2"
 
 # Error handling
 thiserror = "1.0"
@@ -63,3 +65,52 @@ hex = "0.4"
 tokio-test = "0.4"
 mockito = "1.2"
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "bench_micro_variable_pool"
+harness = false
+
+[[bench]]
+name = "bench_micro_template"
+harness = false
+
+[[bench]]
+name = "bench_micro_condition"
+harness = false
+
+[[bench]]
+name = "bench_micro_dsl"
+harness = false
+
+[[bench]]
+name = "bench_micro_segment"
+harness = false
+
+[[bench]]
+name = "bench_meso_dispatcher"
+harness = false
+
+[[bench]]
+name = "bench_meso_sandbox_js"
+harness = false
+
+[[bench]]
+name = "bench_meso_sandbox_wasm"
+harness = false
+
+[[bench]]
+name = "bench_meso_node_executors"
+harness = false
+
+[[bench]]
+name = "bench_macro_topology"
+harness = false
+
+[[bench]]
+name = "bench_macro_scalability"
+harness = false
+
+[[bench]]
+name = "bench_macro_iteration"
+harness = false

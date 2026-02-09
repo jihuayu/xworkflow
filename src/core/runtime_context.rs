@@ -1,5 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::mpsc;
+
+use crate::core::event_bus::GraphEngineEvent;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Runtime context providing time and ID generation
@@ -7,6 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub struct RuntimeContext {
     pub time_provider: Arc<dyn TimeProvider>,
     pub id_generator: Arc<dyn IdGenerator>,
+    pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
 }
 
 impl Default for RuntimeContext {
@@ -14,7 +18,15 @@ impl Default for RuntimeContext {
         Self {
             time_provider: Arc::new(RealTimeProvider::default()),
             id_generator: Arc::new(RealIdGenerator::default()),
+            event_tx: None,
         }
+    }
+}
+
+impl RuntimeContext {
+    pub fn with_event_tx(mut self, event_tx: mpsc::Sender<GraphEngineEvent>) -> Self {
+        self.event_tx = Some(event_tx);
+        self
     }
 }
 

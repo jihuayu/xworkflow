@@ -8,6 +8,7 @@ pub mod sandbox;
 pub mod template;
 pub mod scheduler;
 pub mod plugin;
+pub mod llm;
 
 pub use crate::core::{
 	GraphEngineEvent,

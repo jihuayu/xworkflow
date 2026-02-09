@@ -16,6 +16,7 @@ use xworkflow::{
     RuntimeContext,
     WorkflowRunner,
 };
+use xworkflow::llm::{LlmProviderRegistry, OpenAiConfig, OpenAiProvider};
 
 #[derive(Debug, Deserialize, Default)]
 struct StateFile {
@@ -34,7 +35,26 @@ struct StateFile {
     #[serde(default)]
     plugin_dir: Option<String>,
     #[serde(default)]
+    llm_providers: Option<LlmProvidersConfig>,
+    #[serde(default)]
     mock_server: Option<Vec<MockEndpoint>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LlmProvidersConfig {
+    #[serde(default)]
+    openai: Option<OpenAiProviderConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiProviderConfig {
+    api_key: String,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    org_id: Option<String>,
+    #[serde(default)]
+    default_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +128,12 @@ pub async fn run_case(case_dir: &Path) {
 
     let config = state.config.unwrap_or_default();
 
+    let sys_base_url = state
+        .system_variables
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let mut builder = WorkflowRunner::builder(schema)
         .user_inputs(inputs)
         .system_vars(state.system_variables)
@@ -115,6 +141,26 @@ pub async fn run_case(case_dir: &Path) {
         .conversation_vars(state.conversation_variables)
         .config(config)
         .context(context);
+
+    if let Some(llm_config) = state.llm_providers {
+        let mut registry = LlmProviderRegistry::new();
+        if let Some(openai) = llm_config.openai {
+            let base_url = if let Some(url) = openai.base_url.clone() {
+                url
+            } else if let Some(base_url) = &sys_base_url {
+                format!("{}/v1", base_url.trim_end_matches('/'))
+            } else {
+                "https://api.openai.com/v1".to_string()
+            };
+            registry.register(Arc::new(OpenAiProvider::new(OpenAiConfig {
+                api_key: openai.api_key,
+                base_url,
+                org_id: openai.org_id,
+                default_model: openai.default_model.unwrap_or_else(|| "gpt-4o".into()),
+            })));
+        }
+        builder = builder.llm_providers(Arc::new(registry));
+    }
 
     if let Some(plugin_dir) = state.plugin_dir {
         let plugin_path = if Path::new(&plugin_dir).is_absolute() {

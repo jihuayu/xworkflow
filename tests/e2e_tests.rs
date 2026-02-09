@@ -49,4 +49,5 @@ e2e::e2e_test_cases!(
     case_045_js_builtins => "045_js_builtins",
     case_046_code_node_wasm => "046_code_node_wasm",
     case_047_plugin_node_basic => "047_plugin_node_basic",
+    case_048_llm_openai_basic => "048_llm_openai_basic",
 );
