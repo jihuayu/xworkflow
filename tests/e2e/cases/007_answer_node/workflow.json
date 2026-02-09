@@ -1,0 +1,37 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "city", "label": "City", "type": "string", "required": true },
+          { "variable": "temp", "label": "Temp", "type": "number", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "ans",
+      "data": {
+        "type": "answer",
+        "title": "Answer",
+        "answer": "The weather in {{#start.city#}} is {{#start.temp#}} degrees."
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "answer", "value_selector": ["ans", "answer"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "ans" },
+    { "source": "ans", "target": "end" }
+  ]
+}

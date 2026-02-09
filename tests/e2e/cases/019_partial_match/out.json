@@ -1,0 +1,5 @@
+{
+  "status": "completed",
+  "outputs": { "greeting": "Hi Bob", "length": 3 },
+  "partial_match": true
+}

@@ -1,0 +1,42 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "text", "label": "Text", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "StringOps",
+        "code": "function main(inputs) { var t = inputs.text; return { upper: t.toUpperCase(), length: t.length, reversed: t.split('').reverse().join('') }; }",
+        "language": "javascript",
+        "variables": [
+          { "variable": "text", "value_selector": ["start", "text"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "upper", "value_selector": ["code1", "upper"] },
+          { "variable": "length", "value_selector": ["code1", "length"] },
+          { "variable": "reversed", "value_selector": ["code1", "reversed"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "end" }
+  ]
+}

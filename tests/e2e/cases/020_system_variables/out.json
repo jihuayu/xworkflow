@@ -1,0 +1,5 @@
+{
+  "status": "completed",
+  "outputs": { "query": "system-query", "user_id": "user-123" },
+  "partial_match": false
+}

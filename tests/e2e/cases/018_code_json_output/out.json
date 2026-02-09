@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "outputs": {
+    "user": { "name": "Alice", "age": 30 },
+    "tags": ["dev", "rust"]
+  },
+  "partial_match": false
+}

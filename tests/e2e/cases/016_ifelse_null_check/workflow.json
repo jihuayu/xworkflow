@@ -1,0 +1,59 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "name", "label": "Name", "type": "string", "required": false }
+        ]
+      }
+    },
+    {
+      "id": "if1",
+      "data": {
+        "type": "if-else",
+        "title": "Check Null",
+        "cases": [
+          {
+            "case_id": "has_value",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["start", "name"],
+                "comparison_operator": "not_null",
+                "value": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_has",
+      "data": {
+        "type": "end",
+        "title": "Has Value",
+        "outputs": [
+          { "variable": "status", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    },
+    {
+      "id": "end_null",
+      "data": {
+        "type": "end",
+        "title": "Is Null",
+        "outputs": [
+          { "variable": "status", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "if1" },
+    { "source": "if1", "target": "end_has", "sourceHandle": "has_value" },
+    { "source": "if1", "target": "end_null", "sourceHandle": "false" }
+  ]
+}

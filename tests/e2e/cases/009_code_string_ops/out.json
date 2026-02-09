@@ -1,0 +1,5 @@
+{
+  "status": "completed",
+  "outputs": { "upper": "HELLO", "length": 5, "reversed": "olleh" },
+  "partial_match": false
+}

@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Q", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "query", "value_selector": ["sys", "query"] },
+          { "variable": "user_id", "value_selector": ["sys", "user_id"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "end" }
+  ]
+}

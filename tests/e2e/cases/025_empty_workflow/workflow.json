@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": []
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "end" }
+  ]
+}

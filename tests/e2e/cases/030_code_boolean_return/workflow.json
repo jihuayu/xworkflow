@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "n", "label": "N", "type": "number", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "CheckEven",
+        "code": "function main(inputs) { return { is_even: inputs.n % 2 === 0, half: inputs.n / 2 }; }",
+        "language": "javascript",
+        "variables": [
+          { "variable": "n", "value_selector": ["start", "n"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "is_even", "value_selector": ["code1", "is_even"] },
+          { "variable": "half", "value_selector": ["code1", "half"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "end" }
+  ]
+}

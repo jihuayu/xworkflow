@@ -1,0 +1,47 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": []
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "MakeList",
+        "code": "function main(inputs) { return { names: ['Alice', 'Bob', 'Charlie'] }; }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "FormatList",
+        "template": "{% for name in names %}{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}",
+        "variables": [
+          { "variable": "names", "value_selector": ["code1", "names"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["tmpl", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "tmpl" },
+    { "source": "tmpl", "target": "end" }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "score", "label": "Score", "type": "number", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "if1",
+      "data": {
+        "type": "if-else",
+        "title": "Grade",
+        "cases": [
+          {
+            "case_id": "excellent",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["start", "score"],
+                "comparison_operator": "greater_or_equal",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "case_id": "good",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["start", "score"],
+                "comparison_operator": "greater_or_equal",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "case_id": "pass",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["start", "score"],
+                "comparison_operator": "greater_or_equal",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_excellent",
+      "data": {
+        "type": "end",
+        "title": "Excellent",
+        "outputs": [
+          { "variable": "grade", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    },
+    {
+      "id": "end_good",
+      "data": {
+        "type": "end",
+        "title": "Good",
+        "outputs": [
+          { "variable": "grade", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    },
+    {
+      "id": "end_pass",
+      "data": {
+        "type": "end",
+        "title": "Pass",
+        "outputs": [
+          { "variable": "grade", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    },
+    {
+      "id": "end_fail",
+      "data": {
+        "type": "end",
+        "title": "Fail",
+        "outputs": [
+          { "variable": "grade", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "if1" },
+    { "source": "if1", "target": "end_excellent", "sourceHandle": "excellent" },
+    { "source": "if1", "target": "end_good", "sourceHandle": "good" },
+    { "source": "if1", "target": "end_pass", "sourceHandle": "pass" },
+    { "source": "if1", "target": "end_fail", "sourceHandle": "false" }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Q", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Step1",
+        "code": "function main(inputs) { return { v: 1 }; }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "code2",
+      "data": {
+        "type": "code",
+        "title": "Step2",
+        "code": "function main(inputs) { return { v: 2 }; }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["code2", "v"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "code2" },
+    { "source": "code2", "target": "end" }
+  ]
+}

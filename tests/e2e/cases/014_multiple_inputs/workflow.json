@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "name", "label": "Name", "type": "string", "required": true },
+          { "variable": "age", "label": "Age", "type": "number", "required": true },
+          { "variable": "active", "label": "Active", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "out_name", "value_selector": ["start", "name"] },
+          { "variable": "out_age", "value_selector": ["start", "age"] },
+          { "variable": "out_active", "value_selector": ["start", "active"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "end" }
+  ]
+}

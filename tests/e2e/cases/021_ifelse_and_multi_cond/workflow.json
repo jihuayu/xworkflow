@@ -1,0 +1,65 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "age", "label": "Age", "type": "number", "required": true },
+          { "variable": "country", "label": "Country", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "if1",
+      "data": {
+        "type": "if-else",
+        "title": "Eligible",
+        "cases": [
+          {
+            "case_id": "eligible",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["start", "age"],
+                "comparison_operator": "greater_or_equal",
+                "value": 18
+              },
+              {
+                "variable_selector": ["start", "country"],
+                "comparison_operator": "is",
+                "value": "US"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_yes",
+      "data": {
+        "type": "end",
+        "title": "Eligible",
+        "outputs": [
+          { "variable": "result", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    },
+    {
+      "id": "end_no",
+      "data": {
+        "type": "end",
+        "title": "Not Eligible",
+        "outputs": [
+          { "variable": "result", "value_selector": ["if1", "selected_case"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "if1" },
+    { "source": "if1", "target": "end_yes", "sourceHandle": "eligible" },
+    { "source": "if1", "target": "end_no", "sourceHandle": "false" }
+  ]
+}

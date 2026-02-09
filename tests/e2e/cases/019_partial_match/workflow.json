@@ -1,0 +1,42 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "name", "label": "Name", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Compute",
+        "code": "function main(inputs) { return { greeting: 'Hi ' + inputs.name, length: inputs.name.length, timestamp: Date.now() }; }",
+        "language": "javascript",
+        "variables": [
+          { "variable": "name", "value_selector": ["start", "name"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "greeting", "value_selector": ["code1", "greeting"] },
+          { "variable": "length", "value_selector": ["code1", "length"] },
+          { "variable": "timestamp", "value_selector": ["code1", "timestamp"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "end" }
+  ]
+}
