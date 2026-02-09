@@ -1,163 +1,111 @@
 use serde_json::json;
-use std::sync::Arc;
-use tracing_subscriber;
+use std::collections::HashMap;
 
-use xworkflow::dsl::DslFormat;
-use xworkflow::WorkflowScheduler;
+use xworkflow::dsl::{parse_dsl, DslFormat};
+use xworkflow::scheduler::WorkflowScheduler;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .init();
 
-    println!("🚀 XWorkflow Scheduler starting...");
+    println!("=== XWorkflow Scheduler Demo ===\n");
 
-    // Create global scheduler
-    let scheduler = Arc::new(WorkflowScheduler::new());
-    let _service_handle = scheduler.clone().start();
+    let scheduler = WorkflowScheduler::new();
 
-    // Example workflow DSL
-    let workflow_dsl = r#"
+    // --- Demo 1: Simple Start → End ---
+    println!("--- Demo 1: Simple pipeline ---");
+    let yaml = r#"
 nodes:
-  - id: start_1
-    type: start
-    data: {}
-    title: Start
-  - id: template_1
-    type: template
+  - id: start
     data:
-      template: "Task {{#input.task_id#}}: Process {{#input.data#}}"
-    title: Process Template
-  - id: end_1
-    type: end
+      type: start
+      title: Start
+      variables:
+        - variable: query
+          label: Query
+          type: string
+          required: true
+  - id: end
     data:
+      type: end
+      title: End
       outputs:
-        - name: result
-          variable_selector: "template_1.output"
-    title: End
+        - variable: result
+          value_selector: ["start", "query"]
 edges:
-  - source: start_1
-    target: template_1
-  - source: template_1
-    target: end_1
+  - source: start
+    target: end
 "#;
+    let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
 
-    println!("📋 Submitting 5 concurrent workflow tasks...");
+    let mut inputs = HashMap::new();
+    inputs.insert("query".into(), json!("Hello from scheduler!"));
 
-    // Submit multiple workflows concurrently
-    let mut handles = Vec::new();
-    for i in 1..=5 {
-        let inputs = json!({
-            "task_id": i,
-            "data": format!("Dataset_{}", i)
-        });
+    let mut sys = HashMap::new();
+    sys.insert("query".into(), json!("Hello from scheduler!"));
 
-        let handle = scheduler
-            .submit(workflow_dsl, DslFormat::Yaml, inputs, "demo_user")
-            .await
-            .expect("Failed to submit workflow");
+    let handle = scheduler.submit(schema, inputs, sys, None).await.unwrap();
+    let status = handle.wait().await;
+    println!("Result: {:?}\n", status);
 
-        println!(
-            "✅ Task {} submitted (execution_id: {})",
-            i, handle.execution_id
-        );
-        handles.push((i, handle));
-    }
-
-    println!("\n⏳ Waiting for all tasks to complete...\n");
-
-    // Wait for all tasks to complete and print results
-    for (task_id, handle) in handles {
-        match handle.wait().await {
-            Ok(output) => {
-                println!(
-                    "✅ Task {} completed: {}",
-                    task_id,
-                    output.get("result").unwrap_or(&json!("N/A"))
-                );
-            }
-            Err(e) => {
-                eprintln!("❌ Task {} failed: {}", task_id, e);
-            }
-        }
-    }
-
-    println!("\n🎉 All tasks completed!");
-
-    // Branching workflow demo
-    println!("\n{}", "=".repeat(60));
-    println!("📋 Submitting branching workflow tasks...\n");
-
-    let branch_workflow = r#"
+    // --- Demo 2: Branch workflow ---
+    println!("--- Demo 2: IfElse branch ---");
+    let yaml2 = r#"
 nodes:
-  - id: start_1
-    type: start
-    data: {}
-  - id: ifelse_1
-    type: if-else
+  - id: start
+    data: { type: start, title: Start }
+  - id: if1
     data:
-      conditions:
-        - variable_selector: "input.score"
-          comparison_operator: greater_than_or_equal
-          value: 60
-      logical_operator: and
-  - id: pass_template
-    type: template
+      type: if-else
+      title: Check
+      cases:
+        - case_id: big
+          logical_operator: and
+          conditions:
+            - variable_selector: ["start", "n"]
+              comparison_operator: greater_than
+              value: 5
+  - id: end_big
     data:
-      template: "{{#input.name#}} passed the exam! Score: {{#input.score#}}"
-  - id: fail_template
-    type: template
+      type: answer
+      title: Big
+      answer: "Number {{#start.n#}} is big!"
+  - id: end_small
     data:
-      template: "{{#input.name#}} did not pass the exam, Score: {{#input.score#}}"
-  - id: end_1
-    type: end
+      type: answer
+      title: Small
+      answer: "Number {{#start.n#}} is small."
+  - id: end
     data:
+      type: end
+      title: End
       outputs:
-        - name: result
-          variable_selector: "pass_template.output"
-        - name: result2
-          variable_selector: "fail_template.output"
+        - variable: answer
+          value_selector: ["end_big", "answer"]
 edges:
-  - source: start_1
-    target: ifelse_1
-  - source: ifelse_1
-    target: pass_template
-    source_handle: "true"
-  - source: ifelse_1
-    target: fail_template
-    source_handle: "false"
-  - source: pass_template
-    target: end_1
-  - source: fail_template
-    target: end_1
+  - source: start
+    target: if1
+  - source: if1
+    target: end_big
+    sourceHandle: big
+  - source: if1
+    target: end_small
+    sourceHandle: "false"
+  - source: end_big
+    target: end
+  - source: end_small
+    target: end
 "#;
+    let schema2 = parse_dsl(yaml2, DslFormat::Yaml).unwrap();
 
-    let test_cases = vec![
-        ("Zhang San", 85),
-        ("Li Si", 45),
-        ("Wang Wu", 72),
-        ("Zhao Liu", 58),
-    ];
+    let mut inputs2 = HashMap::new();
+    inputs2.insert("n".into(), json!(10));
 
-    for (name, score) in test_cases {
-        let handle = scheduler
-            .submit(
-                branch_workflow,
-                DslFormat::Yaml,
-                json!({"name": name, "score": score}),
-                "demo_user",
-            )
-            .await
-            .expect("Failed to submit workflow");
+    let handle2 = scheduler.submit(schema2, inputs2, HashMap::new(), None).await.unwrap();
+    let status2 = handle2.wait().await;
+    println!("Result: {:?}\n", status2);
 
-        let output = handle.wait().await.expect("Workflow failed");
-        let default = json!("N/A");
-        let result = output
-            .get("result")
-            .or_else(|| output.get("result2"))
-            .unwrap_or(&default);
-        println!("📊 {}", result);
-    }
-
-    println!("\n✨ Scheduler demo completed!");
+    println!("=== Demo complete ===");
 }

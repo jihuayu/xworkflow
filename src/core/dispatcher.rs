@@ -1,402 +1,747 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use chrono::Utc;
 use serde_json::Value;
-use tracing::{debug, error, info, warn};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
+use uuid::Uuid;
 
-use crate::core::event_bus::WorkflowEvent;
-use crate::core::execution_context::NodeContext;
-use crate::core::workflow_runtime::{NodeState, WorkflowRuntime};
-use crate::error::WorkflowError;
-use crate::graph::EdgeType;
-use crate::nodes::{NodeExecutionResult, NodeRegistry};
+use crate::core::event_bus::GraphEngineEvent;
+use crate::core::variable_pool::{Segment, VariablePool};
+use crate::dsl::schema::{
+    NodeRunResult, WorkflowNodeExecutionStatus, WriteMode,
+};
+use crate::error::{WorkflowError, WorkflowResult};
+use crate::graph::types::{Graph, NodeState};
+use crate::nodes::executor::NodeExecutorRegistry;
 
-/// 调度器 - 工作流执行的主控制循环
-pub struct Dispatcher {
-    runtime: Arc<WorkflowRuntime>,
-    node_registry: Arc<NodeRegistry>,
+/// External command to control workflow execution
+#[derive(Debug, Clone)]
+pub enum Command {
+    Abort { reason: Option<String> },
+    Pause,
+    UpdateVariables { variables: HashMap<String, Value> },
 }
 
-impl Dispatcher {
-    pub fn new(runtime: Arc<WorkflowRuntime>, node_registry: Arc<NodeRegistry>) -> Self {
-        Dispatcher {
-            runtime,
-            node_registry,
+/// Configuration for the workflow engine
+#[derive(Debug, Clone)]
+pub struct EngineConfig {
+    pub max_steps: i32,
+    pub max_execution_time_secs: u64,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        EngineConfig {
+            max_steps: 500,
+            max_execution_time_secs: 600,
+        }
+    }
+}
+
+/// The main workflow dispatcher: drives graph execution
+pub struct WorkflowDispatcher {
+    graph: Arc<RwLock<Graph>>,
+    variable_pool: Arc<RwLock<VariablePool>>,
+    registry: Arc<NodeExecutorRegistry>,
+    event_tx: mpsc::Sender<GraphEngineEvent>,
+    config: EngineConfig,
+    exceptions_count: i32,
+}
+
+impl WorkflowDispatcher {
+    pub fn new(
+        graph: Graph,
+        variable_pool: VariablePool,
+        registry: NodeExecutorRegistry,
+        event_tx: mpsc::Sender<GraphEngineEvent>,
+        config: EngineConfig,
+    ) -> Self {
+        WorkflowDispatcher {
+            graph: Arc::new(RwLock::new(graph)),
+            variable_pool: Arc::new(RwLock::new(variable_pool)),
+            registry: Arc::new(registry),
+            event_tx,
+            config,
+            exceptions_count: 0,
         }
     }
 
-    /// 运行工作流
-    pub async fn run(&self) -> Result<Value, WorkflowError> {
-        // 1. 将 Start 节点推入队列
-        let start_node_id = self.runtime.definition.get_start_node_id();
-        self.enqueue_node(&start_node_id).await;
+    /// Run the workflow to completion
+    pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
+        // Emit graph started
+        let _ = self.event_tx.send(GraphEngineEvent::GraphRunStarted).await;
 
-        info!(
-            execution_id = %self.runtime.execution_id,
-            "Workflow execution started"
-        );
+        let root_id = {
+            let g = self.graph.read().await;
+            g.root_node_id.clone()
+        };
 
-        // 2. 主循环
-        loop {
-            // 从队列中取出节点
-            let node_id = {
-                let mut queue = self.runtime.execution_queue.lock().await;
-                queue.pop_front()
+        let mut queue: Vec<String> = vec![root_id];
+        let mut step_count: i32 = 0;
+        let mut final_outputs: HashMap<String, Value> = HashMap::new();
+        let start_time = std::time::Instant::now();
+
+        while let Some(node_id) = queue.pop() {
+            // Check max steps
+            step_count += 1;
+            if step_count > self.config.max_steps {
+                let _ = self.event_tx.send(GraphEngineEvent::GraphRunFailed {
+                    error: format!("Max steps exceeded: {}", self.config.max_steps),
+                    exceptions_count: self.exceptions_count,
+                }).await;
+                return Err(WorkflowError::MaxStepsExceeded(self.config.max_steps));
+            }
+
+            // Check max time
+            if start_time.elapsed().as_secs() > self.config.max_execution_time_secs {
+                let _ = self.event_tx.send(GraphEngineEvent::GraphRunFailed {
+                    error: "Max execution time exceeded".into(),
+                    exceptions_count: self.exceptions_count,
+                }).await;
+                return Err(WorkflowError::ExecutionTimeout);
+            }
+
+            // Get node info
+            let (node_type, node_title, node_config, is_branch) = {
+                let g = self.graph.read().await;
+                let node = g.get_node(&node_id)
+                    .ok_or_else(|| WorkflowError::NodeNotFound(node_id.clone()))?;
+                (
+                    node.node_type.clone(),
+                    node.title.clone(),
+                    node.config.clone(),
+                    g.is_branch_node(&node_id),
+                )
             };
 
-            match node_id {
-                Some(node_id) => {
-                    // 执行节点
-                    self.execute_node(&node_id).await?;
-
-                    // 检查是否完成
-                    if self.is_workflow_completed().await? {
-                        info!(
-                            execution_id = %self.runtime.execution_id,
-                            "Workflow execution completed"
-                        );
-                        return self.collect_outputs().await;
-                    }
-                }
-                None => {
-                    // 队列为空，检查是否有正在运行的节点
-                    let states = self.runtime.node_states.lock().await;
-                    let has_running = states
-                        .values()
-                        .any(|s| matches!(s, NodeState::Running));
-                    drop(states);
-
-                    if has_running {
-                        // 等待一小段时间再检查
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    } else if self.is_workflow_completed().await? {
-                        return self.collect_outputs().await;
-                    } else {
-                        // 没有运行中的节点，也没有就绪节点，检查是否死锁
-                        warn!("No running or ready nodes, workflow may be stuck");
-                        return self.collect_outputs().await;
+            // Check if node is skipped
+            {
+                let g = self.graph.read().await;
+                if let Some(node) = g.get_node(&node_id) {
+                    if node.state == NodeState::Skipped {
+                        continue;
                     }
                 }
             }
-        }
-    }
 
-    /// 执行单个节点
-    async fn execute_node(&self, node_id: &str) -> Result<(), WorkflowError> {
-        // 获取节点定义
-        let node = self.runtime.definition.get_node(node_id)?;
+            let exec_id = Uuid::new_v4().to_string();
 
-        // 获取执行器
-        let executor = self
-            .node_registry
-            .get(&node.node_type)
-            .ok_or_else(|| WorkflowError::ExecutorNotFound(node.node_type.clone()))?;
+            // Emit NodeRunStarted
+            let _ = self.event_tx.send(GraphEngineEvent::NodeRunStarted {
+                id: exec_id.clone(),
+                node_id: node_id.clone(),
+                node_type: node_type.clone(),
+                node_title: node_title.clone(),
+                predecessor_node_id: None,
+            }).await;
 
-        // 创建上下文
-        let ctx = NodeContext {
-            node_id: node_id.to_string(),
-            node_type: node.node_type.clone(),
-            config: node.config.clone(),
-            execution_id: self.runtime.execution_id.clone(),
-            user_id: self.runtime.user_id.clone(),
-            title: node.title.clone(),
-        };
+            // Execute the node
+            let pool_snapshot = {
+                self.variable_pool.read().await.clone()
+            };
 
-        // 更新状态为 Running
-        {
-            let mut states = self.runtime.node_states.lock().await;
-            states.insert(node_id.to_string(), NodeState::Running);
-        }
+            let executor = self.registry.get(&node_type);
+            let run_result = if let Some(exec) = executor {
+                // Check error strategy & retry
+                let error_strategy = node_config.get("error_strategy");
+                let retry_config = node_config.get("retry_config");
+                let max_retries = retry_config
+                    .and_then(|rc| rc.get("max_retries"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32;
+                let retry_interval = retry_config
+                    .and_then(|rc| rc.get("retry_interval"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as u64;
 
-        // 发送开始事件
-        let _ = self.runtime.event_sender.send(WorkflowEvent::NodeStarted {
-            node_id: node_id.to_string(),
-            timestamp: Utc::now(),
-        });
+                let mut last_error = None;
+                let mut result = None;
 
-        debug!(node_id = %node_id, node_type = %node.node_type, "Executing node");
-
-        // 执行节点
-        let result = executor
-            .execute(&ctx, &self.runtime.variable_pool, &self.runtime.event_sender)
-            .await;
-
-        match result {
-            Ok(exec_result) => {
-                self.handle_node_success(node_id, exec_result).await?;
-            }
-            Err(e) => {
-                self.handle_node_failure(node_id, &e.to_string()).await?;
-                return Err(WorkflowError::NodeExecutionFailed(
-                    node_id.to_string(),
-                    e.to_string(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 处理节点执行成功
-    async fn handle_node_success(
-        &self,
-        node_id: &str,
-        result: NodeExecutionResult,
-    ) -> Result<(), WorkflowError> {
-        match result {
-            NodeExecutionResult::Completed(output) => {
-                // 更新状态
-                {
-                    let mut states = self.runtime.node_states.lock().await;
-                    states.insert(node_id.to_string(), NodeState::Completed);
+                for attempt in 0..=max_retries {
+                    match exec.execute(&node_id, &node_config, &pool_snapshot).await {
+                        Ok(r) => {
+                            result = Some(r);
+                            break;
+                        }
+                        Err(e) => {
+                            last_error = Some(e.to_string());
+                            if attempt < max_retries {
+                                // Emit retry event
+                                let _ = self.event_tx.send(GraphEngineEvent::NodeRunRetry {
+                                    id: exec_id.clone(),
+                                    node_id: node_id.clone(),
+                                    node_type: node_type.clone(),
+                                    node_title: node_title.clone(),
+                                    error: last_error.clone().unwrap_or_default(),
+                                    retry_index: attempt + 1,
+                                }).await;
+                                if retry_interval > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(retry_interval)).await;
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // 写入变量池
-                self.runtime.variable_pool.set_node_output(node_id, output.clone());
+                match result {
+                    Some(r) => Ok(r),
+                    None => {
+                        // All retries failed, apply error strategy
+                        let strategy_type = error_strategy
+                            .and_then(|es| es.get("type"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("none");
 
-                // 发送完成事件
-                let _ = self
-                    .runtime
-                    .event_sender
-                    .send(WorkflowEvent::NodeFinished {
-                        node_id: node_id.to_string(),
-                        output,
-                        timestamp: Utc::now(),
+                        match strategy_type {
+                            "fail-branch" => {
+                                self.exceptions_count += 1;
+                                Ok(NodeRunResult {
+                                    status: WorkflowNodeExecutionStatus::Exception,
+                                    error: last_error.clone(),
+                                    edge_source_handle: "fail-branch".to_string(),
+                                    ..Default::default()
+                                })
+                            }
+                            "default-value" => {
+                                self.exceptions_count += 1;
+                                let defaults: HashMap<String, Value> = error_strategy
+                                    .and_then(|es| es.get("default_value"))
+                                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                    .unwrap_or_default();
+                                Ok(NodeRunResult {
+                                    status: WorkflowNodeExecutionStatus::Exception,
+                                    outputs: defaults,
+                                    error: last_error.clone(),
+                                    edge_source_handle: "source".to_string(),
+                                    ..Default::default()
+                                })
+                            }
+                            _ => {
+                                // No strategy: fail the workflow
+                                Err(crate::error::NodeError::ExecutionError(
+                                    last_error.unwrap_or_else(|| "Unknown error".to_string()),
+                                ))
+                            }
+                        }
+                    }
+                }
+            } else {
+                Err(crate::error::NodeError::ConfigError(format!(
+                    "No executor for node type: {}",
+                    node_type
+                )))
+            };
+
+            match run_result {
+                Ok(result) => {
+                    // Store outputs in variable pool
+                    {
+                        let mut pool = self.variable_pool.write().await;
+
+                        // Handle variable assigner specially
+                        if node_type == "assigner" {
+                            let write_mode = result.outputs.get("write_mode")
+                                .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
+                                .unwrap_or(WriteMode::Overwrite);
+                            let assigned_sel: Vec<String> = result.outputs.get("assigned_variable_selector")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                .unwrap_or_default();
+                            let output_val = result.outputs.get("output").cloned().unwrap_or(Value::Null);
+
+                            match write_mode {
+                                WriteMode::Overwrite => {
+                                    pool.set(&assigned_sel, Segment::from_value(&output_val));
+                                }
+                                WriteMode::Append => {
+                                    pool.append(&assigned_sel, Segment::from_value(&output_val));
+                                }
+                                WriteMode::Clear => {
+                                    pool.clear(&assigned_sel);
+                                }
+                            }
+                        }
+
+                        pool.set_node_outputs(&node_id, &result.outputs);
+                    }
+
+                    // Track final outputs for end/answer nodes
+                    if node_type == "end" || node_type == "answer" {
+                        for (k, v) in &result.outputs {
+                            final_outputs.insert(k.clone(), v.clone());
+                        }
+                    }
+
+                    // Emit success or exception event
+                    match result.status {
+                        WorkflowNodeExecutionStatus::Exception => {
+                            let _ = self.event_tx.send(GraphEngineEvent::NodeRunException {
+                                id: exec_id.clone(),
+                                node_id: node_id.clone(),
+                                node_type: node_type.clone(),
+                                node_run_result: result.clone(),
+                                error: result.error.clone().unwrap_or_default(),
+                            }).await;
+                        }
+                        _ => {
+                            let _ = self.event_tx.send(GraphEngineEvent::NodeRunSucceeded {
+                                id: exec_id.clone(),
+                                node_id: node_id.clone(),
+                                node_type: node_type.clone(),
+                                node_run_result: result.clone(),
+                            }).await;
+                        }
+                    }
+
+                    // Mark node as Taken
+                    {
+                        let mut g = self.graph.write().await;
+                        if let Some(node) = g.nodes.get_mut(&node_id) {
+                            node.state = NodeState::Taken;
+                        }
+                    }
+
+                    // Process edges
+                    {
+                        let mut g = self.graph.write().await;
+                        if is_branch {
+                            g.process_branch_edges(&node_id, &result.edge_source_handle);
+                        } else {
+                            g.process_normal_edges(&node_id);
+                        }
+                    }
+
+                    // Find ready downstream nodes
+                    {
+                        let g = self.graph.read().await;
+                        let downstream = g.get_downstream_node_ids(&node_id);
+                        for ds_id in downstream {
+                            if g.is_node_ready(&ds_id) {
+                                queue.push(ds_id);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Node execution failed, abort workflow
+                    let err_result = NodeRunResult {
+                        status: WorkflowNodeExecutionStatus::Failed,
+                        error: Some(e.to_string()),
+                        ..Default::default()
+                    };
+
+                    let _ = self.event_tx.send(GraphEngineEvent::NodeRunFailed {
+                        id: exec_id,
+                        node_id: node_id.clone(),
+                        node_type: node_type.clone(),
+                        node_run_result: err_result,
+                        error: e.to_string(),
+                    }).await;
+
+                    let _ = self.event_tx.send(GraphEngineEvent::GraphRunFailed {
+                        error: e.to_string(),
+                        exceptions_count: self.exceptions_count,
+                    }).await;
+
+                    return Err(WorkflowError::NodeExecutionError {
+                        node_id,
+                        error: e.to_string(),
                     });
-
-                // 查找并入队后继节点
-                self.enqueue_successors(node_id).await?;
-            }
-
-            NodeExecutionResult::BranchSelected(selected_branch) => {
-                // 更新状态
-                {
-                    let mut states = self.runtime.node_states.lock().await;
-                    states.insert(node_id.to_string(), NodeState::Completed);
-                }
-
-                // 写入空输出
-                self.runtime
-                    .variable_pool
-                    .set_node_output(node_id, serde_json::json!({"branch": &selected_branch}));
-
-                // 发送分支选择事件
-                let _ = self
-                    .runtime
-                    .event_sender
-                    .send(WorkflowEvent::BranchSelected {
-                        node_id: node_id.to_string(),
-                        selected_branch: selected_branch.clone(),
-                        timestamp: Utc::now(),
-                    });
-
-                // 根据分支选择入队对应的后继节点
-                self.enqueue_branch_successor(node_id, &selected_branch)
-                    .await?;
-            }
-
-            NodeExecutionResult::IterationCompleted(results) => {
-                // 更新状态
-                {
-                    let mut states = self.runtime.node_states.lock().await;
-                    states.insert(node_id.to_string(), NodeState::Completed);
-                }
-
-                // 写入迭代结果
-                let output = serde_json::json!({ "outputs": results });
-                self.runtime.variable_pool.set_node_output(node_id, output.clone());
-
-                let _ = self
-                    .runtime
-                    .event_sender
-                    .send(WorkflowEvent::NodeFinished {
-                        node_id: node_id.to_string(),
-                        output,
-                        timestamp: Utc::now(),
-                    });
-
-                self.enqueue_successors(node_id).await?;
-            }
-
-            NodeExecutionResult::Failed(error) => {
-                self.handle_node_failure(node_id, &error).await?;
-                return Err(WorkflowError::NodeExecutionFailed(
-                    node_id.to_string(),
-                    error,
-                ));
-            }
-
-            NodeExecutionResult::Skipped => {
-                let mut states = self.runtime.node_states.lock().await;
-                states.insert(node_id.to_string(), NodeState::Skipped);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 处理节点执行失败
-    async fn handle_node_failure(
-        &self,
-        node_id: &str,
-        error: &str,
-    ) -> Result<(), WorkflowError> {
-        // 更新状态
-        {
-            let mut states = self.runtime.node_states.lock().await;
-            states.insert(node_id.to_string(), NodeState::Failed(error.to_string()));
-        }
-
-        // 发送失败事件
-        let _ = self.runtime.event_sender.send(WorkflowEvent::NodeFailed {
-            node_id: node_id.to_string(),
-            error: error.to_string(),
-            timestamp: Utc::now(),
-        });
-
-        error!(node_id = %node_id, error = %error, "Node execution failed");
-
-        Ok(())
-    }
-
-    /// 查找并入队所有满足依赖的后继节点
-    async fn enqueue_successors(&self, node_id: &str) -> Result<(), WorkflowError> {
-        let successors = self.runtime.definition.get_successors(node_id)?;
-
-        for successor_id in successors {
-            if self.are_dependencies_met(&successor_id).await? {
-                self.enqueue_node(&successor_id).await;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 入队分支节点的后继（只入队选中的分支）
-    async fn enqueue_branch_successor(
-        &self,
-        node_id: &str,
-        selected_branch: &str,
-    ) -> Result<(), WorkflowError> {
-        let edge_type = match selected_branch {
-            "true" => EdgeType::TrueBranch,
-            "false" => EdgeType::FalseBranch,
-            _ => EdgeType::Normal,
-        };
-
-        if let Some(target_id) = self
-            .runtime
-            .definition
-            .get_successor_by_edge_type(node_id, &edge_type)?
-        {
-            self.enqueue_node(&target_id).await;
-        }
-
-        // 标记未选中的分支节点为 Skipped
-        let other_edge_type = match selected_branch {
-            "true" => EdgeType::FalseBranch,
-            "false" => EdgeType::TrueBranch,
-            _ => return Ok(()),
-        };
-
-        if let Some(skipped_id) = self
-            .runtime
-            .definition
-            .get_successor_by_edge_type(node_id, &other_edge_type)?
-        {
-            self.skip_branch(&skipped_id).await?;
-        }
-
-        Ok(())
-    }
-
-    /// 递归标记分支节点为 Skipped
-    async fn skip_branch(&self, node_id: &str) -> Result<(), WorkflowError> {
-        {
-            let mut states = self.runtime.node_states.lock().await;
-            states.insert(node_id.to_string(), NodeState::Skipped);
-        }
-
-        // 查找该节点的后继节点
-        let successors = self.runtime.definition.get_successors(node_id)?;
-        for successor_id in &successors {
-            // 检查该后继节点是否只有一个前驱（被跳过的节点），或者是否是 end 节点
-            let predecessors = self.runtime.definition.get_predecessors(successor_id)?;
-
-            // 如果这个后继节点的所有前驱都在 skipped 分支中，也标记为 skipped
-            // 但如果它有其他非 skipped 前驱（如从其他分支汇合），则不标记
-            if predecessors.len() == 1 {
-                // 只有一个前驱，可以安全标记为 skipped
-                let node = self.runtime.definition.get_node(successor_id)?;
-                if node.node_type != "end" {
-                    // 不要跳过 end 节点，使用 Box::pin 处理递归 async
-                    Box::pin(self.skip_branch(successor_id)).await?;
                 }
             }
         }
 
-        Ok(())
-    }
-
-    /// 检查节点的所有依赖是否满足
-    async fn are_dependencies_met(&self, node_id: &str) -> Result<bool, WorkflowError> {
-        let predecessors = self.runtime.definition.get_predecessors(node_id)?;
-
-        let states = self.runtime.node_states.lock().await;
-        for pred_id in &predecessors {
-            match states.get(pred_id) {
-                Some(NodeState::Completed) => continue,
-                Some(NodeState::Skipped) => continue,
-                _ => return Ok(false),
-            }
+        // Emit final event
+        if self.exceptions_count > 0 {
+            let _ = self.event_tx.send(GraphEngineEvent::GraphRunPartialSucceeded {
+                exceptions_count: self.exceptions_count,
+                outputs: final_outputs.clone(),
+            }).await;
+        } else {
+            let _ = self.event_tx.send(GraphEngineEvent::GraphRunSucceeded {
+                outputs: final_outputs.clone(),
+            }).await;
         }
 
-        Ok(true)
+        Ok(final_outputs)
     }
+}
 
-    /// 检查工作流是否完成
-    async fn is_workflow_completed(&self) -> Result<bool, WorkflowError> {
-        let end_node_id = self.runtime.definition.get_end_node_id()?;
-        let states = self.runtime.node_states.lock().await;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dsl::{parse_dsl, DslFormat};
+    use crate::graph::build_graph;
 
-        match states.get(&end_node_id) {
-            Some(NodeState::Completed) => Ok(true),
-            Some(NodeState::Skipped) => Ok(true),
-            _ => Ok(false),
+    #[tokio::test]
+    async fn test_simple_start_end() {
+        let yaml = r#"
+nodes:
+  - id: start_1
+    data:
+      type: start
+      title: Start
+      variables:
+        - variable: query
+          label: Query
+          type: string
+          required: true
+  - id: end_1
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: result
+          value_selector: ["start_1", "query"]
+edges:
+  - source: start_1
+    target: end_1
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+
+        let mut pool = VariablePool::new();
+        pool.set(
+            &["start_1".to_string(), "query".to_string()],
+            Segment::String("hello".into()),
+        );
+        pool.set(
+            &["sys".to_string(), "query".to_string()],
+            Segment::String("hello".into()),
+        );
+
+        let registry = NodeExecutorRegistry::new();
+        let (tx, mut rx) = mpsc::channel(100);
+
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let result = dispatcher.run().await.unwrap();
+
+        assert_eq!(result.get("result"), Some(&Value::String("hello".into())));
+
+        // Check events
+        let mut events = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            events.push(evt);
         }
+        assert!(events.iter().any(|e| matches!(e, GraphEngineEvent::GraphRunStarted)));
+        assert!(events.iter().any(|e| matches!(e, GraphEngineEvent::GraphRunSucceeded { .. })));
     }
 
-    /// 收集工作流输出
-    async fn collect_outputs(&self) -> Result<Value, WorkflowError> {
-        let end_node_id = self.runtime.definition.get_end_node_id()?;
+    #[tokio::test]
+    async fn test_ifelse_branch() {
+        let yaml = r#"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: if1
+    data:
+      type: if-else
+      title: Check
+      cases:
+        - case_id: case1
+          logical_operator: and
+          conditions:
+            - variable_selector: ["start", "x"]
+              comparison_operator: greater_than
+              value: 5
+  - id: a
+    data:
+      type: end
+      title: End A
+      outputs:
+        - variable: branch
+          value_selector: ["start", "x"]
+  - id: b
+    data:
+      type: end
+      title: End B
+      outputs:
+        - variable: branch
+          value_selector: ["start", "x"]
+edges:
+  - source: start
+    target: if1
+  - source: if1
+    target: a
+    sourceHandle: case1
+  - source: if1
+    target: b
+    sourceHandle: "false"
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
 
-        let outputs = self
-            .runtime
-            .variable_pool
-            .get_node_output(&end_node_id)
-            .unwrap_or(serde_json::json!({}));
+        let mut pool = VariablePool::new();
+        pool.set(&["start".to_string(), "x".to_string()], Segment::Integer(10));
 
-        // 发送工作流完成事件
-        let _ = self
-            .runtime
-            .event_sender
-            .send(WorkflowEvent::WorkflowCompleted {
-                execution_id: self.runtime.execution_id.clone(),
-                outputs: outputs.clone(),
-                timestamp: Utc::now(),
-            });
+        let registry = NodeExecutorRegistry::new();
+        let (tx, _rx) = mpsc::channel(100);
 
-        Ok(outputs)
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let result = dispatcher.run().await.unwrap();
+
+        assert_eq!(result.get("branch"), Some(&serde_json::json!(10)));
     }
 
-    /// 将节点推入执行队列
-    async fn enqueue_node(&self, node_id: &str) {
-        let mut queue = self.runtime.execution_queue.lock().await;
-        // 避免重复入队
-        if !queue.contains(&node_id.to_string()) {
-            queue.push_back(node_id.to_string());
-            debug!(node_id = %node_id, "Node enqueued");
+    #[tokio::test]
+    async fn test_ifelse_else_branch() {
+        let yaml = r#"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: if1
+    data:
+      type: if-else
+      title: Check
+      cases:
+        - case_id: case1
+          logical_operator: and
+          conditions:
+            - variable_selector: ["start", "x"]
+              comparison_operator: greater_than
+              value: 5
+  - id: a
+    data:
+      type: end
+      title: A
+      outputs: []
+  - id: b
+    data:
+      type: end
+      title: B
+      outputs:
+        - variable: went
+          value_selector: ["start", "x"]
+edges:
+  - source: start
+    target: if1
+  - source: if1
+    target: a
+    sourceHandle: case1
+  - source: if1
+    target: b
+    sourceHandle: "false"
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+
+        let mut pool = VariablePool::new();
+        pool.set(&["start".to_string(), "x".to_string()], Segment::Integer(3));
+
+        let registry = NodeExecutorRegistry::new();
+        let (tx, _rx) = mpsc::channel(100);
+
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let result = dispatcher.run().await.unwrap();
+
+        assert_eq!(result.get("went"), Some(&serde_json::json!(3)));
+    }
+
+    #[tokio::test]
+    async fn test_answer_node() {
+        let yaml = r#"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: ans
+    data:
+      type: answer
+      title: Answer
+      answer: "Hello {{#start.name#}}!"
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: answer
+          value_selector: ["ans", "answer"]
+edges:
+  - source: start
+    target: ans
+  - source: ans
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+
+        let mut pool = VariablePool::new();
+        pool.set(&["start".to_string(), "name".to_string()], Segment::String("Alice".into()));
+
+        let registry = NodeExecutorRegistry::new();
+        let (tx, _rx) = mpsc::channel(100);
+
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let result = dispatcher.run().await.unwrap();
+
+        assert_eq!(result.get("answer"), Some(&Value::String("Hello Alice!".into())));
+    }
+
+    #[tokio::test]
+    async fn test_max_steps() {
+        // Create a simple graph with just start -> end but set max_steps to 0
+        let yaml = r#"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+        let pool = VariablePool::new();
+        let registry = NodeExecutorRegistry::new();
+        let (tx, _rx) = mpsc::channel(100);
+
+        let config = EngineConfig { max_steps: 0, max_execution_time_secs: 600 };
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config);
+        let result = dispatcher.run().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_template_transform_pipeline() {
+        let yaml = r#"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: tt
+    data:
+      type: template-transform
+      title: Transform
+      template: "Hello {{ name }}!"
+      variables:
+        - variable: name
+          value_selector: ["start", "name"]
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: result
+          value_selector: ["tt", "output"]
+edges:
+  - source: start
+    target: tt
+  - source: tt
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+
+        let mut pool = VariablePool::new();
+        pool.set(&["start".to_string(), "name".to_string()], Segment::String("World".into()));
+
+        let registry = NodeExecutorRegistry::new();
+        let (tx, _rx) = mpsc::channel(100);
+
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let result = dispatcher.run().await.unwrap();
+
+        assert_eq!(result.get("result"), Some(&Value::String("Hello World!".into())));
+    }
+
+    #[tokio::test]
+    async fn test_variable_aggregator_pipeline() {
+        let yaml = r#"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: if1
+    data:
+      type: if-else
+      title: IF
+      cases:
+        - case_id: case1
+          logical_operator: and
+          conditions:
+            - variable_selector: ["start", "flag"]
+              comparison_operator: is
+              value: "true"
+  - id: code_a
+    data: { type: code, title: A, code: "x", language: python3 }
+  - id: code_b
+    data: { type: code, title: B, code: "x", language: python3 }
+  - id: agg
+    data:
+      type: variable-aggregator
+      title: Agg
+      variables:
+        - ["code_a", "result"]
+        - ["code_b", "result"]
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: out
+          value_selector: ["agg", "output"]
+edges:
+  - source: start
+    target: if1
+  - source: if1
+    target: code_a
+    sourceHandle: case1
+  - source: if1
+    target: code_b
+    sourceHandle: "false"
+  - source: code_a
+    target: agg
+  - source: code_b
+    target: agg
+  - source: agg
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+
+        let mut pool = VariablePool::new();
+        pool.set(&["start".to_string(), "flag".to_string()], Segment::String("true".into()));
+
+        let registry = NodeExecutorRegistry::new();
+        let (tx, _rx) = mpsc::channel(100);
+
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let result = dispatcher.run().await.unwrap();
+
+        // The aggregator picks up code_a's result (first non-null in the list)
+        assert!(result.contains_key("out"));
+    }
+
+    #[tokio::test]
+    async fn test_event_sequence() {
+        let yaml = r#"
+nodes:
+  - id: s
+    data: { type: start, title: Start }
+  - id: e
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+        let pool = VariablePool::new();
+        let registry = NodeExecutorRegistry::new();
+        let (tx, mut rx) = mpsc::channel(100);
+
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let _ = dispatcher.run().await.unwrap();
+
+        let mut event_types = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            let json = evt.to_json();
+            event_types.push(json["type"].as_str().unwrap_or("").to_string());
         }
+
+        assert_eq!(event_types[0], "graph_run_started");
+        assert!(event_types.contains(&"node_run_started".to_string()));
+        assert!(event_types.contains(&"node_run_succeeded".to_string()));
+        assert!(event_types.last().unwrap().contains("graph_run"));
     }
 }

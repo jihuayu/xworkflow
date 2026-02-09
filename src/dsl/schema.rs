@@ -1,100 +1,70 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
-/// 工作流 DSL 模式
+// ================================
+// Variable Selector (Dify-compatible)
+// ================================
+
+/// Variable selector: e.g. ["node_id", "output_name"] or ["sys", "query"]
+pub type VariableSelector = Vec<String>;
+
+// ================================
+// Workflow DSL Schema
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct WorkflowSchema {
-    /// 节点列表
     pub nodes: Vec<NodeSchema>,
-
-    /// 边列表
     pub edges: Vec<EdgeSchema>,
-
-    /// 变量定义
-    #[serde(default)]
-    pub variables: Vec<VariableSchema>,
-
-    /// 环境变量
     #[serde(default)]
     pub environment_variables: Vec<EnvironmentVariable>,
-
-    /// 对话变量
     #[serde(default)]
     pub conversation_variables: Vec<ConversationVariable>,
 }
 
-/// 节点模式
+/// Node definition in the DSL.
+/// The `data` object embeds the type tag and all node-specific config.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct NodeSchema {
-    /// 节点 ID
     pub id: String,
+    pub data: NodeData,
+}
 
-    /// 节点类型（llm, code, if-else 等）
+/// Common node data.  The `type` field determines the concrete config.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct NodeData {
     #[serde(rename = "type")]
     pub node_type: String,
-
-    /// 节点数据（配置）
-    #[serde(default = "default_data")]
-    pub data: Value,
-
-    /// 节点标题
     #[serde(default)]
     pub title: String,
-
-    /// 位置信息（用于可视化，可选）
     #[serde(default)]
-    pub position: Option<Position>,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub error_strategy: Option<ErrorStrategyConfig>,
+    #[serde(default)]
+    pub retry_config: Option<RetryConfig>,
+    /// All remaining fields are captured here as a JSON map.
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
-fn default_data() -> Value {
-    Value::Object(serde_json::Map::new())
-}
-
-/// 边模式
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EdgeSchema {
-    /// 边 ID
     #[serde(default)]
     pub id: String,
-
-    /// 源节点 ID
     pub source: String,
-
-    /// 目标节点 ID
     pub target: String,
-
-    /// 源句柄（用于分支节点）
-    #[serde(default)]
+    #[serde(default, alias = "sourceHandle")]
     pub source_handle: Option<String>,
 }
 
-/// 变量模式
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct VariableSchema {
-    /// 变量名
-    pub name: String,
-
-    /// 变量类型
-    #[serde(rename = "type")]
-    pub var_type: String,
-
-    /// 是否必需
-    #[serde(default)]
-    pub required: bool,
-
-    /// 默认值
-    #[serde(default)]
-    pub default: Option<Value>,
-}
-
-/// 环境变量
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EnvironmentVariable {
     pub name: String,
     pub value: String,
 }
 
-/// 对话变量
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ConversationVariable {
     pub name: String,
@@ -104,74 +74,223 @@ pub struct ConversationVariable {
     pub default: Option<Value>,
 }
 
-/// 位置信息
+// ================================
+// Error Strategy
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct Position {
-    pub x: f64,
-    pub y: f64,
+pub struct ErrorStrategyConfig {
+    #[serde(rename = "type")]
+    pub strategy_type: ErrorStrategyType,
+    #[serde(default)]
+    pub default_value: Option<HashMap<String, Value>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorStrategyType {
+    None,
+    FailBranch,
+    DefaultValue,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct RetryConfig {
+    #[serde(default)]
+    pub max_retries: i32,
+    #[serde(default)]
+    pub retry_interval: i32,
 }
 
 // ================================
-// 节点配置数据结构
+// Node Type Enum (Dify-compatible)
 // ================================
 
-/// End 节点配置
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeType {
+    Start,
+    End,
+    Answer,
+    Llm,
+    KnowledgeRetrieval,
+    IfElse,
+    Code,
+    TemplateTransform,
+    QuestionClassifier,
+    HttpRequest,
+    Tool,
+    VariableAggregator,
+    #[serde(rename = "variable-assigner")]
+    LegacyVariableAggregator,
+    Loop,
+    LoopStart,
+    LoopEnd,
+    Iteration,
+    IterationStart,
+    ParameterExtractor,
+    #[serde(rename = "assigner")]
+    VariableAssigner,
+    DocumentExtractor,
+    ListOperator,
+    Agent,
+    HumanInput,
+}
+
+impl std::fmt::Display for NodeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("{:?}", self));
+        write!(f, "{}", s)
+    }
+}
+
+// ================================
+// Node Execution Type
+// ================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeExecutionType {
+    Executable,
+    Response,
+    Branch,
+    Container,
+    Root,
+}
+
+impl NodeType {
+    pub fn execution_type(&self) -> NodeExecutionType {
+        match self {
+            NodeType::Start => NodeExecutionType::Root,
+            NodeType::End | NodeType::Answer => NodeExecutionType::Response,
+            NodeType::IfElse | NodeType::QuestionClassifier => NodeExecutionType::Branch,
+            NodeType::Iteration | NodeType::Loop => NodeExecutionType::Container,
+            _ => NodeExecutionType::Executable,
+        }
+    }
+}
+
+// ================================
+// Start Node Config
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct EndNodeConfig {
+pub struct StartNodeData {
+    #[serde(default)]
+    pub variables: Vec<StartVariable>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct StartVariable {
+    pub variable: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(rename = "type", default = "default_var_type")]
+    pub var_type: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub max_length: Option<i32>,
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
+}
+
+fn default_var_type() -> String {
+    "string".to_string()
+}
+
+// ================================
+// End Node Config
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct EndNodeData {
     #[serde(default)]
     pub outputs: Vec<OutputVariable>,
 }
 
-/// 输出变量定义
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct OutputVariable {
-    pub name: String,
-    pub variable_selector: String,
+    pub variable: String,
+    pub value_selector: VariableSelector,
 }
 
-/// If/Else 节点配置
+// ================================
+// Answer Node Config
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct IfElseNodeConfig {
-    /// 条件列表
-    pub conditions: Vec<Condition>,
-
-    /// 逻辑运算符（and, or）
-    pub logical_operator: LogicalOperator,
+pub struct AnswerNodeData {
+    pub answer: String,
 }
 
-/// 条件
+// ================================
+// IfElse Node Config (Dify-compatible: multi-case branches)
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct IfElseNodeData {
+    pub cases: Vec<Case>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct Case {
+    pub case_id: String,
+    pub logical_operator: LogicalOperator,
+    pub conditions: Vec<Condition>,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Condition {
-    /// 变量选择器（如 "llm_node_1.text"）
-    pub variable_selector: String,
-
-    /// 比较运算符
+    pub variable_selector: VariableSelector,
     pub comparison_operator: ComparisonOperator,
-
-    /// 比较值
     #[serde(default)]
     pub value: Value,
 }
 
-/// 比较运算符
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonOperator {
+    // String/Array
     Contains,
+    #[serde(alias = "not_contains")]
     NotContains,
+    #[serde(alias = "start_with")]
     StartWith,
+    #[serde(alias = "end_with")]
     EndWith,
-    IsEmpty,
-    IsNotEmpty,
+    Is,
+    #[serde(alias = "is_not")]
+    IsNot,
+    Empty,
+    #[serde(alias = "not_empty")]
+    NotEmpty,
+    In,
+    #[serde(alias = "not_in")]
+    NotIn,
+    #[serde(alias = "all_of")]
+    AllOf,
+    // Numeric
+    #[serde(alias = "=")]
     Equal,
+    #[serde(alias = "≠")]
     NotEqual,
+    #[serde(alias = ">", alias = "greater_than")]
     GreaterThan,
+    #[serde(alias = "<", alias = "less_than")]
     LessThan,
-    GreaterThanOrEqual,
-    LessThanOrEqual,
+    #[serde(alias = "≥", alias = "greater_than_or_equal", alias = "greater_or_equal")]
+    GreaterOrEqual,
+    #[serde(alias = "≤", alias = "less_than_or_equal", alias = "less_or_equal")]
+    LessOrEqual,
+    // Null
+    Null,
+    #[serde(alias = "not_null")]
+    NotNull,
 }
 
-/// 逻辑运算符
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum LogicalOperator {
@@ -179,132 +298,64 @@ pub enum LogicalOperator {
     Or,
 }
 
-/// Iteration 节点配置
+// ================================
+// Template Transform Node Config
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct IterationNodeConfig {
-    /// 输入数组的变量选择器
-    pub input_selector: String,
-
-    /// 是否并行执行
-    #[serde(default)]
-    pub parallel: bool,
-
-    /// 并行度（最大并发数）
-    #[serde(default = "default_parallelism")]
-    pub parallelism: usize,
-
-    /// 子图定义（嵌套的节点和边）
-    pub sub_workflow: SubWorkflowSchema,
-}
-
-fn default_parallelism() -> usize {
-    10
-}
-
-/// 子工作流模式
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct SubWorkflowSchema {
-    pub nodes: Vec<NodeSchema>,
-    pub edges: Vec<EdgeSchema>,
-}
-
-/// Template 节点配置
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct TemplateNodeConfig {
-    /// 模板内容
+pub struct TemplateTransformNodeData {
     pub template: String,
-}
-
-/// LLM 节点配置
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct LlmNodeConfig {
-    /// 模型提供商
-    pub provider: String,
-
-    /// 模型名称
-    pub model: String,
-
-    /// Prompt 模板
-    pub prompt_template: Vec<PromptMessage>,
-
-    /// 模型参数
     #[serde(default)]
-    pub model_parameters: ModelParameters,
-
-    /// 是否启用流式输出
-    #[serde(default)]
-    pub stream: bool,
+    pub variables: Vec<VariableMapping>,
 }
 
-/// Prompt 消息
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct PromptMessage {
-    pub role: String,
-    pub content: String,
+pub struct VariableMapping {
+    pub variable: String,
+    pub value_selector: VariableSelector,
 }
 
-/// 模型参数
+// ================================
+// Code Node Config
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ModelParameters {
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-
-    #[serde(default = "default_top_p")]
-    pub top_p: f32,
-
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-impl Default for ModelParameters {
-    fn default() -> Self {
-        ModelParameters {
-            temperature: default_temperature(),
-            top_p: default_top_p(),
-            max_tokens: None,
-        }
-    }
-}
-
-fn default_temperature() -> f32 {
-    0.7
-}
-fn default_top_p() -> f32 {
-    1.0
-}
-
-/// Code 节点配置
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct CodeNodeConfig {
-    pub language: CodeLanguage,
+pub struct CodeNodeData {
     pub code: String,
+    pub language: CodeLanguage,
     #[serde(default)]
-    pub inputs: std::collections::HashMap<String, String>,
-    pub output_variable: String,
+    pub variables: Vec<VariableMapping>,
+    #[serde(default)]
+    pub outputs: HashMap<String, Value>,
 }
 
-/// 代码语言
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum CodeLanguage {
-    Python,
+    Python3,
     Javascript,
 }
 
-/// HTTP Request 节点配置
+// ================================
+// HTTP Request Node Config
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct HttpRequestNodeConfig {
+pub struct HttpRequestNodeData {
     pub method: HttpMethod,
     pub url: String,
     #[serde(default)]
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: Vec<KeyValuePair>,
     #[serde(default)]
-    pub body: Option<String>,
+    pub params: Vec<KeyValuePair>,
+    #[serde(default)]
+    pub body: Option<HttpBody>,
+    #[serde(default)]
+    pub authorization: Option<Authorization>,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
 }
 
-/// HTTP 方法
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {
@@ -313,39 +364,219 @@ pub enum HttpMethod {
     Put,
     Delete,
     Patch,
+    Head,
 }
 
-fn default_timeout() -> u64 {
-    30
-}
-
-/// 变量赋值节点配置
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct VariableAssignerNodeConfig {
-    /// 要赋值的变量列表
-    pub assignments: Vec<VariableAssignment>,
+pub struct KeyValuePair {
+    pub key: String,
+    pub value: String,
 }
 
-/// 变量赋值
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct VariableAssignment {
-    /// 目标变量名
-    pub variable: String,
-    /// 源值（可以是变量选择器或常量）
-    pub value: Value,
-    /// 是否从变量池解析
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HttpBody {
+    None,
+    FormData { data: Vec<KeyValuePair> },
+    XWwwFormUrlencoded { data: Vec<KeyValuePair> },
+    RawText { data: String },
+    Json { data: String },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Authorization {
+    NoAuth,
+    ApiKey { key: String, value: String, position: ApiKeyPosition },
+    BearerToken { token: String },
+    BasicAuth { username: String, password: String },
+    CustomHeaders { headers: Vec<KeyValuePair> },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyPosition { Header, Query, Body }
+
+fn default_timeout() -> u64 { 10 }
+
+// ================================
+// Variable Aggregator (Dify: returns first non-null)
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct VariableAggregatorNodeData {
+    pub variables: Vec<VariableSelector>,
     #[serde(default)]
-    pub from_variable: bool,
-    /// 变量选择器
-    #[serde(default)]
-    pub variable_selector: Option<String>,
+    pub output_type: Option<String>,
 }
 
-/// 变量聚合器节点配置
+// ================================
+// Variable Assigner
+// ================================
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct VariableAggregatorNodeConfig {
-    /// 要聚合的变量选择器列表
-    pub variables: Vec<String>,
-    /// 输出变量名
-    pub output_variable: String,
+pub struct VariableAssignerNodeData {
+    pub assigned_variable_selector: VariableSelector,
+    #[serde(default)]
+    pub input_variable_selector: Option<VariableSelector>,
+    #[serde(default)]
+    pub value: Option<Value>,
+    #[serde(default = "default_write_mode")]
+    pub write_mode: WriteMode,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum WriteMode {
+    Overwrite,
+    Append,
+    Clear,
+}
+
+fn default_write_mode() -> WriteMode { WriteMode::Overwrite }
+
+// ================================
+// Iteration Node Config
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct IterationNodeData {
+    pub iterator_selector: VariableSelector,
+    pub output_selector: VariableSelector,
+    #[serde(default)]
+    pub is_parallel: bool,
+    #[serde(default)]
+    pub parallel_nums: Option<u32>,
+    #[serde(default = "default_iteration_error_mode")]
+    pub error_handle_mode: IterationErrorMode,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum IterationErrorMode {
+    Terminated,
+    RemoveAbnormal,
+    ContinueOnError,
+}
+
+fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Terminated }
+
+// ================================
+// LLM Node Config (stub)
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct LlmNodeData {
+    pub model: ModelConfig,
+    #[serde(default)]
+    pub prompt_template: Vec<PromptMessage>,
+    #[serde(default)]
+    pub context: Option<ContextConfig>,
+    #[serde(default)]
+    pub vision: Option<VisionConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ModelConfig {
+    pub provider: String,
+    pub name: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub completion_params: Option<CompletionParams>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct CompletionParams {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub max_tokens: Option<i32>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PromptMessage {
+    pub role: String,
+    pub text: String,
+    #[serde(default)]
+    pub edition_type: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ContextConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub variable_selector: Option<VariableSelector>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct VisionConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub variable_selector: Option<VariableSelector>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+// ================================
+// Node Run Result (Dify-compatible)
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeExecutionStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Exception,
+    Stopped,
+    Paused,
+    Retry,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeRunResult {
+    pub status: WorkflowNodeExecutionStatus,
+    pub inputs: HashMap<String, Value>,
+    pub process_data: HashMap<String, Value>,
+    pub outputs: HashMap<String, Value>,
+    pub metadata: HashMap<String, Value>,
+    pub llm_usage: Option<LlmUsage>,
+    pub edge_source_handle: String,
+    pub error: Option<String>,
+    pub error_type: Option<String>,
+    pub retry_index: i32,
+}
+
+impl Default for NodeRunResult {
+    fn default() -> Self {
+        NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            inputs: HashMap::new(),
+            process_data: HashMap::new(),
+            outputs: HashMap::new(),
+            metadata: HashMap::new(),
+            llm_usage: None,
+            edge_source_handle: "source".to_string(),
+            error: None,
+            error_type: None,
+            retry_index: 0,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct LlmUsage {
+    #[serde(default)]
+    pub prompt_tokens: i64,
+    #[serde(default)]
+    pub completion_tokens: i64,
+    #[serde(default)]
+    pub total_tokens: i64,
+    #[serde(default)]
+    pub total_price: f64,
+    #[serde(default)]
+    pub currency: String,
+    #[serde(default)]
+    pub latency: f64,
 }

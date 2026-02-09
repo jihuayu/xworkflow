@@ -1,99 +1,210 @@
-use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use std::collections::HashMap;
 
-/// 工作流事件 - 通过 EventBus 传递
-#[derive(Clone, Debug, Serialize)]
-pub enum WorkflowEvent {
-    /// 节点开始执行
-    NodeStarted {
-        node_id: String,
-        timestamp: DateTime<Utc>,
+use crate::dsl::schema::NodeRunResult;
+
+/// Reason for pause
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PauseReason {
+    pub node_id: String,
+    pub reason: String,
+}
+
+/// All events emitted by the graph engine (Dify-compatible)
+#[derive(Debug, Clone)]
+pub enum GraphEngineEvent {
+    // === Graph-level events ===
+    GraphRunStarted,
+    GraphRunSucceeded {
+        outputs: HashMap<String, Value>,
     },
-
-    /// 节点执行完成
-    NodeFinished {
-        node_id: String,
-        output: Value,
-        timestamp: DateTime<Utc>,
-    },
-
-    /// 节点执行失败
-    NodeFailed {
-        node_id: String,
+    GraphRunFailed {
         error: String,
-        timestamp: DateTime<Utc>,
+        exceptions_count: i32,
+    },
+    GraphRunPartialSucceeded {
+        exceptions_count: i32,
+        outputs: HashMap<String, Value>,
+    },
+    GraphRunAborted {
+        reason: Option<String>,
+        outputs: HashMap<String, Value>,
     },
 
-    /// 分支选中（由 If/Else 节点产生）
-    BranchSelected {
+    // === Node-level events ===
+    NodeRunStarted {
+        id: String,
         node_id: String,
-        selected_branch: String,
-        timestamp: DateTime<Utc>,
+        node_type: String,
+        node_title: String,
+        predecessor_node_id: Option<String>,
     },
-
-    /// 流式 Token（LLM 生成）
-    StreamingToken {
+    NodeRunSucceeded {
+        id: String,
         node_id: String,
-        token: String,
-        index: usize,
+        node_type: String,
+        node_run_result: NodeRunResult,
     },
-
-    /// 进度更新
-    ProgressUpdate {
+    NodeRunFailed {
+        id: String,
         node_id: String,
-        progress: f32,
-        message: String,
-    },
-
-    /// 工作流完成
-    WorkflowCompleted {
-        execution_id: String,
-        outputs: Value,
-        timestamp: DateTime<Utc>,
-    },
-
-    /// 工作流失败
-    WorkflowFailed {
-        execution_id: String,
+        node_type: String,
+        node_run_result: NodeRunResult,
         error: String,
-        timestamp: DateTime<Utc>,
+    },
+    NodeRunException {
+        id: String,
+        node_id: String,
+        node_type: String,
+        node_run_result: NodeRunResult,
+        error: String,
+    },
+    NodeRunStreamChunk {
+        id: String,
+        node_id: String,
+        node_type: String,
+        chunk: String,
+        selector: Vec<String>,
+        is_final: bool,
+    },
+    NodeRunRetry {
+        id: String,
+        node_id: String,
+        node_type: String,
+        node_title: String,
+        error: String,
+        retry_index: i32,
+    },
+
+    // === Iteration events ===
+    IterationStarted {
+        node_id: String,
+        node_title: String,
+        inputs: HashMap<String, Value>,
+    },
+    IterationNext {
+        node_id: String,
+        node_title: String,
+        index: i32,
+    },
+    IterationSucceeded {
+        node_id: String,
+        node_title: String,
+        outputs: HashMap<String, Value>,
+        steps: i32,
+    },
+    IterationFailed {
+        node_id: String,
+        node_title: String,
+        error: String,
+        steps: i32,
+    },
+
+    // === Loop events ===
+    LoopStarted {
+        node_id: String,
+        node_title: String,
+        inputs: HashMap<String, Value>,
+    },
+    LoopNext {
+        node_id: String,
+        node_title: String,
+        index: i32,
+    },
+    LoopSucceeded {
+        node_id: String,
+        node_title: String,
+        outputs: HashMap<String, Value>,
+        steps: i32,
+    },
+    LoopFailed {
+        node_id: String,
+        node_title: String,
+        error: String,
+        steps: i32,
     },
 }
 
-/// 事件发送器
-pub type EventSender = mpsc::UnboundedSender<WorkflowEvent>;
-
-/// 事件接收器
-pub type EventReceiver = mpsc::UnboundedReceiver<WorkflowEvent>;
-
-/// 创建事件通道
-pub fn create_event_channel() -> (EventSender, EventReceiver) {
-    mpsc::unbounded_channel()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_event_channel() {
-        let (sender, mut receiver) = create_event_channel();
-
-        sender
-            .send(WorkflowEvent::NodeStarted {
-                node_id: "node1".to_string(),
-                timestamp: Utc::now(),
-            })
-            .unwrap();
-
-        let event = receiver.recv().await.unwrap();
-        match event {
-            WorkflowEvent::NodeStarted { node_id, .. } => {
-                assert_eq!(node_id, "node1");
-            }
-            _ => panic!("Unexpected event type"),
+impl GraphEngineEvent {
+    /// Serialize event to JSON for Python interop
+    pub fn to_json(&self) -> Value {
+        match self {
+            GraphEngineEvent::GraphRunStarted => serde_json::json!({
+                "type": "graph_run_started"
+            }),
+            GraphEngineEvent::GraphRunSucceeded { outputs } => serde_json::json!({
+                "type": "graph_run_succeeded",
+                "data": { "outputs": outputs }
+            }),
+            GraphEngineEvent::GraphRunFailed { error, exceptions_count } => serde_json::json!({
+                "type": "graph_run_failed",
+                "data": { "error": error, "exceptions_count": exceptions_count }
+            }),
+            GraphEngineEvent::GraphRunPartialSucceeded { exceptions_count, outputs } => serde_json::json!({
+                "type": "graph_run_partial_succeeded",
+                "data": { "exceptions_count": exceptions_count, "outputs": outputs }
+            }),
+            GraphEngineEvent::GraphRunAborted { reason, outputs } => serde_json::json!({
+                "type": "graph_run_aborted",
+                "data": { "reason": reason, "outputs": outputs }
+            }),
+            GraphEngineEvent::NodeRunStarted { id, node_id, node_type, node_title, predecessor_node_id } => serde_json::json!({
+                "type": "node_run_started",
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "node_title": node_title, "predecessor_node_id": predecessor_node_id }
+            }),
+            GraphEngineEvent::NodeRunSucceeded { id, node_id, node_type, node_run_result } => serde_json::json!({
+                "type": "node_run_succeeded",
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs }
+            }),
+            GraphEngineEvent::NodeRunFailed { id, node_id, node_type, error, .. } => serde_json::json!({
+                "type": "node_run_failed",
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "error": error }
+            }),
+            GraphEngineEvent::NodeRunException { id, node_id, node_type, error, .. } => serde_json::json!({
+                "type": "node_run_exception",
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "error": error }
+            }),
+            GraphEngineEvent::NodeRunStreamChunk { id, node_id, node_type, chunk, selector, is_final } => serde_json::json!({
+                "type": "node_run_stream_chunk",
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "chunk": chunk, "selector": selector, "is_final": is_final }
+            }),
+            GraphEngineEvent::NodeRunRetry { id, node_id, node_type, node_title, error, retry_index } => serde_json::json!({
+                "type": "node_run_retry",
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "node_title": node_title, "error": error, "retry_index": retry_index }
+            }),
+            GraphEngineEvent::IterationStarted { node_id, node_title, inputs } => serde_json::json!({
+                "type": "iteration_started",
+                "data": { "node_id": node_id, "node_title": node_title, "inputs": inputs }
+            }),
+            GraphEngineEvent::IterationNext { node_id, node_title, index } => serde_json::json!({
+                "type": "iteration_next",
+                "data": { "node_id": node_id, "node_title": node_title, "index": index }
+            }),
+            GraphEngineEvent::IterationSucceeded { node_id, node_title, outputs, steps } => serde_json::json!({
+                "type": "iteration_succeeded",
+                "data": { "node_id": node_id, "node_title": node_title, "outputs": outputs, "steps": steps }
+            }),
+            GraphEngineEvent::IterationFailed { node_id, node_title, error, steps } => serde_json::json!({
+                "type": "iteration_failed",
+                "data": { "node_id": node_id, "node_title": node_title, "error": error, "steps": steps }
+            }),
+            GraphEngineEvent::LoopStarted { node_id, node_title, inputs } => serde_json::json!({
+                "type": "loop_started",
+                "data": { "node_id": node_id, "node_title": node_title, "inputs": inputs }
+            }),
+            GraphEngineEvent::LoopNext { node_id, node_title, index } => serde_json::json!({
+                "type": "loop_next",
+                "data": { "node_id": node_id, "node_title": node_title, "index": index }
+            }),
+            GraphEngineEvent::LoopSucceeded { node_id, node_title, outputs, steps } => serde_json::json!({
+                "type": "loop_succeeded",
+                "data": { "node_id": node_id, "node_title": node_title, "outputs": outputs, "steps": steps }
+            }),
+            GraphEngineEvent::LoopFailed { node_id, node_title, error, steps } => serde_json::json!({
+                "type": "loop_failed",
+                "data": { "node_id": node_id, "node_title": node_title, "error": error, "steps": steps }
+            }),
         }
     }
 }

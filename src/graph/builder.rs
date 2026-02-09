@@ -1,375 +1,163 @@
+use serde_json::Value;
 use std::collections::HashMap;
 
-use petgraph::stable_graph::{NodeIndex, StableDiGraph};
-use petgraph::visit::EdgeRef;
-
-use crate::dsl::WorkflowSchema;
+use crate::dsl::schema::{WorkflowSchema, NodeSchema};
 use crate::error::WorkflowError;
+use super::types::{Graph, GraphNode, GraphEdge, NodeState};
 
-use super::types::*;
+/// Build a Graph from a validated WorkflowSchema
+pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
+    let mut nodes = HashMap::new();
+    let mut edges = HashMap::new();
+    let mut in_edges: HashMap<String, Vec<String>> = HashMap::new();
+    let mut out_edges: HashMap<String, Vec<String>> = HashMap::new();
+    let mut root_node_id = String::new();
 
-/// 工作流定义 - 从 DSL 解析后的不可变图结构
-#[derive(Debug)]
-pub struct WorkflowDefinition {
-    /// 工作流唯一标识
-    pub id: String,
+    // Build nodes
+    for ns in &schema.nodes {
+        let config = build_node_config(ns);
+        let node = GraphNode {
+            id: ns.id.clone(),
+            node_type: ns.data.node_type.clone(),
+            title: ns.data.title.clone(),
+            config,
+            version: ns.data.version.clone().unwrap_or_else(|| "1".to_string()),
+            state: NodeState::Unknown,
+        };
 
-    /// 工作流名称
-    pub name: String,
-
-    /// 图结构
-    pub graph: StableDiGraph<GraphNode, GraphEdge>,
-
-    /// 开始节点索引
-    pub start_node_idx: NodeIndex,
-
-    /// 结束节点 ID
-    pub end_node_id: String,
-
-    /// 节点 ID 到 NodeIndex 的映射
-    pub node_index_map: NodeIndexMap,
-
-    /// 元数据
-    pub metadata: WorkflowMetadata,
-}
-
-impl WorkflowDefinition {
-    /// 根据节点 ID 获取图节点
-    pub fn get_node(&self, node_id: &str) -> Result<&GraphNode, WorkflowError> {
-        let idx = self
-            .node_index_map
-            .get(node_id)
-            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
-        self.graph
-            .node_weight(*idx)
-            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))
-    }
-
-    /// 获取节点的所有后继节点 ID
-    pub fn get_successors(&self, node_id: &str) -> Result<Vec<String>, WorkflowError> {
-        let idx = self
-            .node_index_map
-            .get(node_id)
-            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
-
-        let successors: Vec<String> = self
-            .graph
-            .neighbors_directed(*idx, petgraph::Direction::Outgoing)
-            .filter_map(|n| self.graph.node_weight(n).map(|node| node.id.clone()))
-            .collect();
-
-        Ok(successors)
-    }
-
-    /// 获取节点的所有前驱节点 ID
-    pub fn get_predecessors(&self, node_id: &str) -> Result<Vec<String>, WorkflowError> {
-        let idx = self
-            .node_index_map
-            .get(node_id)
-            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
-
-        let predecessors: Vec<String> = self
-            .graph
-            .neighbors_directed(*idx, petgraph::Direction::Incoming)
-            .filter_map(|n| self.graph.node_weight(n).map(|node| node.id.clone()))
-            .collect();
-
-        Ok(predecessors)
-    }
-
-    /// 获取 Start 节点 ID
-    pub fn get_start_node_id(&self) -> String {
-        self.graph
-            .node_weight(self.start_node_idx)
-            .map(|n| n.id.clone())
-            .unwrap_or_default()
-    }
-
-    /// 获取 End 节点 ID
-    pub fn get_end_node_id(&self) -> Result<String, WorkflowError> {
-        Ok(self.end_node_id.clone())
-    }
-
-    /// 获取从某节点出发的特定类型的边的目标节点
-    pub fn get_successor_by_edge_type(
-        &self,
-        node_id: &str,
-        edge_type: &EdgeType,
-    ) -> Result<Option<String>, WorkflowError> {
-        let idx = self
-            .node_index_map
-            .get(node_id)
-            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
-
-        let edges = self
-            .graph
-            .edges_directed(*idx, petgraph::Direction::Outgoing);
-
-        for edge in edges {
-            if &edge.weight().edge_type == edge_type {
-                if let Some(target_node) = self.graph.node_weight(edge.target()) {
-                    return Ok(Some(target_node.id.clone()));
-                }
-            }
+        if ns.data.node_type == "start" {
+            root_node_id = ns.id.clone();
         }
 
-        Ok(None)
+        // Ensure in_edges/out_edges maps exist for all nodes
+        in_edges.entry(ns.id.clone()).or_default();
+        out_edges.entry(ns.id.clone()).or_default();
+
+        nodes.insert(ns.id.clone(), node);
     }
+
+    if root_node_id.is_empty() {
+        return Err(WorkflowError::NoStartNode);
+    }
+
+    // Build edges
+    for (idx, es) in schema.edges.iter().enumerate() {
+        let edge_id = if es.id.is_empty() {
+            format!("edge_{}", idx)
+        } else {
+            es.id.clone()
+        };
+
+        let edge = GraphEdge {
+            id: edge_id.clone(),
+            source_node_id: es.source.clone(),
+            target_node_id: es.target.clone(),
+            source_handle: es.source_handle.clone(),
+            state: NodeState::Unknown,
+        };
+
+        in_edges.entry(es.target.clone()).or_default().push(edge_id.clone());
+        out_edges.entry(es.source.clone()).or_default().push(edge_id.clone());
+
+        edges.insert(edge_id, edge);
+    }
+
+    Ok(Graph {
+        nodes,
+        edges,
+        in_edges,
+        out_edges,
+        root_node_id,
+    })
 }
 
-/// 从 DSL schema 构建工作流定义
-pub fn build_graph(dsl: &WorkflowSchema) -> Result<WorkflowDefinition, WorkflowError> {
-    let mut graph = StableDiGraph::<GraphNode, GraphEdge>::new();
-    let mut node_index_map: HashMap<String, NodeIndex> = HashMap::new();
-
-    // 1. 添加所有节点
-    for node_schema in &dsl.nodes {
-        let graph_node = GraphNode {
-            id: node_schema.id.clone(),
-            node_type: node_schema.node_type.clone(),
-            config: node_schema.data.clone(),
-            title: if node_schema.title.is_empty() {
-                node_schema.id.clone()
-            } else {
-                node_schema.title.clone()
-            },
-        };
-
-        let idx = graph.add_node(graph_node);
-        node_index_map.insert(node_schema.id.clone(), idx);
+/// Build the config JSON for a node from its schema
+fn build_node_config(ns: &NodeSchema) -> Value {
+    // Merge the extra fields into a single JSON object
+    let mut config = serde_json::Map::new();
+    config.insert("type".to_string(), Value::String(ns.data.node_type.clone()));
+    config.insert("title".to_string(), Value::String(ns.data.title.clone()));
+    for (k, v) in &ns.data.extra {
+        config.insert(k.clone(), v.clone());
     }
-
-    // 2. 添加所有边
-    for edge_schema in &dsl.edges {
-        let source_idx = node_index_map
-            .get(&edge_schema.source)
-            .ok_or_else(|| {
-                WorkflowError::GraphBuildError(format!(
-                    "Source node not found: {}",
-                    edge_schema.source
-                ))
-            })?;
-
-        let target_idx = node_index_map
-            .get(&edge_schema.target)
-            .ok_or_else(|| {
-                WorkflowError::GraphBuildError(format!(
-                    "Target node not found: {}",
-                    edge_schema.target
-                ))
-            })?;
-
-        let edge_type = EdgeType::from_source_handle(&edge_schema.source_handle);
-
-        let graph_edge = GraphEdge {
-            id: edge_schema.id.clone(),
-            source: edge_schema.source.clone(),
-            target: edge_schema.target.clone(),
-            edge_type,
-        };
-
-        graph.add_edge(*source_idx, *target_idx, graph_edge);
+    if let Some(es) = &ns.data.error_strategy {
+        config.insert("error_strategy".to_string(), serde_json::to_value(es).unwrap_or(Value::Null));
     }
-
-    // 3. 查找 Start 节点
-    let start_node_idx = dsl
-        .nodes
-        .iter()
-        .find(|n| n.node_type == "start")
-        .and_then(|n| node_index_map.get(&n.id))
-        .copied()
-        .ok_or(WorkflowError::NoStartNode)?;
-
-    // 4. 查找 End 节点 ID
-    let end_node_id = dsl
-        .nodes
-        .iter()
-        .find(|n| n.node_type == "end")
-        .map(|n| n.id.clone())
-        .ok_or(WorkflowError::NoEndNode)?;
-
-    // 5. 构建元数据
-    let metadata = WorkflowMetadata {
-        variables: dsl.variables.clone(),
-        environment_variables: dsl.environment_variables.clone(),
-        conversation_variables: dsl.conversation_variables.clone(),
-    };
-
-    Ok(WorkflowDefinition {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: "workflow".to_string(),
-        graph,
-        start_node_idx,
-        end_node_id,
-        node_index_map,
-        metadata,
-    })
+    if let Some(rc) = &ns.data.retry_config {
+        config.insert("retry_config".to_string(), serde_json::to_value(rc).unwrap_or(Value::Null));
+    }
+    Value::Object(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::*;
-    use serde_json::json;
-
-    fn create_simple_dsl() -> WorkflowSchema {
-        WorkflowSchema {
-            nodes: vec![
-                NodeSchema {
-                    id: "start".to_string(),
-                    node_type: "start".to_string(),
-                    data: json!({}),
-                    title: "Start".to_string(),
-                    position: None,
-                },
-                NodeSchema {
-                    id: "end".to_string(),
-                    node_type: "end".to_string(),
-                    data: json!({}),
-                    title: "End".to_string(),
-                    position: None,
-                },
-            ],
-            edges: vec![EdgeSchema {
-                id: "e1".to_string(),
-                source: "start".to_string(),
-                target: "end".to_string(),
-                source_handle: None,
-            }],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        }
-    }
+    use crate::dsl::{parse_dsl, DslFormat};
 
     #[test]
     fn test_build_simple_graph() {
-        let dsl = create_simple_dsl();
-        let def = build_graph(&dsl).unwrap();
-
-        assert_eq!(def.get_start_node_id(), "start");
-        assert_eq!(def.get_end_node_id().unwrap(), "end");
+        let yaml = r#"
+nodes:
+  - id: start_1
+    data:
+      type: start
+      title: Start
+  - id: end_1
+    data:
+      type: end
+      title: End
+edges:
+  - source: start_1
+    target: end_1
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.root_node_id, "start_1");
+        assert!(graph.is_node_ready("start_1"));
     }
 
     #[test]
-    fn test_get_successors() {
-        let dsl = create_simple_dsl();
-        let def = build_graph(&dsl).unwrap();
-
-        let successors = def.get_successors("start").unwrap();
-        assert_eq!(successors, vec!["end"]);
-    }
-
-    #[test]
-    fn test_get_predecessors() {
-        let dsl = create_simple_dsl();
-        let def = build_graph(&dsl).unwrap();
-
-        let predecessors = def.get_predecessors("end").unwrap();
-        assert_eq!(predecessors, vec!["start"]);
-    }
-
-    #[test]
-    fn test_get_node() {
-        let dsl = create_simple_dsl();
-        let def = build_graph(&dsl).unwrap();
-
-        let node = def.get_node("start").unwrap();
-        assert_eq!(node.node_type, "start");
-    }
-
-    #[test]
-    fn test_branching_graph() {
-        let dsl = WorkflowSchema {
-            nodes: vec![
-                NodeSchema {
-                    id: "start".to_string(),
-                    node_type: "start".to_string(),
-                    data: json!({}),
-                    title: "".to_string(),
-                    position: None,
-                },
-                NodeSchema {
-                    id: "if1".to_string(),
-                    node_type: "if-else".to_string(),
-                    data: json!({}),
-                    title: "".to_string(),
-                    position: None,
-                },
-                NodeSchema {
-                    id: "branch_a".to_string(),
-                    node_type: "template".to_string(),
-                    data: json!({}),
-                    title: "".to_string(),
-                    position: None,
-                },
-                NodeSchema {
-                    id: "branch_b".to_string(),
-                    node_type: "template".to_string(),
-                    data: json!({}),
-                    title: "".to_string(),
-                    position: None,
-                },
-                NodeSchema {
-                    id: "end".to_string(),
-                    node_type: "end".to_string(),
-                    data: json!({}),
-                    title: "".to_string(),
-                    position: None,
-                },
-            ],
-            edges: vec![
-                EdgeSchema {
-                    id: "e1".to_string(),
-                    source: "start".to_string(),
-                    target: "if1".to_string(),
-                    source_handle: None,
-                },
-                EdgeSchema {
-                    id: "e2".to_string(),
-                    source: "if1".to_string(),
-                    target: "branch_a".to_string(),
-                    source_handle: Some("true".to_string()),
-                },
-                EdgeSchema {
-                    id: "e3".to_string(),
-                    source: "if1".to_string(),
-                    target: "branch_b".to_string(),
-                    source_handle: Some("false".to_string()),
-                },
-                EdgeSchema {
-                    id: "e4".to_string(),
-                    source: "branch_a".to_string(),
-                    target: "end".to_string(),
-                    source_handle: None,
-                },
-                EdgeSchema {
-                    id: "e5".to_string(),
-                    source: "branch_b".to_string(),
-                    target: "end".to_string(),
-                    source_handle: None,
-                },
-            ],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        };
-
-        let def = build_graph(&dsl).unwrap();
-
-        // if1 节点应该有两个后继
-        let successors = def.get_successors("if1").unwrap();
-        assert_eq!(successors.len(), 2);
-
-        // 通过边类型获取分支
-        let true_branch = def
-            .get_successor_by_edge_type("if1", &EdgeType::TrueBranch)
-            .unwrap();
-        assert_eq!(true_branch, Some("branch_a".to_string()));
-
-        let false_branch = def
-            .get_successor_by_edge_type("if1", &EdgeType::FalseBranch)
-            .unwrap();
-        assert_eq!(false_branch, Some("branch_b".to_string()));
+    fn test_build_branch_graph() {
+        let yaml = r#"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: if1
+    data:
+      type: if-else
+      title: Check
+      cases:
+        - case_id: case1
+          logical_operator: and
+          conditions:
+            - variable_selector: ["start", "x"]
+              comparison_operator: greater_than
+              value: 5
+  - id: a
+    data: { type: code, title: A }
+  - id: b
+    data: { type: code, title: B }
+  - id: end
+    data: { type: end, title: End }
+edges:
+  - source: start
+    target: if1
+  - source: if1
+    target: a
+    sourceHandle: case1
+  - source: if1
+    target: b
+    sourceHandle: "false"
+  - source: a
+    target: end
+  - source: b
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let graph = build_graph(&schema).unwrap();
+        assert_eq!(graph.nodes.len(), 5);
+        assert!(graph.is_branch_node("if1"));
     }
 }

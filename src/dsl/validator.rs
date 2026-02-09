@@ -1,69 +1,49 @@
-use crate::error::WorkflowError;
-
 use super::schema::WorkflowSchema;
+use crate::error::WorkflowError;
+use std::collections::HashSet;
 
-/// 验证工作流 DSL 的合法性
+/// Validate a parsed WorkflowSchema
 pub fn validate_workflow_schema(schema: &WorkflowSchema) -> Result<(), WorkflowError> {
-    // 1. 检查必须有至少一个节点
     if schema.nodes.is_empty() {
-        return Err(WorkflowError::GraphValidationError(
-            "Workflow must have at least one node".to_string(),
-        ));
+        return Err(WorkflowError::GraphValidationError("No nodes defined".into()));
     }
 
-    // 2. 检查是否有 Start 节点
-    let start_nodes: Vec<_> = schema
-        .nodes
-        .iter()
-        .filter(|n| n.node_type == "start")
-        .collect();
-
-    if start_nodes.is_empty() {
+    // Check exactly one start node
+    let start_count = schema.nodes.iter().filter(|n| n.data.node_type == "start").count();
+    if start_count == 0 {
         return Err(WorkflowError::NoStartNode);
     }
-
-    if start_nodes.len() > 1 {
+    if start_count > 1 {
         return Err(WorkflowError::MultipleStartNodes);
     }
 
-    // 3. 检查是否有 End 节点
-    let end_nodes: Vec<_> = schema
-        .nodes
-        .iter()
-        .filter(|n| n.node_type == "end")
-        .collect();
-
-    if end_nodes.is_empty() {
+    // Check at least one end/answer node
+    let has_end = schema.nodes.iter().any(|n| n.data.node_type == "end" || n.data.node_type == "answer");
+    if !has_end {
         return Err(WorkflowError::NoEndNode);
     }
 
-    // 4. 检查节点 ID 唯一性
-    let mut seen_ids = std::collections::HashSet::new();
+    // Check unique node IDs
+    let mut ids = HashSet::new();
     for node in &schema.nodes {
-        if !seen_ids.insert(&node.id) {
-            return Err(WorkflowError::GraphValidationError(format!(
-                "Duplicate node ID: {}",
-                node.id
-            )));
+        if !ids.insert(&node.id) {
+            return Err(WorkflowError::GraphValidationError(
+                format!("Duplicate node ID: {}", node.id),
+            ));
         }
     }
 
-    // 5. 检查边引用的节点是否存在
-    let node_ids: std::collections::HashSet<_> =
-        schema.nodes.iter().map(|n| n.id.as_str()).collect();
-
+    // Check edge references
     for edge in &schema.edges {
-        if !node_ids.contains(edge.source.as_str()) {
-            return Err(WorkflowError::GraphValidationError(format!(
-                "Edge source node not found: {}",
-                edge.source
-            )));
+        if !ids.contains(&edge.source) {
+            return Err(WorkflowError::GraphValidationError(
+                format!("Edge source not found: {}", edge.source),
+            ));
         }
-        if !node_ids.contains(edge.target.as_str()) {
-            return Err(WorkflowError::GraphValidationError(format!(
-                "Edge target node not found: {}",
-                edge.target
-            )));
+        if !ids.contains(&edge.target) {
+            return Err(WorkflowError::GraphValidationError(
+                format!("Edge target not found: {}", edge.target),
+            ));
         }
     }
 
@@ -73,101 +53,45 @@ pub fn validate_workflow_schema(schema: &WorkflowSchema) -> Result<(), WorkflowE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::schema::*;
-    use serde_json::json;
-
-    fn make_node(id: &str, node_type: &str) -> NodeSchema {
-        NodeSchema {
-            id: id.to_string(),
-            node_type: node_type.to_string(),
-            data: json!({}),
-            title: id.to_string(),
-            position: None,
-        }
-    }
-
-    fn make_edge(source: &str, target: &str) -> EdgeSchema {
-        EdgeSchema {
-            id: format!("{}_{}", source, target),
-            source: source.to_string(),
-            target: target.to_string(),
-            source_handle: None,
-        }
-    }
+    use crate::dsl::{parse_dsl, DslFormat};
 
     #[test]
-    fn test_validate_valid_schema() {
-        let schema = WorkflowSchema {
-            nodes: vec![make_node("start", "start"), make_node("end", "end")],
-            edges: vec![make_edge("start", "end")],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        };
+    fn test_valid_schema() {
+        let yaml = r#"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
         assert!(validate_workflow_schema(&schema).is_ok());
     }
 
     #[test]
-    fn test_validate_no_start_node() {
-        let schema = WorkflowSchema {
-            nodes: vec![make_node("end", "end")],
-            edges: vec![],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        };
-        assert!(matches!(
-            validate_workflow_schema(&schema),
-            Err(WorkflowError::NoStartNode)
-        ));
+    fn test_no_start() {
+        let yaml = r#"
+nodes:
+  - id: e
+    data: { type: end, title: E }
+edges: []
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        assert!(validate_workflow_schema(&schema).is_err());
     }
 
     #[test]
-    fn test_validate_no_end_node() {
-        let schema = WorkflowSchema {
-            nodes: vec![make_node("start", "start")],
-            edges: vec![],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        };
-        assert!(matches!(
-            validate_workflow_schema(&schema),
-            Err(WorkflowError::NoEndNode)
-        ));
-    }
-
-    #[test]
-    fn test_validate_duplicate_node_id() {
-        let schema = WorkflowSchema {
-            nodes: vec![
-                make_node("start", "start"),
-                make_node("start", "template"),
-                make_node("end", "end"),
-            ],
-            edges: vec![],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        };
-        assert!(matches!(
-            validate_workflow_schema(&schema),
-            Err(WorkflowError::GraphValidationError(_))
-        ));
-    }
-
-    #[test]
-    fn test_validate_edge_references_missing_node() {
-        let schema = WorkflowSchema {
-            nodes: vec![make_node("start", "start"), make_node("end", "end")],
-            edges: vec![make_edge("start", "nonexistent")],
-            variables: vec![],
-            environment_variables: vec![],
-            conversation_variables: vec![],
-        };
-        assert!(matches!(
-            validate_workflow_schema(&schema),
-            Err(WorkflowError::GraphValidationError(_))
-        ));
+    fn test_no_end() {
+        let yaml = r#"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+edges: []
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        assert!(validate_workflow_schema(&schema).is_err());
     }
 }

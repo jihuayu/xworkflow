@@ -1,228 +1,273 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
-use dashmap::DashMap;
-use regex::Regex;
-use serde_json::Value;
+// ================================
+// Segment – Dify variable type system
+// ================================
 
-use crate::error::NodeError;
-
-/// 变量池 - 线程安全的变量存储
-#[derive(Debug)]
-pub struct VariablePool {
-    /// 节点输出存储（node_id -> output_value）
-    node_outputs: DashMap<String, Value>,
-
-    /// 系统变量（sys.query, sys.files 等）
-    system_vars: DashMap<String, Value>,
-
-    /// 对话变量（跨轮次持久化）
-    conversation_vars: DashMap<String, Value>,
-
-    /// 作用域栈（用于迭代节点的变量隔离）
-    scope_stack: parking_lot::RwLock<Vec<Scope>>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Segment {
+    None,
+    String(String),
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+    Object(HashMap<String, Segment>),
+    ArrayString(Vec<String>),
+    ArrayInteger(Vec<i64>),
+    ArrayFloat(Vec<f64>),
+    ArrayObject(Vec<HashMap<String, Segment>>),
+    ArrayAny(Vec<Segment>),
+    File(FileSegment),
+    ArrayFile(Vec<FileSegment>),
 }
 
-/// 作用域
-#[derive(Debug, Clone)]
-pub struct Scope {
-    /// 作用域 ID（通常是迭代节点 ID + 索引）
-    pub scope_id: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSegment {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub transfer_method: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub extension: Option<String>,
+    #[serde(default)]
+    pub size: Option<i64>,
+}
 
-    /// 作用域内的局部变量
-    pub variables: HashMap<String, Value>,
+impl Segment {
+    /// Convert Segment → serde_json::Value
+    pub fn to_value(&self) -> Value {
+        match self {
+            Segment::None => Value::Null,
+            Segment::String(s) => Value::String(s.clone()),
+            Segment::Integer(i) => serde_json::json!(*i),
+            Segment::Float(f) => serde_json::json!(*f),
+            Segment::Boolean(b) => Value::Bool(*b),
+            Segment::Object(map) => {
+                let m: serde_json::Map<std::string::String, Value> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_value()))
+                    .collect();
+                Value::Object(m)
+            }
+            Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
+            Segment::ArrayInteger(v) => Value::Array(v.iter().map(|i| serde_json::json!(*i)).collect()),
+            Segment::ArrayFloat(v) => Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect()),
+            Segment::ArrayObject(v) => {
+                Value::Array(v.iter().map(|m| {
+                    let obj: serde_json::Map<std::string::String, Value> = m
+                        .iter()
+                        .map(|(k, seg)| (k.clone(), seg.to_value()))
+                        .collect();
+                    Value::Object(obj)
+                }).collect())
+            }
+            Segment::ArrayAny(v) => Value::Array(v.iter().map(|s| s.to_value()).collect()),
+            Segment::File(f) => serde_json::to_value(f).unwrap_or(Value::Null),
+            Segment::ArrayFile(v) => serde_json::to_value(v).unwrap_or(Value::Null),
+        }
+    }
+
+    /// Create Segment from serde_json::Value
+    pub fn from_value(v: &Value) -> Self {
+        match v {
+            Value::Null => Segment::None,
+            Value::Bool(b) => Segment::Boolean(*b),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Segment::Integer(i)
+                } else {
+                    Segment::Float(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            Value::String(s) => Segment::String(s.clone()),
+            Value::Array(arr) => {
+                let segs: Vec<Segment> = arr.iter().map(Segment::from_value).collect();
+                Segment::ArrayAny(segs)
+            }
+            Value::Object(map) => {
+                let m: HashMap<String, Segment> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Segment::from_value(v)))
+                    .collect();
+                Segment::Object(m)
+            }
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self, Segment::None)
+    }
+
+    pub fn as_string(&self) -> Option<String> {
+        match self {
+            Segment::String(s) => Some(s.clone()),
+            Segment::Integer(i) => Some(i.to_string()),
+            Segment::Float(f) => Some(f.to_string()),
+            Segment::Boolean(b) => Some(b.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn to_display_string(&self) -> String {
+        match self {
+            Segment::None => String::new(),
+            Segment::String(s) => s.clone(),
+            Segment::Integer(i) => i.to_string(),
+            Segment::Float(f) => f.to_string(),
+            Segment::Boolean(b) => b.to_string(),
+            other => serde_json::to_string(&other.to_value()).unwrap_or_default(),
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Segment::Integer(i) => Some(*i as f64),
+            Segment::Float(f) => Some(*f),
+            Segment::String(s) => s.parse::<f64>().ok(),
+            _ => None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Segment::None => true,
+            Segment::String(s) => s.is_empty(),
+            Segment::ArrayString(v) => v.is_empty(),
+            Segment::ArrayInteger(v) => v.is_empty(),
+            Segment::ArrayFloat(v) => v.is_empty(),
+            Segment::ArrayObject(v) => v.is_empty(),
+            Segment::ArrayAny(v) => v.is_empty(),
+            Segment::ArrayFile(v) => v.is_empty(),
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for Segment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_display_string())
+    }
+}
+
+// ================================
+// VariablePool – Dify-compatible
+// Key: (node_id, variable_name)
+// ================================
+
+#[derive(Debug, Clone)]
+pub struct VariablePool {
+    variables: HashMap<(String, String), Segment>,
 }
 
 impl VariablePool {
-    /// 创建新的变量池
     pub fn new() -> Self {
         VariablePool {
-            node_outputs: DashMap::new(),
-            system_vars: DashMap::new(),
-            conversation_vars: DashMap::new(),
-            scope_stack: parking_lot::RwLock::new(Vec::new()),
+            variables: HashMap::new(),
         }
     }
 
-    /// 使用初始输入创建变量池
-    pub fn with_inputs(inputs: Value) -> Self {
-        let pool = Self::new();
-        pool.set_node_output("input", inputs);
-        pool
-    }
-
-    /// 设置节点输出
-    pub fn set_node_output(&self, node_id: &str, output: Value) {
-        self.node_outputs.insert(node_id.to_string(), output);
-    }
-
-    /// 获取节点输出
-    pub fn get_node_output(&self, node_id: &str) -> Option<Value> {
-        self.node_outputs.get(node_id).map(|v| v.value().clone())
-    }
-
-    /// 获取变量值（支持路径解析）
-    ///
-    /// 示例:
-    /// - "llm_node_1.text" -> 获取 llm_node_1 输出的 text 字段
-    /// - "input.name" -> 获取输入的 name 字段
-    /// - "sys.query" -> 获取系统变量 query
-    pub fn get_value(&self, selector: &str) -> Option<Value> {
-        let parts: Vec<&str> = selector.splitn(2, '.').collect();
-
-        if parts.is_empty() {
-            return None;
+    /// Get variable by selector: ["node_id", "var_name"] or ["sys", "query"]
+    pub fn get(&self, selector: &[String]) -> Segment {
+        if selector.len() < 2 {
+            return Segment::None;
         }
+        let key = (selector[0].clone(), selector[1].clone());
+        self.variables.get(&key).cloned().unwrap_or(Segment::None)
+    }
 
-        let root = parts[0];
+    /// Set a single variable
+    pub fn set(&mut self, selector: &[String], value: Segment) {
+        if selector.len() >= 2 {
+            let key = (selector[0].clone(), selector[1].clone());
+            self.variables.insert(key, value);
+        }
+    }
 
-        // 1. 先检查当前作用域栈
-        {
-            let scopes = self.scope_stack.read();
-            for scope in scopes.iter().rev() {
-                if let Some(value) = scope.variables.get(root) {
-                    if parts.len() == 1 {
-                        return Some(value.clone());
-                    } else {
-                        return Self::resolve_path(value, parts[1]);
-                    }
+    /// Set node outputs as (node_id, key) -> value
+    pub fn set_node_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Value>) {
+        for (key, val) in outputs {
+            let seg = Segment::from_value(val);
+            self.variables.insert((node_id.to_string(), key.clone()), seg);
+        }
+    }
+
+    /// Set node outputs from Segment map
+    pub fn set_node_segment_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Segment>) {
+        for (key, val) in outputs {
+            self.variables.insert((node_id.to_string(), key.clone()), val.clone());
+        }
+    }
+
+    /// Check if variable exists and is not None
+    pub fn has(&self, selector: &[String]) -> bool {
+        if selector.len() < 2 {
+            return false;
+        }
+        let key = (selector[0].clone(), selector[1].clone());
+        self.variables.get(&key).map_or(false, |s| !s.is_none())
+    }
+
+    /// Get all variables for a given node_id
+    pub fn get_node_variables(&self, node_id: &str) -> HashMap<String, Segment> {
+        self.variables
+            .iter()
+            .filter(|((nid, _), _)| nid == node_id)
+            .map(|((_, key), val)| (key.clone(), val.clone()))
+            .collect()
+    }
+
+    /// Remove all variables for a given node
+    pub fn remove_node(&mut self, node_id: &str) {
+        self.variables.retain(|(nid, _), _| nid != node_id);
+    }
+
+    /// Append value to an existing array variable
+    pub fn append(&mut self, selector: &[String], value: Segment) {
+        if selector.len() < 2 {
+            return;
+        }
+        let key = (selector[0].clone(), selector[1].clone());
+        let existing = self.variables.entry(key).or_insert(Segment::ArrayAny(vec![]));
+        match existing {
+            Segment::ArrayAny(arr) => arr.push(value),
+            Segment::ArrayString(arr) => {
+                if let Segment::String(s) = value {
+                    arr.push(s);
                 }
             }
-        }
-
-        // 2. 检查系统变量
-        if root == "sys" {
-            if parts.len() > 1 {
-                return self.system_vars.get(parts[1]).map(|v| v.value().clone());
+            Segment::String(s) => {
+                *s += &value.to_display_string();
             }
-            return None;
-        }
-
-        // 3. 检查节点输出
-        if let Some(node_output) = self.node_outputs.get(root) {
-            if parts.len() == 1 {
-                return Some(node_output.value().clone());
-            } else {
-                return Self::resolve_path(node_output.value(), parts[1]);
+            _ => {
+                // Convert to ArrayAny
+                let old = std::mem::replace(existing, Segment::None);
+                *existing = Segment::ArrayAny(vec![old, value]);
             }
         }
-
-        // 4. 检查对话变量
-        if let Some(conv_var) = self.conversation_vars.get(root) {
-            if parts.len() == 1 {
-                return Some(conv_var.value().clone());
-            } else {
-                return Self::resolve_path(conv_var.value(), parts[1]);
-            }
-        }
-
-        None
     }
 
-    /// 解析 JSON 路径
-    fn resolve_path(value: &Value, path: &str) -> Option<Value> {
-        let mut current = value;
-        for part in path.split('.') {
-            // 检查是否是数组索引 (e.g., "items[0]")
-            if let Some(bracket_pos) = part.find('[') {
-                let key = &part[..bracket_pos];
-                let index_str = &part[bracket_pos + 1..part.len() - 1];
-
-                if !key.is_empty() {
-                    current = current.get(key)?;
-                }
-
-                let index: usize = index_str.parse().ok()?;
-                current = current.get(index)?;
-            } else {
-                current = current.get(part)?;
-            }
+    /// Clear a variable (set to None)
+    pub fn clear(&mut self, selector: &[String]) {
+        if selector.len() >= 2 {
+            let key = (selector[0].clone(), selector[1].clone());
+            self.variables.insert(key, Segment::None);
         }
-        Some(current.clone())
     }
 
-    /// 解析模板字符串中的所有变量
-    ///
-    /// 支持两种语法：
-    /// - `{{#node_id.field#}}` - Dify 风格
-    /// - 返回替换后的字符串
-    pub fn resolve_template(&self, text: &str) -> Result<String, NodeError> {
-        let re = Regex::new(r"\{\{#([^#]+)#\}\}")
-            .map_err(|e| NodeError::TemplateError(e.to_string()))?;
-
-        let mut result = text.to_string();
-
-        for cap in re.captures_iter(text) {
-            let full_match = cap.get(0).unwrap().as_str();
-            let selector = cap.get(1).unwrap().as_str().trim();
-
-            if let Some(value) = self.get_value(selector) {
-                let replacement = match &value {
-                    Value::String(s) => s.clone(),
-                    Value::Null => "".to_string(),
-                    other => other.to_string(),
-                };
-                result = result.replace(full_match, &replacement);
-            } else {
-                // 未找到变量时替换为空字符串
-                result = result.replace(full_match, "");
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// 设置系统变量
-    pub fn set_system_var(&self, key: &str, value: Value) {
-        self.system_vars.insert(key.to_string(), value);
-    }
-
-    /// 设置对话变量
-    pub fn set_conversation_var(&self, key: &str, value: Value) {
-        self.conversation_vars.insert(key.to_string(), value);
-    }
-
-    /// 获取所有变量（用于模板渲染）
-    pub fn get_all_variables(&self) -> HashMap<String, Value> {
-        let mut vars = HashMap::new();
-
-        // 添加节点输出
-        for entry in self.node_outputs.iter() {
-            vars.insert(entry.key().clone(), entry.value().clone());
-        }
-
-        // 添加系统变量
-        let mut sys_vars = serde_json::Map::new();
-        for entry in self.system_vars.iter() {
-            sys_vars.insert(entry.key().clone(), entry.value().clone());
-        }
-        if !sys_vars.is_empty() {
-            vars.insert("sys".to_string(), Value::Object(sys_vars));
-        }
-
-        // 添加作用域变量
-        let scopes = self.scope_stack.read();
-        for scope in scopes.iter() {
-            for (k, v) in &scope.variables {
-                vars.insert(k.clone(), v.clone());
-            }
-        }
-
-        vars
-    }
-
-    /// 进入新作用域（迭代开始时调用）
-    pub fn push_scope(&self, scope_id: String, variables: HashMap<String, Value>) {
-        let mut scopes = self.scope_stack.write();
-        scopes.push(Scope {
-            scope_id,
-            variables,
-        });
-    }
-
-    /// 退出作用域（迭代结束时调用）
-    pub fn pop_scope(&self) -> Option<Scope> {
-        let mut scopes = self.scope_stack.write();
-        scopes.pop()
+    /// Snapshot entire pool for serialization
+    pub fn snapshot(&self) -> HashMap<(String, String), Segment> {
+        self.variables.clone()
     }
 }
 
@@ -235,133 +280,69 @@ impl Default for VariablePool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn test_set_and_get_node_output() {
-        let pool = VariablePool::new();
-        pool.set_node_output("node1", json!({"text": "hello"}));
-
-        let value = pool.get_value("node1.text");
-        assert_eq!(value, Some(json!("hello")));
+    fn test_variable_pool_basic() {
+        let mut pool = VariablePool::new();
+        let sel = vec!["node1".to_string(), "output".to_string()];
+        pool.set(&sel, Segment::String("hello".to_string()));
+        let val = pool.get(&sel);
+        assert!(matches!(val, Segment::String(s) if s == "hello"));
     }
 
     #[test]
-    fn test_get_full_node_output() {
-        let pool = VariablePool::new();
-        pool.set_node_output("node1", json!({"text": "hello", "count": 42}));
-
-        let value = pool.get_value("node1");
-        assert_eq!(value, Some(json!({"text": "hello", "count": 42})));
+    fn test_variable_pool_sys() {
+        let mut pool = VariablePool::new();
+        let sel = vec!["sys".to_string(), "query".to_string()];
+        pool.set(&sel, Segment::String("test query".to_string()));
+        assert!(pool.has(&sel));
+        let val = pool.get(&sel);
+        assert_eq!(val.to_display_string(), "test query");
     }
 
     #[test]
-    fn test_nested_path() {
+    fn test_variable_pool_missing() {
         let pool = VariablePool::new();
-        pool.set_node_output(
-            "node1",
-            json!({
-                "data": {
-                    "items": [1, 2, 3]
-                }
-            }),
-        );
-
-        let value = pool.get_value("node1.data.items");
-        assert_eq!(value, Some(json!([1, 2, 3])));
+        let sel = vec!["nonexistent".to_string(), "var".to_string()];
+        assert!(pool.get(&sel).is_none());
+        assert!(!pool.has(&sel));
     }
 
     #[test]
-    fn test_array_index() {
-        let pool = VariablePool::new();
-        pool.set_node_output(
-            "node1",
-            json!({
-                "data": {
-                    "items": [10, 20, 30]
-                }
-            }),
-        );
+    fn test_set_node_outputs() {
+        let mut pool = VariablePool::new();
+        let mut outputs = HashMap::new();
+        outputs.insert("text".to_string(), Value::String("result".to_string()));
+        outputs.insert("count".to_string(), serde_json::json!(42));
+        pool.set_node_outputs("node_llm", &outputs);
 
-        let value = pool.get_value("node1.data.items[0]");
-        assert_eq!(value, Some(json!(10)));
+        let text = pool.get(&["node_llm".to_string(), "text".to_string()]);
+        assert!(matches!(text, Segment::String(s) if s == "result"));
+
+        let count = pool.get(&["node_llm".to_string(), "count".to_string()]);
+        assert!(matches!(count, Segment::Integer(42)));
     }
 
     #[test]
-    fn test_resolve_template() {
-        let pool = VariablePool::new();
-        pool.set_node_output("input", json!({"name": "World"}));
-        pool.set_node_output("llm", json!({"text": "Hello!"}));
+    fn test_segment_conversion() {
+        let seg = Segment::Integer(42);
+        let val = seg.to_value();
+        assert_eq!(val, serde_json::json!(42));
 
-        let result = pool
-            .resolve_template("Hello {{#input.name#}}, LLM says: {{#llm.text#}}")
-            .unwrap();
-        assert_eq!(result, "Hello World, LLM says: Hello!");
+        let back = Segment::from_value(&val);
+        assert!(matches!(back, Segment::Integer(42)));
     }
 
     #[test]
-    fn test_resolve_template_missing_var() {
-        let pool = VariablePool::new();
-
-        let result = pool
-            .resolve_template("Hello {{#missing.var#}}!")
-            .unwrap();
-        assert_eq!(result, "Hello !");
-    }
-
-    #[test]
-    fn test_system_vars() {
-        let pool = VariablePool::new();
-        pool.set_system_var("query", json!("test query"));
-
-        let value = pool.get_value("sys.query");
-        assert_eq!(value, Some(json!("test query")));
-    }
-
-    #[test]
-    fn test_scope_management() {
-        let pool = VariablePool::new();
-
-        // 设置节点输出
-        pool.set_node_output("node1", json!({"text": "global"}));
-
-        // 进入作用域
-        let mut scope_vars = HashMap::new();
-        scope_vars.insert("item".to_string(), json!("item1"));
-        scope_vars.insert("index".to_string(), json!(0));
-        pool.push_scope("iter_0".to_string(), scope_vars);
-
-        // 在作用域内可以访问局部变量
-        assert_eq!(pool.get_value("item"), Some(json!("item1")));
-        assert_eq!(pool.get_value("index"), Some(json!(0)));
-
-        // 仍然可以访问全局变量
-        assert_eq!(pool.get_value("node1.text"), Some(json!("global")));
-
-        // 退出作用域
-        pool.pop_scope();
-
-        // 局部变量不再可访问
-        assert_eq!(pool.get_value("item"), None);
-    }
-
-    #[test]
-    fn test_conversation_vars() {
-        let pool = VariablePool::new();
-        pool.set_conversation_var("history", json!(["msg1", "msg2"]));
-
-        let value = pool.get_value("history");
-        assert_eq!(value, Some(json!(["msg1", "msg2"])));
-    }
-
-    #[test]
-    fn test_get_all_variables() {
-        let pool = VariablePool::new();
-        pool.set_node_output("node1", json!({"text": "hello"}));
-        pool.set_system_var("query", json!("test"));
-
-        let vars = pool.get_all_variables();
-        assert!(vars.contains_key("node1"));
-        assert!(vars.contains_key("sys"));
+    fn test_append() {
+        let mut pool = VariablePool::new();
+        let sel = vec!["n".to_string(), "arr".to_string()];
+        pool.set(&sel, Segment::ArrayAny(vec![]));
+        pool.append(&sel, Segment::Integer(1));
+        pool.append(&sel, Segment::Integer(2));
+        match pool.get(&sel) {
+            Segment::ArrayAny(v) => assert_eq!(v.len(), 2),
+            _ => panic!("Expected ArrayAny"),
+        }
     }
 }
