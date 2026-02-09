@@ -1,13 +1,14 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{Notify, RwLock};
 
 // ================================
 // Segment – Dify variable type system
 // ================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum Segment {
     None,
     String(String),
@@ -16,15 +17,11 @@ pub enum Segment {
     Boolean(bool),
     Object(HashMap<String, Segment>),
     ArrayString(Vec<String>),
-    ArrayInteger(Vec<i64>),
-    ArrayFloat(Vec<f64>),
-    ArrayObject(Vec<HashMap<String, Segment>>),
-    ArrayAny(Vec<Segment>),
-    File(FileSegment),
-    ArrayFile(Vec<FileSegment>),
+    Array(Vec<Segment>),
+    Stream(SegmentStream),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileSegment {
     #[serde(default)]
     pub id: Option<String>,
@@ -44,6 +41,276 @@ pub struct FileSegment {
     pub size: Option<i64>,
 }
 
+impl FileSegment {
+    pub fn to_segment(&self) -> Segment {
+        let value = serde_json::to_value(self).unwrap_or(Value::Null);
+        Segment::from_value(&value)
+    }
+
+    pub fn from_segment(seg: &Segment) -> Option<Self> {
+        serde_json::from_value(seg.to_value()).ok()
+    }
+}
+
+// ================================
+// Stream support
+// ================================
+
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    Chunk(Segment),
+    End(Option<Segment>),
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+struct StreamState {
+    chunks: Vec<Segment>,
+    status: StreamStatus,
+    final_value: Option<Segment>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SegmentStream {
+    state: Arc<RwLock<StreamState>>,
+    notify: Arc<Notify>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamWriter {
+    state: Arc<RwLock<StreamState>>,
+    notify: Arc<Notify>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamReader {
+    stream: SegmentStream,
+    cursor: usize,
+}
+
+impl SegmentStream {
+    pub fn channel() -> (SegmentStream, StreamWriter) {
+        let state = StreamState {
+            chunks: Vec::new(),
+            status: StreamStatus::Running,
+            final_value: None,
+            error: None,
+        };
+        let shared = Arc::new(RwLock::new(state));
+        let notify = Arc::new(Notify::new());
+        let stream = SegmentStream {
+            state: shared.clone(),
+            notify: notify.clone(),
+        };
+        let writer = StreamWriter {
+            state: shared,
+            notify,
+        };
+        (stream, writer)
+    }
+
+    pub fn reader(&self) -> StreamReader {
+        StreamReader {
+            stream: self.clone(),
+            cursor: 0,
+        }
+    }
+
+    pub async fn collect(&self) -> Result<Segment, String> {
+        loop {
+            let snapshot = self.state.read().await;
+            match snapshot.status {
+                StreamStatus::Completed => {
+                    return Ok(snapshot.final_value.clone().unwrap_or(Segment::None));
+                }
+                StreamStatus::Failed => {
+                    return Err(snapshot.error.clone().unwrap_or_else(|| "stream failed".into()));
+                }
+                StreamStatus::Running => {}
+            }
+            drop(snapshot);
+            self.notify.notified().await;
+        }
+    }
+
+    pub fn snapshot_segment(&self) -> Segment {
+        let snapshot = self.state.blocking_read();
+        match snapshot.status {
+            StreamStatus::Completed => snapshot.final_value.clone().unwrap_or(Segment::None),
+            StreamStatus::Failed => Segment::None,
+            StreamStatus::Running => Segment::Array(snapshot.chunks.clone()),
+        }
+    }
+
+    fn snapshot_status(&self) -> (StreamStatus, Vec<Segment>, Option<Segment>, Option<String>) {
+        let snapshot = self.state.blocking_read();
+        (
+            snapshot.status.clone(),
+            snapshot.chunks.clone(),
+            snapshot.final_value.clone(),
+            snapshot.error.clone(),
+        )
+    }
+
+    fn is_empty(&self) -> bool {
+        let snapshot = self.state.blocking_read();
+        snapshot.chunks.is_empty() && snapshot.final_value.is_none()
+    }
+}
+
+impl StreamWriter {
+    pub async fn send(&self, chunk: Segment) {
+        let mut state = self.state.write().await;
+        if state.status != StreamStatus::Running {
+            return;
+        }
+        state.chunks.push(chunk);
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    pub async fn end(&self, final_value: Segment) {
+        let mut state = self.state.write().await;
+        if state.status != StreamStatus::Running {
+            return;
+        }
+        state.status = StreamStatus::Completed;
+        state.final_value = Some(final_value);
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    pub async fn error(&self, message: String) {
+        let mut state = self.state.write().await;
+        if state.status != StreamStatus::Running {
+            return;
+        }
+        state.status = StreamStatus::Failed;
+        state.error = Some(message);
+        drop(state);
+        self.notify.notify_waiters();
+    }
+}
+
+impl StreamReader {
+    pub async fn next(&mut self) -> Option<StreamEvent> {
+        loop {
+            let snapshot = self.stream.state.read().await;
+            let status = snapshot.status.clone();
+            let chunks = snapshot.chunks.clone();
+            let final_value = snapshot.final_value.clone();
+            let error = snapshot.error.clone();
+            if self.cursor < chunks.len() {
+                let item = chunks[self.cursor].clone();
+                self.cursor += 1;
+                return Some(StreamEvent::Chunk(item));
+            }
+            match status {
+                StreamStatus::Running => {
+                    self.stream.notify.notified().await;
+                }
+                StreamStatus::Completed => {
+                    return Some(StreamEvent::End(final_value));
+                }
+                StreamStatus::Failed => {
+                    return Some(StreamEvent::Error(error.unwrap_or_else(|| "stream failed".into())));
+                }
+            }
+        }
+    }
+}
+
+// ================================
+// SegmentType – DSL-facing type markers
+// ================================
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SegmentType {
+    String,
+    Number,
+    Boolean,
+    Object,
+    ArrayString,
+    ArrayNumber,
+    ArrayObject,
+    File,
+    ArrayFile,
+    Array,
+    Any,
+}
+
+impl SegmentType {
+    pub fn from_dsl_type(t: &str) -> Option<Self> {
+        match t.trim().to_lowercase().as_str() {
+            "string" => Some(SegmentType::String),
+            "number" => Some(SegmentType::Number),
+            "boolean" => Some(SegmentType::Boolean),
+            "object" => Some(SegmentType::Object),
+            "array[string]" => Some(SegmentType::ArrayString),
+            "array[number]" => Some(SegmentType::ArrayNumber),
+            "array[object]" => Some(SegmentType::ArrayObject),
+            "file" => Some(SegmentType::File),
+            "array[file]" => Some(SegmentType::ArrayFile),
+            _ => None,
+        }
+    }
+}
+
+impl Segment {
+    pub fn segment_type(&self) -> SegmentType {
+        match self {
+            Segment::None => SegmentType::Any,
+            Segment::String(_) => SegmentType::String,
+            Segment::Integer(_) | Segment::Float(_) => SegmentType::Number,
+            Segment::Boolean(_) => SegmentType::Boolean,
+            Segment::Object(_) => SegmentType::Object,
+            Segment::ArrayString(_) => SegmentType::ArrayString,
+            Segment::Array(_) => SegmentType::Array,
+            Segment::Stream(_) => SegmentType::Any,
+        }
+    }
+
+    pub fn matches_type(&self, t: &SegmentType) -> bool {
+        match t {
+            SegmentType::Any => true,
+            SegmentType::File => matches!(self, Segment::Object(_)),
+            SegmentType::ArrayNumber
+            | SegmentType::ArrayObject
+            | SegmentType::ArrayFile
+            | SegmentType::Array => matches!(self, Segment::Array(_) | Segment::ArrayString(_)),
+            _ => self.segment_type() == *t,
+        }
+    }
+}
+
+impl Serialize for Segment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.to_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Segment {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = Value::deserialize(deserializer)?;
+        Ok(Segment::from_value(&v))
+    }
+}
+
 impl Segment {
     /// Convert Segment → serde_json::Value
     pub fn to_value(&self) -> Value {
@@ -61,20 +328,11 @@ impl Segment {
                 Value::Object(m)
             }
             Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
-            Segment::ArrayInteger(v) => Value::Array(v.iter().map(|i| serde_json::json!(*i)).collect()),
-            Segment::ArrayFloat(v) => Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect()),
-            Segment::ArrayObject(v) => {
-                Value::Array(v.iter().map(|m| {
-                    let obj: serde_json::Map<std::string::String, Value> = m
-                        .iter()
-                        .map(|(k, seg)| (k.clone(), seg.to_value()))
-                        .collect();
-                    Value::Object(obj)
-                }).collect())
-            }
-            Segment::ArrayAny(v) => Value::Array(v.iter().map(|s| s.to_value()).collect()),
-            Segment::File(f) => serde_json::to_value(f).unwrap_or(Value::Null),
-            Segment::ArrayFile(v) => serde_json::to_value(v).unwrap_or(Value::Null),
+            Segment::Array(v) => Value::Array(v.iter().map(|s| s.to_value()).collect()),
+            Segment::Stream(stream) => match stream.snapshot_segment() {
+                Segment::Array(arr) => Value::Array(arr.iter().map(|s| s.to_value()).collect()),
+                other => other.to_value(),
+            },
         }
     }
 
@@ -92,8 +350,20 @@ impl Segment {
             }
             Value::String(s) => Segment::String(s.clone()),
             Value::Array(arr) => {
-                let segs: Vec<Segment> = arr.iter().map(Segment::from_value).collect();
-                Segment::ArrayAny(segs)
+                if arr.is_empty() {
+                    return Segment::Array(Vec::new());
+                }
+                let all_strings = arr.iter().all(|v| v.is_string());
+                if all_strings {
+                    let items = arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect();
+                    Segment::ArrayString(items)
+                } else {
+                    let segs: Vec<Segment> = arr.iter().map(Segment::from_value).collect();
+                    Segment::Array(segs)
+                }
             }
             Value::Object(map) => {
                 let m: HashMap<String, Segment> = map
@@ -126,6 +396,19 @@ impl Segment {
             Segment::Integer(i) => i.to_string(),
             Segment::Float(f) => f.to_string(),
             Segment::Boolean(b) => b.to_string(),
+            Segment::Stream(stream) => match stream.snapshot_status() {
+                (StreamStatus::Completed, _chunks, final_value, _) => final_value
+                    .unwrap_or(Segment::None)
+                    .to_display_string(),
+                (StreamStatus::Failed, _chunks, _final_value, error) => {
+                    format!("[stream error: {}]", error.unwrap_or_default())
+                }
+                (StreamStatus::Running, chunks, _final_value, _) => chunks
+                    .iter()
+                    .map(|c| c.to_display_string())
+                    .collect::<Vec<_>>()
+                    .join(""),
+            },
             other => serde_json::to_string(&other.to_value()).unwrap_or_default(),
         }
     }
@@ -144,12 +427,27 @@ impl Segment {
             Segment::None => true,
             Segment::String(s) => s.is_empty(),
             Segment::ArrayString(v) => v.is_empty(),
-            Segment::ArrayInteger(v) => v.is_empty(),
-            Segment::ArrayFloat(v) => v.is_empty(),
-            Segment::ArrayObject(v) => v.is_empty(),
-            Segment::ArrayAny(v) => v.is_empty(),
-            Segment::ArrayFile(v) => v.is_empty(),
+            Segment::Array(v) => v.is_empty(),
+            Segment::Object(map) => map.is_empty(),
+            Segment::Stream(stream) => stream.is_empty(),
             _ => false,
+        }
+    }
+}
+
+impl PartialEq for Segment {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Segment::None, Segment::None) => true,
+            (Segment::String(a), Segment::String(b)) => a == b,
+            (Segment::Integer(a), Segment::Integer(b)) => a == b,
+            (Segment::Float(a), Segment::Float(b)) => (a - b).abs() < 1e-10,
+            (Segment::Integer(a), Segment::Float(b)) | (Segment::Float(b), Segment::Integer(a)) => {
+                (*a as f64 - b).abs() < 1e-10
+            }
+            (Segment::Boolean(a), Segment::Boolean(b)) => a == b,
+            (Segment::ArrayString(a), Segment::ArrayString(b)) => a == b,
+            _ => self.to_value() == other.to_value(),
         }
     }
 }
@@ -238,21 +536,32 @@ impl VariablePool {
             return;
         }
         let key = (selector[0].clone(), selector[1].clone());
-        let existing = self.variables.entry(key).or_insert(Segment::ArrayAny(vec![]));
+        let existing = self.variables.entry(key).or_insert(Segment::Array(vec![]));
         match existing {
-            Segment::ArrayAny(arr) => arr.push(value),
+            Segment::Array(arr) => arr.push(value),
             Segment::ArrayString(arr) => {
-                if let Segment::String(s) = value {
-                    arr.push(s);
+                match value {
+                    Segment::String(s) => arr.push(s),
+                    other => {
+                        let mut promoted: Vec<Segment> = arr
+                            .drain(..)
+                            .map(Segment::String)
+                            .collect();
+                        promoted.push(other);
+                        *existing = Segment::Array(promoted);
+                    }
                 }
             }
             Segment::String(s) => {
                 *s += &value.to_display_string();
             }
+            Segment::None => {
+                *existing = Segment::Array(vec![value]);
+            }
             _ => {
-                // Convert to ArrayAny
+                // Convert to Array
                 let old = std::mem::replace(existing, Segment::None);
-                *existing = Segment::ArrayAny(vec![old, value]);
+                *existing = Segment::Array(vec![old, value]);
             }
         }
     }
@@ -337,12 +646,96 @@ mod tests {
     fn test_append() {
         let mut pool = VariablePool::new();
         let sel = vec!["n".to_string(), "arr".to_string()];
-        pool.set(&sel, Segment::ArrayAny(vec![]));
+        pool.set(&sel, Segment::Array(vec![]));
         pool.append(&sel, Segment::Integer(1));
         pool.append(&sel, Segment::Integer(2));
         match pool.get(&sel) {
-            Segment::ArrayAny(v) => assert_eq!(v.len(), 2),
-            _ => panic!("Expected ArrayAny"),
+            Segment::Array(v) => assert_eq!(v.len(), 2),
+            _ => panic!("Expected Array"),
         }
+    }
+
+    #[test]
+    fn test_from_value_array_inference() {
+        let seg = Segment::from_value(&serde_json::json!(["a", "b"]));
+        assert!(matches!(seg, Segment::ArrayString(_)));
+
+        let seg = Segment::from_value(&serde_json::json!([1, 2, 3]));
+        assert!(matches!(seg, Segment::Array(_)));
+
+        let seg = Segment::from_value(&serde_json::json!([1, "a"]));
+        assert!(matches!(seg, Segment::Array(_)));
+
+        let seg = Segment::from_value(&serde_json::json!([]));
+        assert!(matches!(seg, Segment::Array(_)));
+    }
+
+    #[test]
+    fn test_file_segment_roundtrip() {
+        let mut file = FileSegment::default();
+        file.transfer_method = "local".into();
+        file.url = Some("/tmp/a.txt".into());
+        let seg = file.to_segment();
+        assert!(matches!(seg, Segment::Object(_)));
+
+        let back = FileSegment::from_segment(&seg).unwrap();
+        assert_eq!(back.url, file.url);
+        assert_eq!(back.transfer_method, file.transfer_method);
+    }
+
+    #[test]
+    fn test_append_array_string_promote() {
+        let mut pool = VariablePool::new();
+        let sel = vec!["n".to_string(), "arr".to_string()];
+        pool.set(&sel, Segment::ArrayString(vec!["a".into()]));
+        pool.append(&sel, Segment::Integer(1));
+        match pool.get(&sel) {
+            Segment::Array(v) => assert_eq!(v.len(), 2),
+            _ => panic!("Expected Array after promotion"),
+        }
+    }
+
+    #[test]
+    fn test_segment_type_mapping() {
+        assert_eq!(SegmentType::from_dsl_type("string"), Some(SegmentType::String));
+        assert_eq!(SegmentType::from_dsl_type("number"), Some(SegmentType::Number));
+        assert_eq!(SegmentType::from_dsl_type("file"), Some(SegmentType::File));
+        assert_eq!(SegmentType::from_dsl_type("invalid"), None);
+
+        assert!(Segment::Integer(42).matches_type(&SegmentType::Number));
+        assert!(Segment::Float(3.14).matches_type(&SegmentType::Number));
+        assert!(!Segment::String("42".into()).matches_type(&SegmentType::Number));
+    }
+
+    #[tokio::test]
+    async fn test_stream_basic() {
+        let (stream, writer) = SegmentStream::channel();
+        writer.send(Segment::String("hello ".into())).await;
+        writer.send(Segment::String("world".into())).await;
+        writer.end(Segment::String("hello world".into())).await;
+
+        let result = stream.collect().await.unwrap();
+        assert_eq!(result.to_display_string(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_stream_multiple_readers() {
+        let (stream, writer) = SegmentStream::channel();
+        let mut reader1 = stream.reader();
+        let mut reader2 = stream.reader();
+
+        writer.send(Segment::String("a".into())).await;
+        let e1 = reader1.next().await;
+        let e2 = reader2.next().await;
+        assert!(matches!(e1, Some(StreamEvent::Chunk(_))));
+        assert!(matches!(e2, Some(StreamEvent::Chunk(_))));
+    }
+
+    #[tokio::test]
+    async fn test_stream_error() {
+        let (stream, writer) = SegmentStream::channel();
+        writer.error("timeout".into()).await;
+        let err = stream.collect().await.unwrap_err();
+        assert!(err.contains("timeout"));
     }
 }

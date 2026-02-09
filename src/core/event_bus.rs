@@ -77,6 +77,17 @@ pub enum GraphEngineEvent {
         retry_index: i32,
     },
 
+    // === Error Handler events ===
+    ErrorHandlerStarted {
+        error: String,
+    },
+    ErrorHandlerSucceeded {
+        outputs: HashMap<String, Value>,
+    },
+    ErrorHandlerFailed {
+        error: String,
+    },
+
     // === Iteration events ===
     IterationStarted {
         node_id: String,
@@ -175,13 +186,27 @@ impl GraphEngineEvent {
                 "type": "node_run_succeeded",
                 "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs }
             }),
-            GraphEngineEvent::NodeRunFailed { id, node_id, node_type, error, .. } => serde_json::json!({
+            GraphEngineEvent::NodeRunFailed { id, node_id, node_type, node_run_result, error } => serde_json::json!({
                 "type": "node_run_failed",
-                "data": { "id": id, "node_id": node_id, "node_type": node_type, "error": error }
+                "data": {
+                    "id": id,
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "error": error,
+                    "error_type": node_run_result.error_type,
+                    "error_detail": node_run_result.error_detail,
+                }
             }),
-            GraphEngineEvent::NodeRunException { id, node_id, node_type, error, .. } => serde_json::json!({
+            GraphEngineEvent::NodeRunException { id, node_id, node_type, node_run_result, error } => serde_json::json!({
                 "type": "node_run_exception",
-                "data": { "id": id, "node_id": node_id, "node_type": node_type, "error": error }
+                "data": {
+                    "id": id,
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "error": error,
+                    "error_type": node_run_result.error_type,
+                    "error_detail": node_run_result.error_detail,
+                }
             }),
             GraphEngineEvent::NodeRunStreamChunk { id, node_id, node_type, chunk, selector, is_final } => serde_json::json!({
                 "type": "node_run_stream_chunk",
@@ -190,6 +215,18 @@ impl GraphEngineEvent {
             GraphEngineEvent::NodeRunRetry { id, node_id, node_type, node_title, error, retry_index } => serde_json::json!({
                 "type": "node_run_retry",
                 "data": { "id": id, "node_id": node_id, "node_type": node_type, "node_title": node_title, "error": error, "retry_index": retry_index }
+            }),
+            GraphEngineEvent::ErrorHandlerStarted { error } => serde_json::json!({
+                "type": "error_handler_started",
+                "data": { "error": error }
+            }),
+            GraphEngineEvent::ErrorHandlerSucceeded { outputs } => serde_json::json!({
+                "type": "error_handler_succeeded",
+                "data": { "outputs": outputs }
+            }),
+            GraphEngineEvent::ErrorHandlerFailed { error } => serde_json::json!({
+                "type": "error_handler_failed",
+                "data": { "error": error }
             }),
             GraphEngineEvent::IterationStarted { node_id, node_title, inputs } => serde_json::json!({
                 "type": "iteration_started",

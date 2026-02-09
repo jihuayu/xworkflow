@@ -8,7 +8,9 @@ use tokio::sync::Semaphore;
 
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
-use crate::dsl::schema::{ComparisonOperator, Condition, NodeRunResult, WorkflowNodeExecutionStatus};
+use crate::dsl::schema::{
+    ComparisonOperator, Condition, IterationErrorMode, NodeRunResult, WorkflowNodeExecutionStatus,
+};
 use crate::error::NodeError;
 use crate::evaluator::condition::evaluate_condition;
 use crate::nodes::executor::NodeExecutor;
@@ -30,6 +32,8 @@ pub struct IterationNodeConfig {
     pub output_variable: String,
     #[serde(default)]
     pub max_iterations: Option<usize>,
+    #[serde(default = "default_iteration_error_mode")]
+    pub error_handle_mode: IterationErrorMode,
 
     // Compatibility fields
     #[serde(default)]
@@ -39,6 +43,8 @@ pub struct IterationNodeConfig {
     #[serde(default)]
     pub parallel_nums: Option<u32>,
 }
+
+fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Terminated }
 
 pub struct IterationNodeExecutor {
     sub_graph_executor: Arc<SubGraphExecutor>,
@@ -145,10 +151,22 @@ impl IterationNodeExecutor {
             let result = self
                 .sub_graph_executor
                 .execute(&config.sub_graph, pool, scope_vars, context)
-                .await
-                .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
+                .await;
 
-            results.push(result);
+            match result {
+                Ok(value) => results.push(value),
+                Err(e) => match config.error_handle_mode {
+                    IterationErrorMode::Terminated => {
+                        return Err(NodeError::ExecutionError(e.to_string()))
+                    }
+                    IterationErrorMode::RemoveAbnormal => {
+                        continue;
+                    }
+                    IterationErrorMode::ContinueOnError => {
+                        results.push(Value::Null);
+                    }
+                },
+            }
         }
 
         Ok(results)
@@ -186,11 +204,34 @@ impl IterationNodeExecutor {
         }
 
         let mut results = vec![Value::Null; items.len()];
+        let mut error_indices: Vec<usize> = Vec::new();
         for task in tasks {
             let (index, result) = task
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
-            results[index] = result.map_err(|e| NodeError::ExecutionError(e.to_string()))?;
+            match result {
+                Ok(value) => {
+                    results[index] = value;
+                }
+                Err(e) => match config.error_handle_mode {
+                    IterationErrorMode::Terminated => {
+                        return Err(NodeError::ExecutionError(e.to_string()))
+                    }
+                    IterationErrorMode::RemoveAbnormal => {
+                        error_indices.push(index);
+                    }
+                    IterationErrorMode::ContinueOnError => {
+                        results[index] = Value::Null;
+                    }
+                },
+            }
+        }
+
+        if matches!(config.error_handle_mode, IterationErrorMode::RemoveAbnormal) {
+            error_indices.sort_unstable_by(|a, b| b.cmp(a));
+            for idx in error_indices {
+                results.remove(idx);
+            }
         }
 
         Ok(results)
@@ -231,7 +272,7 @@ impl LoopNodeExecutor {
         }
     }
 
-    fn evaluate_condition(
+    async fn evaluate_condition(
         &self,
         condition: &LoopConditionConfig,
         loop_vars: &HashMap<String, Value>,
@@ -250,7 +291,7 @@ impl LoopNodeExecutor {
             value: condition.value.clone(),
         };
 
-        Ok(evaluate_condition(&cond, &pool))
+        Ok(evaluate_condition(&cond, &pool).await)
     }
 }
 
@@ -278,7 +319,7 @@ impl NodeExecutor for LoopNodeExecutor {
                 )));
             }
 
-            if !self.evaluate_condition(&config.condition, &loop_vars)? {
+            if !self.evaluate_condition(&config.condition, &loop_vars).await? {
                 break;
             }
 

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::{Segment, VariablePool};
+use crate::core::variable_pool::{Segment, SegmentStream, VariablePool};
 use crate::dsl::schema::{
     LlmNodeData, MemoryConfig, PromptMessage, WorkflowNodeExecutionStatus,
 };
@@ -112,44 +112,78 @@ impl NodeExecutor for LlmNodeExecutor {
             credentials: data.model.credentials.clone().unwrap_or_default(),
         };
 
-        let response = if request.stream {
-            if let Some(event_tx) = &context.event_tx {
-                let (chunk_tx, mut chunk_rx) = mpsc::channel::<StreamChunk>(64);
-                let event_tx = event_tx.clone();
-                let node_id = node_id.to_string();
-                let exec_id = context.id_generator.next_id();
+        if request.stream {
+            let (stream, writer) = SegmentStream::channel();
+            let provider = provider.clone();
+            let event_tx = context.event_tx.clone();
+            let node_id = node_id.to_string();
+            let exec_id = context.id_generator.next_id();
 
-                tokio::spawn(async move {
+            tokio::spawn(async move {
+                let (chunk_tx, mut chunk_rx) = mpsc::channel::<StreamChunk>(64);
+                let writer_for_chunks = writer.clone();
+                let event_tx_for_chunks = event_tx.clone();
+                let node_id_for_chunks = node_id.clone();
+                let exec_id_for_chunks = exec_id.clone();
+
+                let forward = tokio::spawn(async move {
+                    let mut accumulated = String::new();
                     while let Some(chunk) = chunk_rx.recv().await {
-                        let _ = event_tx
-                            .send(GraphEngineEvent::NodeRunStreamChunk {
-                                id: exec_id.clone(),
-                                node_id: node_id.clone(),
-                                node_type: "llm".to_string(),
-                                chunk: chunk.delta.clone(),
-                                selector: vec![node_id.clone(), "text".to_string()],
-                                is_final: chunk.finish_reason.is_some(),
-                            })
-                            .await;
+                        if !chunk.delta.is_empty() {
+                            accumulated.push_str(&chunk.delta);
+                            writer_for_chunks
+                                .send(Segment::String(chunk.delta.clone()))
+                                .await;
+                        }
+                        if let Some(tx) = &event_tx_for_chunks {
+                            let _ = tx
+                                .send(GraphEngineEvent::NodeRunStreamChunk {
+                                    id: exec_id_for_chunks.clone(),
+                                    node_id: node_id_for_chunks.clone(),
+                                    node_type: "llm".to_string(),
+                                    chunk: chunk.delta.clone(),
+                                    selector: vec![node_id_for_chunks.clone(), "text".to_string()],
+                                    is_final: chunk.finish_reason.is_some(),
+                                })
+                                .await;
+                        }
                     }
+                    accumulated
                 });
 
-                provider
-                    .chat_completion_stream(request, chunk_tx)
-                    .await
-                    .map_err(NodeError::from)?
-            } else {
-                provider
-                    .chat_completion(request)
-                    .await
-                    .map_err(NodeError::from)?
-            }
-        } else {
-            provider
-                .chat_completion(request)
-                .await
-                .map_err(NodeError::from)?
-        };
+                let response = provider.chat_completion_stream(request, chunk_tx).await;
+                let accumulated = forward.await.unwrap_or_default();
+
+                match response {
+                    Ok(resp) => {
+                        let final_text = if resp.content.is_empty() {
+                            accumulated
+                        } else {
+                            resp.content
+                        };
+                        writer.end(Segment::String(final_text)).await;
+                    }
+                    Err(e) => {
+                        writer.error(e.to_string()).await;
+                    }
+                }
+            });
+
+            let mut stream_outputs = HashMap::new();
+            stream_outputs.insert("text".to_string(), stream);
+
+            return Ok(crate::dsl::schema::NodeRunResult {
+                status: WorkflowNodeExecutionStatus::Succeeded,
+                stream_outputs,
+                edge_source_handle: "source".to_string(),
+                ..Default::default()
+            });
+        }
+
+        let response = provider
+            .chat_completion(request)
+            .await
+            .map_err(NodeError::from)?;
 
         let mut outputs = HashMap::new();
         outputs.insert("text".to_string(), Value::String(response.content.clone()));
@@ -218,7 +252,7 @@ fn extract_image_urls(seg: &Segment) -> Vec<String> {
     match seg {
         Segment::String(s) => vec![s.clone()],
         Segment::ArrayString(arr) => arr.clone(),
-        Segment::ArrayAny(arr) => arr
+        Segment::Array(arr) => arr
             .iter()
             .filter_map(|s| s.as_string())
             .collect(),

@@ -7,11 +7,12 @@ use crate::core::dispatcher::{EngineConfig, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
-use crate::dsl::schema::WorkflowSchema;
-use crate::dsl::validator::validate_workflow_schema;
+use crate::dsl::schema::{ErrorHandlingMode, WorkflowSchema};
+use crate::dsl::validation::{validate_schema, ValidationReport};
 use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
+use crate::nodes::subgraph::SubGraphExecutor;
 use crate::plugin::PluginManager;
 use crate::llm::LlmProviderRegistry;
 
@@ -21,6 +22,10 @@ pub enum ExecutionStatus {
     Running,
     Completed(HashMap<String, Value>),
     Failed(String),
+  FailedWithRecovery {
+    original_error: String,
+    recovered_outputs: HashMap<String, Value>,
+  },
 }
 
 /// Handle to a running or completed workflow
@@ -81,6 +86,63 @@ impl WorkflowRunner {
   }
 }
 
+fn build_error_context(
+  error: &WorkflowError,
+  schema: &WorkflowSchema,
+  partial_outputs: &HashMap<String, Value>,
+) -> HashMap<String, Value> {
+  let (node_id, node_type) = extract_error_node_info(error, schema);
+  let mut ctx = HashMap::new();
+  ctx.insert(
+    "sys.error_message".to_string(),
+    Value::String(error.to_string()),
+  );
+  ctx.insert(
+    "sys.error_node_id".to_string(),
+    Value::String(node_id.unwrap_or_default()),
+  );
+  ctx.insert(
+    "sys.error_node_type".to_string(),
+    Value::String(node_type.unwrap_or_default()),
+  );
+  ctx.insert(
+    "sys.error_type".to_string(),
+    Value::String(error_type_name(error).to_string()),
+  );
+  ctx.insert(
+    "sys.workflow_outputs".to_string(),
+    Value::Object(partial_outputs.clone().into_iter().collect()),
+  );
+  ctx
+}
+
+fn error_type_name(error: &WorkflowError) -> &'static str {
+  match error {
+    WorkflowError::NodeExecutionError { .. } => "NodeExecutionError",
+    WorkflowError::Timeout | WorkflowError::ExecutionTimeout => "Timeout",
+    WorkflowError::MaxStepsExceeded(_) => "MaxStepsExceeded",
+    WorkflowError::Aborted(_) => "Aborted",
+    _ => "InternalError",
+  }
+}
+
+fn extract_error_node_info(
+  error: &WorkflowError,
+  schema: &WorkflowSchema,
+) -> (Option<String>, Option<String>) {
+  match error {
+    WorkflowError::NodeExecutionError { node_id, .. } => {
+      let node_type = schema
+        .nodes
+        .iter()
+        .find(|n| n.id == *node_id)
+        .map(|n| n.data.node_type.clone());
+      (Some(node_id.clone()), node_type)
+    }
+    _ => (None, None),
+  }
+}
+
 pub struct WorkflowRunnerBuilder {
   schema: WorkflowSchema,
   user_inputs: HashMap<String, Value>,
@@ -134,8 +196,15 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  pub fn validate(&self) -> ValidationReport {
+    validate_schema(&self.schema)
+  }
+
   pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
-    validate_workflow_schema(&self.schema)?;
+    let report = validate_schema(&self.schema);
+    if !report.is_valid {
+      return Err(WorkflowError::ValidationFailed(report));
+    }
     let graph = build_graph(&self.schema)?;
 
     // Build variable pool
@@ -195,14 +264,15 @@ impl WorkflowRunnerBuilder {
     // Spawn workflow execution
     let status_exec = status.clone();
     let plugin_manager = self.plugin_manager.clone();
+    let schema = self.schema.clone();
     tokio::spawn(async move {
       let mut dispatcher = WorkflowDispatcher::new(
         graph,
         pool,
         registry,
-        tx,
+        tx.clone(),
         config,
-        context,
+        context.clone(),
         plugin_manager,
       );
       match dispatcher.run().await {
@@ -210,7 +280,63 @@ impl WorkflowRunnerBuilder {
           *status_exec.lock().await = ExecutionStatus::Completed(outputs);
         }
         Err(e) => {
-          *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+          if let Some(error_handler) = &schema.error_handler {
+            let partial_outputs = dispatcher.partial_outputs();
+            let pool_snapshot = dispatcher.snapshot_pool().await;
+            let error_context = build_error_context(&e, &schema, &partial_outputs);
+
+            let _ = tx
+              .send(GraphEngineEvent::ErrorHandlerStarted {
+                error: e.to_string(),
+              })
+              .await;
+
+            let executor = SubGraphExecutor::new();
+            match executor
+              .execute(
+                &error_handler.sub_graph,
+                &pool_snapshot,
+                error_context,
+                context.as_ref(),
+              )
+              .await
+            {
+              Ok(handler_outputs) => {
+                let recovered_outputs: HashMap<String, Value> = handler_outputs
+                  .as_object()
+                  .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                  .unwrap_or_default();
+
+                let _ = tx
+                  .send(GraphEngineEvent::ErrorHandlerSucceeded {
+                    outputs: recovered_outputs.clone(),
+                  })
+                  .await;
+
+                match error_handler.mode {
+                  ErrorHandlingMode::Recover => {
+                    *status_exec.lock().await = ExecutionStatus::FailedWithRecovery {
+                      original_error: e.to_string(),
+                      recovered_outputs,
+                    };
+                  }
+                  ErrorHandlingMode::Notify => {
+                    *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+                  }
+                }
+              }
+              Err(handler_err) => {
+                let _ = tx
+                  .send(GraphEngineEvent::ErrorHandlerFailed {
+                    error: handler_err.to_string(),
+                  })
+                  .await;
+                *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+              }
+            }
+          } else {
+            *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+          }
         }
       }
     });

@@ -8,7 +8,7 @@ use crate::dsl::schema::{
     NodeRunResult,
     VariableMapping, WorkflowNodeExecutionStatus, WriteMode,
 };
-use crate::error::NodeError;
+use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
 use crate::template::{render_jinja2, render_template};
@@ -185,6 +185,10 @@ impl NodeExecutor for HttpRequestExecutor {
         let method = config.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         let url_template = config.get("url").and_then(|v| v.as_str()).unwrap_or("");
         let timeout = config.get("timeout").and_then(|v| v.as_u64()).unwrap_or(10);
+        let fail_on_error_status = config
+            .get("fail_on_error_status")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Substitute variables in URL
         let url = render_template(url_template, variable_pool);
@@ -270,12 +274,57 @@ impl NodeExecutor for HttpRequestExecutor {
             .await
             .map_err(|e| NodeError::HttpError(e.to_string()))?;
 
-        let status_code = resp.status().as_u16() as i32;
-        let resp_headers = format!("{:?}", resp.headers());
+        let status_code = resp.status().as_u16();
+        let headers_snapshot = resp.headers().clone();
+        let resp_headers = format!("{:?}", headers_snapshot);
         let resp_body = resp
             .text()
             .await
             .map_err(|e| NodeError::HttpError(e.to_string()))?;
+
+        if fail_on_error_status && status_code >= 400 {
+            let body_preview: String = resp_body.chars().take(512).collect();
+            let error_msg = format!("HTTP {} {}", status_code, body_preview);
+            let context = match status_code {
+                401 | 403 => ErrorContext::non_retryable(
+                    ErrorCode::HttpClientError,
+                    error_msg.clone(),
+                )
+                .with_http_status(status_code),
+                429 => {
+                    let retry_after = headers_snapshot
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok());
+                    let mut ctx = ErrorContext::retryable(
+                        ErrorCode::HttpClientError,
+                        error_msg.clone(),
+                    )
+                    .with_http_status(status_code);
+                    if let Some(ra) = retry_after {
+                        ctx = ctx.with_retry_after(ra);
+                    }
+                    ctx
+                }
+                400 | 404 | 405 | 422 => ErrorContext::non_retryable(
+                    ErrorCode::HttpClientError,
+                    error_msg.clone(),
+                )
+                .with_http_status(status_code),
+                500..=599 => ErrorContext::retryable(
+                    ErrorCode::HttpServerError,
+                    error_msg.clone(),
+                )
+                .with_http_status(status_code),
+                _ => ErrorContext::non_retryable(
+                    ErrorCode::HttpClientError,
+                    error_msg.clone(),
+                )
+                .with_http_status(status_code),
+            };
+
+            return Err(NodeError::HttpError(error_msg).with_context(context));
+        }
 
         let mut outputs = HashMap::new();
         outputs.insert("status_code".to_string(), serde_json::json!(status_code));
@@ -391,14 +440,38 @@ impl NodeExecutor for CodeNodeExecutor {
             .sandbox_manager
             .execute(request)
             .await
-            .map_err(|e| NodeError::SandboxError(e.to_string()))?;
+            .map_err(|e| {
+                let context = match &e {
+                    crate::sandbox::SandboxError::ExecutionTimeout => ErrorContext::retryable(
+                        ErrorCode::SandboxTimeout,
+                        e.to_string(),
+                    ),
+                    crate::sandbox::SandboxError::MemoryLimitExceeded => ErrorContext::non_retryable(
+                        ErrorCode::SandboxMemoryLimit,
+                        e.to_string(),
+                    ),
+                    crate::sandbox::SandboxError::CompilationError(_) => ErrorContext::non_retryable(
+                        ErrorCode::SandboxCompilationError,
+                        e.to_string(),
+                    ),
+                    crate::sandbox::SandboxError::DangerousCode(_) => ErrorContext::non_retryable(
+                        ErrorCode::SandboxDangerousCode,
+                        e.to_string(),
+                    ),
+                    _ => ErrorContext::non_retryable(
+                        ErrorCode::SandboxExecutionError,
+                        e.to_string(),
+                    ),
+                };
+                NodeError::SandboxError(e.to_string()).with_context(context)
+            })?;
 
         if !result.success {
-            return Err(NodeError::ExecutionError(
-                result
-                    .error
-                    .unwrap_or_else(|| "Unknown sandbox error".to_string()),
-            ));
+            let message = result
+                .error
+                .unwrap_or_else(|| "Unknown sandbox error".to_string());
+            let context = ErrorContext::non_retryable(ErrorCode::SandboxExecutionError, &message);
+            return Err(NodeError::ExecutionError(message).with_context(context));
         }
 
         // Convert output to HashMap

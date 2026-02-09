@@ -7,9 +7,10 @@ use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{
-    NodeRunResult, WorkflowNodeExecutionStatus, WriteMode,
+  BackoffStrategy, ErrorStrategyConfig, ErrorStrategyType, NodeRunResult,
+  RetryConfig, WorkflowNodeExecutionStatus, WriteMode,
 };
-use crate::error::{WorkflowError, WorkflowResult};
+use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
 use crate::graph::types::{Graph, NodeState};
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::plugin::{PluginHookType, PluginManager};
@@ -46,6 +47,7 @@ pub struct WorkflowDispatcher {
     event_tx: mpsc::Sender<GraphEngineEvent>,
     config: EngineConfig,
     exceptions_count: i32,
+    final_outputs: HashMap<String, Value>,
     context: Arc<RuntimeContext>,
   plugin_manager: Option<Arc<PluginManager>>,
 }
@@ -67,10 +69,19 @@ impl WorkflowDispatcher {
             event_tx,
             config,
             exceptions_count: 0,
+            final_outputs: HashMap::new(),
             context,
         plugin_manager,
         }
     }
+
+        pub fn partial_outputs(&self) -> HashMap<String, Value> {
+          self.final_outputs.clone()
+        }
+
+        pub async fn snapshot_pool(&self) -> VariablePool {
+          self.variable_pool.read().await.clone()
+        }
 
     /// Run the workflow to completion
     pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
@@ -99,7 +110,6 @@ impl WorkflowDispatcher {
 
         let mut queue: Vec<String> = vec![root_id];
         let mut step_count: i32 = 0;
-        let mut final_outputs: HashMap<String, Value> = HashMap::new();
         let start_time = self.context.time_provider.now_timestamp();
 
         while let Some(node_id) = queue.pop() {
@@ -183,90 +193,124 @@ impl WorkflowDispatcher {
             let executor = self.registry.get(&node_type);
             let run_result = if let Some(exec) = executor {
                 // Check error strategy & retry
-                let error_strategy = node_config.get("error_strategy");
-                let retry_config = node_config.get("retry_config");
-                let max_retries = retry_config
-                    .and_then(|rc| rc.get("max_retries"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as i32;
-                let retry_interval = retry_config
-                    .and_then(|rc| rc.get("retry_interval"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as u64;
+                let error_strategy: Option<ErrorStrategyConfig> = node_config
+                  .get("error_strategy")
+                  .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let retry_config: Option<RetryConfig> = node_config
+                  .get("retry_config")
+                  .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let node_timeout = node_config.get("timeout_secs").and_then(|v| v.as_u64());
 
-                let mut last_error = None;
+                let max_retries = retry_config.as_ref().map(|rc| rc.max_retries).unwrap_or(0).max(0);
+                let retry_on_retryable_only = retry_config
+                  .as_ref()
+                  .map(|rc| rc.retry_on_retryable_only)
+                  .unwrap_or(true);
+
+                let mut last_error: Option<NodeError> = None;
                 let mut result = None;
 
                 for attempt in 0..=max_retries {
-                    match exec.execute(&node_id, &node_config, &pool_snapshot, &self.context).await {
-                        Ok(r) => {
-                            result = Some(r);
-                            break;
-                        }
-                        Err(e) => {
-                            last_error = Some(e.to_string());
-                            if attempt < max_retries {
-                                // Emit retry event
-                                let _ = self.event_tx.send(GraphEngineEvent::NodeRunRetry {
-                                    id: exec_id.clone(),
-                                    node_id: node_id.clone(),
-                                    node_type: node_type.clone(),
-                                    node_title: node_title.clone(),
-                                    error: last_error.clone().unwrap_or_default(),
-                                    retry_index: attempt + 1,
-                                }).await;
-                                if retry_interval > 0 {
-                                    tokio::time::sleep(std::time::Duration::from_millis(retry_interval)).await;
-                                }
-                            }
-                        }
+                  let exec_future = exec.execute(&node_id, &node_config, &pool_snapshot, &self.context);
+                  let exec_result = if let Some(timeout_secs) = node_timeout {
+                    match tokio::time::timeout(
+                      std::time::Duration::from_secs(timeout_secs),
+                      exec_future,
+                    )
+                    .await
+                    {
+                      Ok(r) => r,
+                      Err(_) => Err(NodeError::Timeout.with_context(ErrorContext::retryable(
+                        ErrorCode::Timeout,
+                        format!("Node execution timed out after {}s", timeout_secs),
+                      ))),
                     }
+                  } else {
+                    exec_future.await
+                  };
+
+                  match exec_result {
+                    Ok(r) => {
+                      result = Some(r);
+                      break;
+                    }
+                    Err(e) => {
+                      let should_retry = if attempt < max_retries {
+                        if retry_on_retryable_only {
+                          e.is_retryable()
+                        } else {
+                          true
+                        }
+                      } else {
+                        false
+                      };
+
+                      if should_retry {
+                        let interval = calculate_retry_interval(&retry_config, attempt, &e);
+                        let _ = self.event_tx.send(GraphEngineEvent::NodeRunRetry {
+                          id: exec_id.clone(),
+                          node_id: node_id.clone(),
+                          node_type: node_type.clone(),
+                          node_title: node_title.clone(),
+                          error: e.to_string(),
+                          retry_index: attempt + 1,
+                        }).await;
+                        if interval > 0 {
+                          tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+                        }
+                      }
+
+                      last_error = Some(e);
+
+                      if !should_retry && attempt < max_retries {
+                        break;
+                      }
+                    }
+                  }
                 }
 
                 match result {
-                    Some(r) => Ok(r),
-                    None => {
-                        // All retries failed, apply error strategy
-                        let strategy_type = error_strategy
-                            .and_then(|es| es.get("type"))
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("none");
+                  Some(r) => Ok(r),
+                  None => {
+                    let last_err = last_error
+                      .unwrap_or_else(|| NodeError::ExecutionError("Unknown error".to_string()));
+                    let error_type = last_err.error_code();
+                    let error_detail = last_err.to_structured_json();
 
-                        match strategy_type {
-                            "fail-branch" => {
-                                self.exceptions_count += 1;
-                                Ok(NodeRunResult {
-                                    status: WorkflowNodeExecutionStatus::Exception,
-                                    error: last_error.clone(),
-                                    edge_source_handle: "fail-branch".to_string(),
-                                    ..Default::default()
-                                })
-                            }
-                            "default-value" => {
-                                self.exceptions_count += 1;
-                                let defaults: HashMap<String, Value> = error_strategy
-                                    .and_then(|es| es.get("default_value"))
-                                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                                    .unwrap_or_default();
-                                Ok(NodeRunResult {
-                                    status: WorkflowNodeExecutionStatus::Exception,
-                                    outputs: defaults,
-                                    error: last_error.clone(),
-                                    edge_source_handle: "source".to_string(),
-                                    ..Default::default()
-                                })
-                            }
-                            _ => {
-                                // No strategy: fail the workflow
-                                Err(crate::error::NodeError::ExecutionError(
-                                    last_error.unwrap_or_else(|| "Unknown error".to_string()),
-                                ))
-                            }
-                        }
+                    match error_strategy.as_ref().map(|es| &es.strategy_type) {
+                      Some(ErrorStrategyType::FailBranch) => {
+                        self.exceptions_count += 1;
+                        Ok(NodeRunResult {
+                          status: WorkflowNodeExecutionStatus::Exception,
+                          error: Some(last_err.to_string()),
+                          error_type: Some(error_type),
+                          error_detail: Some(error_detail),
+                          edge_source_handle: "fail-branch".to_string(),
+                          ..Default::default()
+                        })
+                      }
+                      Some(ErrorStrategyType::DefaultValue) => {
+                        self.exceptions_count += 1;
+                        let defaults = error_strategy
+                          .as_ref()
+                          .and_then(|es| es.default_value.clone())
+                          .unwrap_or_default();
+                        Ok(NodeRunResult {
+                          status: WorkflowNodeExecutionStatus::Exception,
+                          outputs: defaults,
+                          error: Some(last_err.to_string()),
+                          error_type: Some(error_type),
+                          error_detail: Some(error_detail),
+                          edge_source_handle: "source".to_string(),
+                          ..Default::default()
+                        })
+                      }
+                      Some(ErrorStrategyType::None) | None => Err(last_err),
                     }
+                  }
                 }
             } else {
-                Err(crate::error::NodeError::ConfigError(format!(
+                Err(NodeError::ConfigError(format!(
                     "No executor for node type: {}",
                     node_type
                 )))
@@ -297,6 +341,7 @@ impl WorkflowDispatcher {
 
                     // Store outputs in variable pool
                     let mut outputs_for_write = result.outputs.clone();
+                    let stream_outputs = result.stream_outputs.clone();
                     if let Some(pm) = &self.plugin_manager {
                       let pool_snapshot = self.variable_pool.read().await.clone();
                       for (key, value) in outputs_for_write.iter_mut() {
@@ -378,13 +423,16 @@ impl WorkflowDispatcher {
                       }
 
                       pool.set_node_outputs(&node_id, &outputs_for_write);
+                      for (key, stream) in stream_outputs {
+                        pool.set(&[node_id.clone(), key], Segment::Stream(stream));
+                      }
                     }
 
                     // Track final outputs for end/answer nodes
                     if node_type == "end" || node_type == "answer" {
-                        for (k, v) in &result.outputs {
-                            final_outputs.insert(k.clone(), v.clone());
-                        }
+                      for (k, v) in &result.outputs {
+                        self.final_outputs.insert(k.clone(), v.clone());
+                      }
                     }
 
                     // Emit success or exception event
@@ -439,9 +487,13 @@ impl WorkflowDispatcher {
                 }
                 Err(e) => {
                     // Node execution failed, abort workflow
+                  let error_type = e.error_code();
+                  let error_detail = e.to_structured_json();
                     let err_result = NodeRunResult {
                         status: WorkflowNodeExecutionStatus::Failed,
-                        error: Some(e.to_string()),
+                    error: Some(e.to_string()),
+                    error_type: Some(error_type),
+                    error_detail: Some(error_detail.clone()),
                         ..Default::default()
                     };
 
@@ -461,6 +513,7 @@ impl WorkflowDispatcher {
                     return Err(WorkflowError::NodeExecutionError {
                         node_id,
                         error: e.to_string(),
+                      error_detail: Some(error_detail),
                     });
                 }
             }
@@ -468,21 +521,21 @@ impl WorkflowDispatcher {
 
         // Emit final event
         if self.exceptions_count > 0 {
-            let _ = self.event_tx.send(GraphEngineEvent::GraphRunPartialSucceeded {
-                exceptions_count: self.exceptions_count,
-                outputs: final_outputs.clone(),
-            }).await;
+          let _ = self.event_tx.send(GraphEngineEvent::GraphRunPartialSucceeded {
+            exceptions_count: self.exceptions_count,
+            outputs: self.final_outputs.clone(),
+          }).await;
         } else {
-            let _ = self.event_tx.send(GraphEngineEvent::GraphRunSucceeded {
-                outputs: final_outputs.clone(),
-            }).await;
+          let _ = self.event_tx.send(GraphEngineEvent::GraphRunSucceeded {
+            outputs: self.final_outputs.clone(),
+          }).await;
         }
 
         if let Some(pm) = &self.plugin_manager {
           let pool_snapshot = self.variable_pool.read().await.clone();
           let payload = serde_json::json!({
             "event": "after_workflow_run",
-            "outputs": final_outputs.clone(),
+            "outputs": self.final_outputs.clone(),
             "exceptions_count": self.exceptions_count,
           });
           pm.execute_hooks(
@@ -495,9 +548,42 @@ impl WorkflowDispatcher {
           .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
         }
 
-        Ok(final_outputs)
+        Ok(self.final_outputs.clone())
     }
 }
+
+  fn calculate_retry_interval(
+    retry_config: &Option<RetryConfig>,
+    attempt: i32,
+    error: &NodeError,
+  ) -> u64 {
+    let rc = match retry_config {
+      Some(rc) => rc,
+      None => return 0,
+    };
+
+    if let Some(ctx) = error.error_context() {
+      if let Some(retry_after) = ctx.retry_after_secs {
+        return retry_after * 1000;
+      }
+    }
+
+    let base = rc.retry_interval.max(0) as u64;
+    let interval = match rc.backoff_strategy {
+      BackoffStrategy::Fixed => base,
+      BackoffStrategy::Exponential => {
+        let multiplied = base as f64 * rc.backoff_multiplier.powi(attempt);
+        multiplied as u64
+      }
+      BackoffStrategy::ExponentialWithJitter => {
+        let multiplied = base as f64 * rc.backoff_multiplier.powi(attempt);
+        let jitter = rand::random::<f64>() * multiplied * 0.1;
+        (multiplied + jitter) as u64
+      }
+    };
+
+    interval.min(rc.max_retry_interval.max(0) as u64)
+  }
 
 #[cfg(test)]
 mod tests {

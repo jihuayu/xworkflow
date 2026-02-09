@@ -4,9 +4,9 @@ use serde_json::Value;
 
 /// Evaluate IfElse cases, returning the case_id of the first matching case,
 /// or "false" if no case matches (else branch).
-pub fn evaluate_cases(cases: &[Case], pool: &VariablePool) -> String {
+pub async fn evaluate_cases(cases: &[Case], pool: &VariablePool) -> String {
     for case in cases {
-        if evaluate_case(case, pool) {
+        if evaluate_case(case, pool).await {
             return case.case_id.clone();
         }
     }
@@ -14,20 +14,33 @@ pub fn evaluate_cases(cases: &[Case], pool: &VariablePool) -> String {
 }
 
 /// Evaluate a single case (AND/OR logic)
-pub fn evaluate_case(case: &Case, pool: &VariablePool) -> bool {
+pub async fn evaluate_case(case: &Case, pool: &VariablePool) -> bool {
     match case.logical_operator {
         LogicalOperator::And => {
-            case.conditions.iter().all(|c| evaluate_condition(c, pool))
+            for cond in &case.conditions {
+                if !evaluate_condition(cond, pool).await {
+                    return false;
+                }
+            }
+            true
         }
         LogicalOperator::Or => {
-            case.conditions.iter().any(|c| evaluate_condition(c, pool))
+            for cond in &case.conditions {
+                if evaluate_condition(cond, pool).await {
+                    return true;
+                }
+            }
+            false
         }
     }
 }
 
 /// Evaluate a single condition
-pub fn evaluate_condition(cond: &Condition, pool: &VariablePool) -> bool {
-    let actual = pool.get(&cond.variable_selector);
+pub async fn evaluate_condition(cond: &Condition, pool: &VariablePool) -> bool {
+    let actual = match pool.get(&cond.variable_selector) {
+        Segment::Stream(stream) => stream.collect().await.unwrap_or(Segment::None),
+        other => other,
+    };
     let expected = &cond.value;
 
     match &cond.comparison_operator {
@@ -139,7 +152,7 @@ fn eval_contains(actual: &Segment, expected: &Value) -> bool {
     match actual {
         Segment::String(s) => s.contains(&e),
         Segment::ArrayString(arr) => arr.iter().any(|s| s == &e),
-        Segment::ArrayAny(arr) => arr.iter().any(|s| s.to_display_string() == e),
+        Segment::Array(arr) => arr.iter().any(|s| s.to_display_string() == e),
         _ => false,
     }
 }
@@ -156,7 +169,7 @@ fn eval_all_of(actual: &Segment, expected: &Value) -> bool {
         Segment::ArrayString(arr) => {
             expected_items.iter().all(|e| arr.contains(e))
         }
-        Segment::ArrayAny(arr) => {
+        Segment::Array(arr) => {
             let actual_strs: Vec<String> = arr.iter().map(|s| s.to_display_string()).collect();
             expected_items.iter().all(|e| actual_strs.contains(e))
         }
@@ -184,127 +197,127 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_is() {
+    #[tokio::test]
+    async fn test_is() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::Is, Value::String("hello".into()));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_is_not() {
+    #[tokio::test]
+    async fn test_is_not() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::IsNot, Value::String("world".into()));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_contains() {
+    #[tokio::test]
+    async fn test_contains() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello world".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::Contains, Value::String("world".into()));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_not_contains() {
+    #[tokio::test]
+    async fn test_not_contains() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::NotContains, Value::String("xyz".into()));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_starts_with() {
+    #[tokio::test]
+    async fn test_starts_with() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello world".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::StartWith, Value::String("hello".into()));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_ends_with() {
+    #[tokio::test]
+    async fn test_ends_with() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello world".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::EndWith, Value::String("world".into()));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_empty() {
+    #[tokio::test]
+    async fn test_empty() {
         let pool = make_pool(vec![("n", "x", Segment::String("".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::Empty, Value::Null);
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_not_empty() {
+    #[tokio::test]
+    async fn test_not_empty() {
         let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::NotEmpty, Value::Null);
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_numeric_gt() {
+    #[tokio::test]
+    async fn test_numeric_gt() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(10))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::GreaterThan, serde_json::json!(5));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_numeric_lt() {
+    #[tokio::test]
+    async fn test_numeric_lt() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(3))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::LessThan, serde_json::json!(5));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_numeric_eq() {
+    #[tokio::test]
+    async fn test_numeric_eq() {
         let pool = make_pool(vec![("n", "x", Segment::Float(3.14))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::Equal, serde_json::json!(3.14));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_null() {
+    #[tokio::test]
+    async fn test_null() {
         let pool = make_pool(vec![]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::Null, Value::Null);
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_not_null() {
+    #[tokio::test]
+    async fn test_not_null() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(1))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::NotNull, Value::Null);
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_in() {
+    #[tokio::test]
+    async fn test_in() {
         let pool = make_pool(vec![("n", "x", Segment::String("b".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::In, serde_json::json!(["a", "b", "c"]));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_not_in() {
+    #[tokio::test]
+    async fn test_not_in() {
         let pool = make_pool(vec![("n", "x", Segment::String("d".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::NotIn, serde_json::json!(["a", "b", "c"]));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_all_of() {
+    #[tokio::test]
+    async fn test_all_of() {
         let pool = make_pool(vec![("n", "x", Segment::ArrayString(vec!["a".into(), "b".into(), "c".into()]))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::AllOf, serde_json::json!(["a", "b"]));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_string_numeric_coercion() {
+    #[tokio::test]
+    async fn test_string_numeric_coercion() {
         let pool = make_pool(vec![("n", "x", Segment::String("42".into()))]);
         let cond = make_condition(vec!["n", "x"], ComparisonOperator::GreaterThan, serde_json::json!("10"));
-        assert!(evaluate_condition(&cond, &pool));
+        assert!(evaluate_condition(&cond, &pool).await);
     }
 
-    #[test]
-    fn test_and_logic() {
+    #[tokio::test]
+    async fn test_and_logic() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(10))]);
         let case = Case {
             case_id: "c1".into(),
@@ -314,11 +327,11 @@ mod tests {
                 make_condition(vec!["n", "x"], ComparisonOperator::LessThan, serde_json::json!(20)),
             ],
         };
-        assert!(evaluate_case(&case, &pool));
+        assert!(evaluate_case(&case, &pool).await);
     }
 
-    #[test]
-    fn test_and_short_circuit() {
+    #[tokio::test]
+    async fn test_and_short_circuit() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(3))]);
         let case = Case {
             case_id: "c1".into(),
@@ -328,11 +341,11 @@ mod tests {
                 make_condition(vec!["n", "x"], ComparisonOperator::LessThan, serde_json::json!(20)),
             ],
         };
-        assert!(!evaluate_case(&case, &pool));
+        assert!(!evaluate_case(&case, &pool).await);
     }
 
-    #[test]
-    fn test_or_logic() {
+    #[tokio::test]
+    async fn test_or_logic() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(3))]);
         let case = Case {
             case_id: "c1".into(),
@@ -342,11 +355,11 @@ mod tests {
                 make_condition(vec!["n", "x"], ComparisonOperator::LessThan, serde_json::json!(5)),
             ],
         };
-        assert!(evaluate_case(&case, &pool));
+        assert!(evaluate_case(&case, &pool).await);
     }
 
-    #[test]
-    fn test_evaluate_cases_match() {
+    #[tokio::test]
+    async fn test_evaluate_cases_match() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(10))]);
         let cases = vec![
             Case {
@@ -364,11 +377,11 @@ mod tests {
                 ],
             },
         ];
-        assert_eq!(evaluate_cases(&cases, &pool), "c1");
+        assert_eq!(evaluate_cases(&cases, &pool).await, "c1");
     }
 
-    #[test]
-    fn test_evaluate_cases_else() {
+    #[tokio::test]
+    async fn test_evaluate_cases_else() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(3))]);
         let cases = vec![
             Case {
@@ -379,15 +392,15 @@ mod tests {
                 ],
             },
         ];
-        assert_eq!(evaluate_cases(&cases, &pool), "false");
+        assert_eq!(evaluate_cases(&cases, &pool).await, "false");
     }
 
-    #[test]
-    fn test_ge_le() {
+    #[tokio::test]
+    async fn test_ge_le() {
         let pool = make_pool(vec![("n", "x", Segment::Integer(5))]);
         let ge = make_condition(vec!["n", "x"], ComparisonOperator::GreaterOrEqual, serde_json::json!(5));
-        assert!(evaluate_condition(&ge, &pool));
+        assert!(evaluate_condition(&ge, &pool).await);
         let le = make_condition(vec!["n", "x"], ComparisonOperator::LessOrEqual, serde_json::json!(5));
-        assert!(evaluate_condition(&le, &pool));
+        assert!(evaluate_condition(&le, &pool).await);
     }
 }

@@ -181,7 +181,7 @@ impl PluginRuntime {
 
         let output = self
             .call_function(&node_type.handler, config, state)
-            .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
+            .map_err(NodeError::from)?;
 
         let mut outputs = std::collections::HashMap::new();
         if let Value::Object(obj) = &output {

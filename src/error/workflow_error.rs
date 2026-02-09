@@ -1,5 +1,6 @@
 use thiserror::Error;
 use super::NodeError;
+use crate::dsl::validation::ValidationReport;
 
 /// Workflow-level errors
 #[derive(Debug, Error)]
@@ -21,8 +22,6 @@ pub enum WorkflowError {
     EdgeNotFound(String),
     #[error("Node executor not found for type: {0}")]
     ExecutorNotFound(String),
-    #[error("Node execution failed: node={0}, error={1}")]
-    NodeExecutionFailed(String, String),
     #[error("Workflow timeout")]
     Timeout,
     #[error("Execution timeout")]
@@ -42,7 +41,13 @@ pub enum WorkflowError {
     #[error("Workflow aborted: {0}")]
     Aborted(String),
     #[error("Node execution error: node={node_id}, error={error}")]
-    NodeExecutionError { node_id: String, error: String },
+    NodeExecutionError {
+        node_id: String,
+        error: String,
+        error_detail: Option<serde_json::Value>,
+    },
+    #[error("Validation failed")]
+    ValidationFailed(ValidationReport),
     #[error("Node error: {0}")]
     NodeError(#[from] NodeError),
     #[error("Internal error: {0}")]

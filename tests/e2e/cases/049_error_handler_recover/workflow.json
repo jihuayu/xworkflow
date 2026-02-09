@@ -1,0 +1,76 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start"
+      }
+    },
+    {
+      "id": "code_fail",
+      "data": {
+        "type": "code",
+        "title": "Failing Code",
+        "code": "function main(inputs) { throw new Error('boom'); }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          {
+            "variable": "result",
+            "value_selector": ["code_fail", "result"]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {"source": "start", "target": "code_fail"},
+    {"source": "code_fail", "target": "end"}
+  ],
+  "error_handler": {
+    "mode": "recover",
+    "sub_graph": {
+      "nodes": [
+        {
+          "id": "eh_start",
+          "type": "start",
+          "title": "Error Handler Start",
+          "data": {}
+        },
+        {
+          "id": "fallback",
+          "type": "template-transform",
+          "title": "Fallback",
+          "data": {
+            "template": "fallback"
+          }
+        },
+        {
+          "id": "eh_end",
+          "type": "end",
+          "title": "Error Handler End",
+          "data": {
+            "outputs": [
+              {
+                "variable": "result",
+                "value_selector": ["fallback", "output"]
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {"source": "eh_start", "target": "fallback"},
+        {"source": "fallback", "target": "eh_end"}
+      ]
+    }
+  }
+}

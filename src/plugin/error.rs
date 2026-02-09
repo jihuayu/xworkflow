@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::error::{ErrorCode, ErrorContext, NodeError};
+
 #[derive(Debug, Error)]
 pub enum PluginError {
     #[error("Plugin not found: {0}")]
@@ -40,4 +42,26 @@ pub enum PluginError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+}
+
+impl From<PluginError> for NodeError {
+    fn from(e: PluginError) -> Self {
+        let context = match &e {
+            PluginError::NotFound(_) => {
+                ErrorContext::non_retryable(ErrorCode::PluginNotFound, e.to_string())
+            }
+            PluginError::Timeout | PluginError::FuelExhausted => {
+                ErrorContext::retryable(ErrorCode::PluginExecutionError, e.to_string())
+            }
+            PluginError::MemoryLimitExceeded => {
+                ErrorContext::non_retryable(ErrorCode::PluginResourceLimit, e.to_string())
+            }
+            PluginError::CapabilityDenied(_) => {
+                ErrorContext::non_retryable(ErrorCode::PluginCapabilityDenied, e.to_string())
+            }
+            _ => ErrorContext::non_retryable(ErrorCode::PluginExecutionError, e.to_string()),
+        };
+
+        NodeError::ExecutionError(e.to_string()).with_context(context)
+    }
 }

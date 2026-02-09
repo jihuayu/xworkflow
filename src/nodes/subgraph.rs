@@ -85,6 +85,7 @@ impl SubGraphExecutor {
         let graph = build_sub_graph(sub_graph)?;
         let registry = NodeExecutorRegistry::new();
         let (tx, _rx) = mpsc::channel(16);
+        let sub_context = context.clone().with_event_tx(tx.clone());
 
         let mut dispatcher = WorkflowDispatcher::new(
             graph,
@@ -92,7 +93,7 @@ impl SubGraphExecutor {
             registry,
             tx,
             EngineConfig::default(),
-            std::sync::Arc::new(context.clone()),
+            std::sync::Arc::new(sub_context),
             None,
         );
 

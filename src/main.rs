@@ -96,6 +96,12 @@ edges:
       ExecutionStatus::Failed(error) => {
         println!("\n=== Workflow failed: {} ===", error);
       }
+      ExecutionStatus::FailedWithRecovery { original_error, recovered_outputs } => {
+        println!("\n=== Workflow failed with recovery: {} ===", original_error);
+        for (k, v) in &recovered_outputs {
+          println!("  {} = {}", k, v);
+        }
+      }
       ExecutionStatus::Running => {
         println!("\n=== Workflow still running ===");
       }

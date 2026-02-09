@@ -13,6 +13,7 @@ pub mod llm;
 pub use crate::core::{
 	GraphEngineEvent,
 	Segment,
+	SegmentType,
 	VariablePool,
 	WorkflowDispatcher,
 	RuntimeContext,
@@ -23,7 +24,16 @@ pub use crate::core::{
 	FakeTimeProvider,
 	FakeIdGenerator,
 };
-pub use crate::dsl::{parse_dsl, DslFormat, WorkflowSchema};
+pub use crate::dsl::{
+	parse_dsl,
+	validate_dsl,
+	validate_schema,
+	Diagnostic,
+	DiagnosticLevel,
+	ValidationReport,
+	DslFormat,
+	WorkflowSchema,
+};
 pub use crate::error::{NodeError, WorkflowError};
 pub use crate::graph::{build_graph, Graph};
 pub use crate::nodes::NodeExecutorRegistry;

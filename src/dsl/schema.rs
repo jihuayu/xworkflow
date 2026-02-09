@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::core::variable_pool::SegmentStream;
+
 // ================================
 // Variable Selector (Dify-compatible)
 // ================================
@@ -29,6 +31,8 @@ pub struct WorkflowSchema {
     pub environment_variables: Vec<EnvironmentVariable>,
     #[serde(default)]
     pub conversation_variables: Vec<ConversationVariable>,
+    #[serde(default)]
+    pub error_handler: Option<ErrorHandlerConfig>,
 }
 
 /// Node definition in the DSL.
@@ -52,6 +56,8 @@ pub struct NodeData {
     pub error_strategy: Option<ErrorStrategyConfig>,
     #[serde(default)]
     pub retry_config: Option<RetryConfig>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     /// All remaining fields are captured here as a JSON map.
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -108,6 +114,51 @@ pub struct RetryConfig {
     pub max_retries: i32,
     #[serde(default)]
     pub retry_interval: i32,
+    #[serde(default = "default_backoff_strategy")]
+    pub backoff_strategy: BackoffStrategy,
+    #[serde(default = "default_backoff_multiplier")]
+    pub backoff_multiplier: f64,
+    #[serde(default = "default_max_retry_interval")]
+    pub max_retry_interval: i32,
+    #[serde(default = "default_retry_on_retryable_only")]
+    pub retry_on_retryable_only: bool,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum BackoffStrategy {
+    Fixed,
+    Exponential,
+    ExponentialWithJitter,
+}
+
+fn default_backoff_strategy() -> BackoffStrategy { BackoffStrategy::Fixed }
+fn default_backoff_multiplier() -> f64 { 2.0 }
+fn default_max_retry_interval() -> i32 { 60000 }
+fn default_retry_on_retryable_only() -> bool { true }
+
+// ================================
+// Workflow Error Handler
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorHandlingMode {
+    Recover,
+    Notify,
+}
+
+impl Default for ErrorHandlingMode {
+    fn default() -> Self {
+        Self::Notify
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ErrorHandlerConfig {
+    pub sub_graph: crate::nodes::subgraph::SubGraphDefinition,
+    #[serde(default)]
+    pub mode: ErrorHandlingMode,
 }
 
 // ================================
@@ -362,6 +413,8 @@ pub struct HttpRequestNodeData {
     pub authorization: Option<Authorization>,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
+    #[serde(default)]
+    pub fail_on_error_status: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -563,12 +616,14 @@ pub struct NodeRunResult {
     pub inputs: HashMap<String, Value>,
     pub process_data: HashMap<String, Value>,
     pub outputs: HashMap<String, Value>,
+    pub stream_outputs: HashMap<String, SegmentStream>,
     pub metadata: HashMap<String, Value>,
     pub llm_usage: Option<LlmUsage>,
     pub edge_source_handle: String,
     pub error: Option<String>,
     pub error_type: Option<String>,
     pub retry_index: i32,
+    pub error_detail: Option<Value>,
 }
 
 impl Default for NodeRunResult {
@@ -578,12 +633,14 @@ impl Default for NodeRunResult {
             inputs: HashMap::new(),
             process_data: HashMap::new(),
             outputs: HashMap::new(),
+            stream_outputs: HashMap::new(),
             metadata: HashMap::new(),
             llm_usage: None,
             edge_source_handle: "source".to_string(),
             error: None,
             error_type: None,
             retry_index: 0,
+            error_detail: None,
         }
     }
 }

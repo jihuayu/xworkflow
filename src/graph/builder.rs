@@ -86,6 +86,9 @@ fn build_node_config(ns: &NodeSchema) -> Value {
     if let Some(rc) = &ns.data.retry_config {
         config.insert("retry_config".to_string(), serde_json::to_value(rc).unwrap_or(Value::Null));
     }
+    if let Some(timeout_secs) = ns.data.timeout_secs {
+      config.insert("timeout_secs".to_string(), Value::Number(timeout_secs.into()));
+    }
     Value::Object(config)
 }
 

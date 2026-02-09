@@ -185,12 +185,24 @@ pub async fn run_case(case_dir: &Path) {
         builder = builder.plugin_manager(Arc::new(manager));
     }
 
-    let handle = builder
-        .run()
-        .await
-        .unwrap_or_else(|e| panic!("Workflow failed to start: {}", e));
+    let handle = builder.run().await;
+    if handle.is_err() {
+        let err = handle.err().unwrap();
+        if expected.status == "failed" {
+            if let Some(substr) = expected.error_contains {
+                assert!(
+                    err.to_string().contains(&substr),
+                    "Error did not contain '{}': {}",
+                    substr,
+                    err
+                );
+            }
+            return;
+        }
+        panic!("Workflow failed to start: {}", err);
+    }
 
-    let status = handle.wait().await;
+    let status = handle.unwrap().wait().await;
     match expected.status.as_str() {
         "completed" => match status {
             ExecutionStatus::Completed(actual_outputs) => {
@@ -230,6 +242,39 @@ pub async fn run_case(case_dir: &Path) {
             }
             other => panic!(
                 "Expected failed but got {:?} for case: {}",
+                other,
+                case_dir.display()
+            ),
+        },
+        "failed_with_recovery" => match status {
+            ExecutionStatus::FailedWithRecovery { original_error, recovered_outputs } => {
+                if let Some(substr) = expected.error_contains {
+                    assert!(
+                        original_error.contains(&substr),
+                        "Error did not contain '{}': {}",
+                        substr,
+                        original_error
+                    );
+                }
+                if expected.partial_match {
+                    for (k, v) in expected.outputs {
+                        assert_eq!(
+                            recovered_outputs.get(&k),
+                            Some(&v),
+                            "Output mismatch for key '{}'",
+                            k
+                        );
+                    }
+                } else {
+                    assert_eq!(
+                        recovered_outputs, expected.outputs,
+                        "Outputs mismatch for case: {}",
+                        case_dir.display()
+                    );
+                }
+            }
+            other => panic!(
+                "Expected failed_with_recovery but got {:?} for case: {}",
                 other,
                 case_dir.display()
             ),

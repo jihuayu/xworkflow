@@ -165,7 +165,7 @@ impl NodeExecutor for IfElseNodeExecutor {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let selected = evaluate_cases(&cases, variable_pool);
+        let selected = evaluate_cases(&cases, variable_pool).await;
 
         let mut outputs = HashMap::new();
         outputs.insert("selected_case".to_string(), Value::String(selected.clone()));
