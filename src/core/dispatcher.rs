@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::core::debug::{DebugAction, DebugGate, DebugHook, NoopGate, NoopHook};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
@@ -40,7 +41,7 @@ impl Default for EngineConfig {
 }
 
 /// The main workflow dispatcher: drives graph execution
-pub struct WorkflowDispatcher {
+pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> {
     graph: Arc<RwLock<Graph>>,
     variable_pool: Arc<RwLock<VariablePool>>,
     registry: Arc<NodeExecutorRegistry>,
@@ -50,10 +51,12 @@ pub struct WorkflowDispatcher {
     final_outputs: HashMap<String, Value>,
     context: Arc<RuntimeContext>,
   plugin_manager: Option<Arc<PluginManager>>,
+    debug_gate: G,
+    debug_hook: H,
 }
 
-impl WorkflowDispatcher {
-    pub fn new(
+impl WorkflowDispatcher<NoopGate, NoopHook> {
+  pub fn new(
         graph: Graph,
         variable_pool: VariablePool,
         registry: NodeExecutorRegistry,
@@ -72,17 +75,85 @@ impl WorkflowDispatcher {
             final_outputs: HashMap::new(),
             context,
         plugin_manager,
+      debug_gate: NoopGate,
+      debug_hook: NoopHook,
         }
     }
 
-        pub fn partial_outputs(&self) -> HashMap<String, Value> {
-          self.final_outputs.clone()
-        }
+  }
 
-        pub async fn snapshot_pool(&self) -> VariablePool {
-          self.variable_pool.read().await.clone()
-        }
 
+impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
+  pub fn new_with_debug(
+    graph: Graph,
+    variable_pool: VariablePool,
+    registry: NodeExecutorRegistry,
+    event_tx: mpsc::Sender<GraphEngineEvent>,
+    config: EngineConfig,
+    context: Arc<RuntimeContext>,
+    plugin_manager: Option<Arc<PluginManager>>,
+    debug_gate: G,
+    debug_hook: H,
+  ) -> Self {
+    WorkflowDispatcher {
+      graph: Arc::new(RwLock::new(graph)),
+      variable_pool: Arc::new(RwLock::new(variable_pool)),
+      registry: Arc::new(registry),
+      event_tx,
+      config,
+      exceptions_count: 0,
+      final_outputs: HashMap::new(),
+      context,
+      plugin_manager,
+      debug_gate,
+      debug_hook,
+    }
+  }
+
+  pub fn partial_outputs(&self) -> HashMap<String, Value> {
+    self.final_outputs.clone()
+  }
+
+  pub async fn snapshot_pool(&self) -> VariablePool {
+    self.variable_pool.read().await.clone()
+  }
+
+  async fn apply_debug_action(&self, action: DebugAction) -> WorkflowResult<DebugActionResult> {
+    let mut next_action = action;
+    loop {
+      match next_action {
+        DebugAction::Continue => return Ok(DebugActionResult::Continue),
+        DebugAction::Abort { reason } => return Ok(DebugActionResult::Abort(reason)),
+        DebugAction::SkipNode => return Ok(DebugActionResult::SkipNode),
+        DebugAction::UpdateVariables { variables, then } => {
+          let mut pool = self.variable_pool.write().await;
+          for (key, value) in &variables {
+            let parts: Vec<&str> = key.splitn(2, '.').collect();
+            if parts.len() == 2 {
+              pool.set(
+                &[parts[0].to_string(), parts[1].to_string()],
+                Segment::from_value(value),
+              );
+            }
+          }
+          drop(pool);
+          next_action = *then;
+        }
+      }
+    }
+  }
+
+  async fn skip_node(&self, node_id: &str, is_branch: bool) {
+    let mut g = self.graph.write().await;
+    if let Some(node) = g.nodes.get_mut(node_id) {
+      node.state = NodeState::Skipped;
+    }
+    if is_branch {
+      g.process_branch_edges(node_id, "false");
+    } else {
+      g.process_normal_edges(node_id);
+    }
+  }
     /// Run the workflow to completion
     pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
         // Emit graph started
@@ -154,6 +225,34 @@ impl WorkflowDispatcher {
                     }
                 }
             }
+
+                // [DEBUG] Hook before node execute
+                if self.debug_gate.should_pause_before(&node_id) {
+                  let pool_snapshot = self.variable_pool.read().await;
+                  let action = self
+                    .debug_hook
+                    .before_node_execute(&node_id, &node_type, &node_title, &pool_snapshot)
+                    .await?;
+                  drop(pool_snapshot);
+
+                  match self.apply_debug_action(action).await? {
+                    DebugActionResult::Continue => {}
+                    DebugActionResult::Abort(reason) => {
+                      return Err(WorkflowError::Aborted(reason));
+                    }
+                    DebugActionResult::SkipNode => {
+                      self.skip_node(&node_id, is_branch).await;
+                      let g = self.graph.read().await;
+                      let downstream = g.get_downstream_node_ids(&node_id);
+                      for ds_id in downstream {
+                        if g.is_node_ready(&ds_id) {
+                          queue.push(ds_id);
+                        }
+                      }
+                      continue;
+                    }
+                  }
+                }
 
             let exec_id = self.context.id_generator.next_id();
 
@@ -472,6 +571,24 @@ impl WorkflowDispatcher {
                         } else {
                             g.process_normal_edges(&node_id);
                         }
+                    }
+
+                    // [DEBUG] Hook after node execute
+                    if self.debug_gate.should_pause_after(&node_id) {
+                      let pool_snapshot = self.variable_pool.read().await;
+                      let action = self
+                        .debug_hook
+                        .after_node_execute(&node_id, &node_type, &node_title, &result, &pool_snapshot)
+                        .await?;
+                      drop(pool_snapshot);
+
+                      match self.apply_debug_action(action).await? {
+                        DebugActionResult::Continue => {}
+                        DebugActionResult::Abort(reason) => {
+                          return Err(WorkflowError::Aborted(reason));
+                        }
+                        DebugActionResult::SkipNode => {}
+                      }
                     }
 
                     // Find ready downstream nodes
@@ -1045,4 +1162,10 @@ edges:
         assert!(event_types.contains(&"node_run_succeeded".to_string()));
         assert!(event_types.last().unwrap().contains("graph_run"));
     }
+}
+
+enum DebugActionResult {
+  Continue,
+  Abort(String),
+  SkipNode,
 }

@@ -153,6 +153,23 @@ pub enum GraphEngineEvent {
         plugin_id: String,
         error: String,
     },
+
+    // === Debug events ===
+    DebugPaused {
+        reason: String,
+        node_id: String,
+        node_type: String,
+        node_title: String,
+        phase: String,
+    },
+    DebugResumed,
+    DebugBreakpointChanged {
+        action: String,
+        node_id: Option<String>,
+    },
+    DebugVariableSnapshot {
+        data: Value,
+    },
 }
 
 impl GraphEngineEvent {
@@ -275,6 +292,27 @@ impl GraphEngineEvent {
             GraphEngineEvent::PluginError { plugin_id, error } => serde_json::json!({
                 "type": "plugin_error",
                 "data": { "plugin_id": plugin_id, "error": error }
+            }),
+            GraphEngineEvent::DebugPaused { reason, node_id, node_type, node_title, phase } => serde_json::json!({
+                "type": "debug_paused",
+                "data": {
+                    "reason": reason,
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "node_title": node_title,
+                    "phase": phase
+                }
+            }),
+            GraphEngineEvent::DebugResumed => serde_json::json!({
+                "type": "debug_resumed"
+            }),
+            GraphEngineEvent::DebugBreakpointChanged { action, node_id } => serde_json::json!({
+                "type": "debug_breakpoint_changed",
+                "data": { "action": action, "node_id": node_id }
+            }),
+            GraphEngineEvent::DebugVariableSnapshot { data } => serde_json::json!({
+                "type": "debug_variable_snapshot",
+                "data": { "data": data }
             }),
         }
     }

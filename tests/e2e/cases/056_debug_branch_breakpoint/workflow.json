@@ -1,0 +1,71 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          {
+            "variable": "n",
+            "label": "N",
+            "type": "number",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "if1",
+      "data": {
+        "type": "if-else",
+        "title": "Check",
+        "cases": [
+          {
+            "case_id": "yes",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["start", "n"],
+                "comparison_operator": "greater_than",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_a",
+      "data": {
+        "type": "end",
+        "title": "End A",
+        "outputs": [
+          {
+            "variable": "path",
+            "value_selector": ["start", "n"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_b",
+      "data": {
+        "type": "end",
+        "title": "End B",
+        "outputs": [
+          {
+            "variable": "path",
+            "value_selector": ["start", "n"]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "if1" },
+    { "source": "if1", "target": "end_a", "sourceHandle": "yes" },
+    { "source": "if1", "target": "end_b", "sourceHandle": "false" }
+  ]
+}

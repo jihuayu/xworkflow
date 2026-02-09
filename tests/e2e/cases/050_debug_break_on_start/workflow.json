@@ -1,0 +1,36 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          {
+            "variable": "query",
+            "label": "Q",
+            "type": "string",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          {
+            "variable": "result",
+            "value_selector": ["start", "query"]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "end" }
+  ]
+}

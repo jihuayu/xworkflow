@@ -1,0 +1,21 @@
+{
+  "config": {
+    "breakpoints": ["if1"],
+    "break_on_start": false,
+    "auto_snapshot": false
+  },
+  "steps": [
+    {
+      "expect_node": "if1",
+      "expect_reason": "breakpoint",
+      "expect_phase": "before",
+      "action": "step"
+    },
+    {
+      "expect_node": "if1",
+      "expect_reason": "step",
+      "expect_phase": "after",
+      "action": "continue"
+    }
+  ]
+}

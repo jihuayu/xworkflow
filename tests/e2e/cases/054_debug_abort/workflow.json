@@ -1,0 +1,49 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          {
+            "variable": "query",
+            "label": "Q",
+            "type": "string",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "code_1",
+      "data": {
+        "type": "code",
+        "title": "Process",
+        "language": "javascript",
+        "code": "function main(inputs) { return { result: inputs.input + ' done' }; }",
+        "variables": [
+          { "variable": "input", "value_selector": ["start", "query"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          {
+            "variable": "result",
+            "value_selector": ["code_1", "result"]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code_1" },
+    { "source": "code_1", "target": "end" }
+  ]
+}

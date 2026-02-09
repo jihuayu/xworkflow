@@ -1,0 +1,39 @@
+{
+  "config": {
+    "breakpoints": [],
+    "break_on_start": true,
+    "auto_snapshot": false
+  },
+  "steps": [
+    {
+      "expect_node": "start",
+      "expect_reason": "initial",
+      "expect_phase": "before",
+      "action": "step"
+    },
+    {
+      "expect_node": "start",
+      "expect_reason": "step",
+      "expect_phase": "after",
+      "action": "step"
+    },
+    {
+      "expect_node": "code_1",
+      "expect_reason": "step",
+      "expect_phase": "before",
+      "action": "step"
+    },
+    {
+      "expect_node": "code_1",
+      "expect_reason": "step",
+      "expect_phase": "after",
+      "action": "step"
+    },
+    {
+      "expect_node": "end",
+      "expect_reason": "step",
+      "expect_phase": "before",
+      "action": "continue"
+    }
+  ]
+}

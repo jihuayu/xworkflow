@@ -52,3 +52,14 @@ e2e::e2e_test_cases!(
     case_048_llm_openai_basic => "048_llm_openai_basic",
     case_049_error_handler_recover => "049_error_handler_recover",
 );
+
+e2e::e2e_debug_test_cases!(
+    "tests/e2e/cases",
+    case_050_debug_break_on_start => "050_debug_break_on_start",
+    case_051_debug_step_through => "051_debug_step_through",
+    case_052_debug_breakpoint_hit => "052_debug_breakpoint_hit",
+    case_053_debug_update_variables => "053_debug_update_variables",
+    case_054_debug_abort => "054_debug_abort",
+    case_055_debug_dynamic_breakpoint => "055_debug_dynamic_breakpoint",
+    case_056_debug_branch_breakpoint => "056_debug_branch_breakpoint",
+);
