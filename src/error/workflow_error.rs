@@ -6,6 +6,11 @@ use super::NodeError;
 pub enum WorkflowError {
     #[error("DSL parse error: {0}")]
     DslParseError(String),
+    #[error("Unsupported DSL version: {found}, supported versions: {supported}")]
+    UnsupportedVersion {
+        found: String,
+        supported: String,
+    },
     #[error("Graph build error: {0}")]
     GraphBuildError(String),
     #[error("Graph validation error: {0}")]

@@ -193,6 +193,7 @@ mod tests {
     #[tokio::test]
     async fn test_scheduler_basic() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data:
@@ -241,6 +242,7 @@ edges:
     #[tokio::test]
     async fn test_scheduler_with_branch() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data: { type: start, title: Start }

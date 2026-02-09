@@ -15,6 +15,7 @@ async fn main() {
     // --- Demo 1: Simple Start → End ---
     println!("--- Demo 1: Simple pipeline ---");
     let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data:
@@ -59,6 +60,7 @@ edges:
     // --- Demo 2: Branch workflow ---
     println!("--- Demo 2: IfElse branch ---");
     let yaml2 = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data: { type: start, title: Start }

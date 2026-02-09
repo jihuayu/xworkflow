@@ -378,6 +378,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_start_end() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start_1
     data:
@@ -433,6 +434,7 @@ edges:
     #[tokio::test]
     async fn test_ifelse_branch() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data:
@@ -492,6 +494,7 @@ edges:
     #[tokio::test]
     async fn test_ifelse_else_branch() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data:
@@ -549,6 +552,7 @@ edges:
     #[tokio::test]
     async fn test_answer_node() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data: { type: start, title: Start }
@@ -590,6 +594,7 @@ edges:
     async fn test_max_steps() {
         // Create a simple graph with just start -> end but set max_steps to 0
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: s
     data: { type: start, title: S }
@@ -615,6 +620,7 @@ edges:
     #[tokio::test]
     async fn test_template_transform_pipeline() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data: { type: start, title: Start }
@@ -658,6 +664,7 @@ edges:
     #[tokio::test]
     async fn test_variable_aggregator_pipeline() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data: { type: start, title: Start }
@@ -726,6 +733,7 @@ edges:
     #[tokio::test]
     async fn test_event_sequence() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: s
     data: { type: start, title: Start }

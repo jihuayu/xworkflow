@@ -13,8 +13,16 @@ pub type VariableSelector = Vec<String>;
 // Workflow DSL Schema
 // ================================
 
+/// Current supported DSL version
+pub const CURRENT_DSL_VERSION: &str = "0.1.0";
+
+/// All supported DSL versions
+pub const SUPPORTED_DSL_VERSIONS: &[&str] = &["0.1.0"];
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct WorkflowSchema {
+    /// DSL version string, e.g. "0.1.0"
+    pub version: String,
     pub nodes: Vec<NodeSchema>,
     pub edges: Vec<EdgeSchema>,
     #[serde(default)]

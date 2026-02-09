@@ -97,6 +97,7 @@ mod tests {
     #[test]
     fn test_build_simple_graph() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start_1
     data:
@@ -121,6 +122,7 @@ edges:
     #[test]
     fn test_build_branch_graph() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data: { type: start, title: Start }

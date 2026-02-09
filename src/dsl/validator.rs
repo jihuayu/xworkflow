@@ -1,9 +1,17 @@
-use super::schema::WorkflowSchema;
+use super::schema::{WorkflowSchema, SUPPORTED_DSL_VERSIONS};
 use crate::error::WorkflowError;
 use std::collections::HashSet;
 
 /// Validate a parsed WorkflowSchema
 pub fn validate_workflow_schema(schema: &WorkflowSchema) -> Result<(), WorkflowError> {
+    // Check DSL version
+    if !SUPPORTED_DSL_VERSIONS.contains(&schema.version.as_str()) {
+        return Err(WorkflowError::UnsupportedVersion {
+            found: schema.version.clone(),
+            supported: SUPPORTED_DSL_VERSIONS.join(", "),
+        });
+    }
+
     if schema.nodes.is_empty() {
         return Err(WorkflowError::GraphValidationError("No nodes defined".into()));
     }
@@ -58,6 +66,7 @@ mod tests {
     #[test]
     fn test_valid_schema() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: s
     data: { type: start, title: S }
@@ -74,6 +83,7 @@ edges:
     #[test]
     fn test_no_start() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: e
     data: { type: end, title: E }
@@ -86,6 +96,7 @@ edges: []
     #[test]
     fn test_no_end() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: s
     data: { type: start, title: S }
@@ -93,5 +104,23 @@ edges: []
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
         assert!(validate_workflow_schema(&schema).is_err());
+    }
+
+    #[test]
+    fn test_unsupported_version() {
+        let yaml = r#"
+version: "99.0.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let err = validate_workflow_schema(&schema).unwrap_err();
+        assert!(err.to_string().contains("Unsupported DSL version"));
     }
 }

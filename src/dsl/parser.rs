@@ -24,6 +24,7 @@ mod tests {
     #[test]
     fn test_parse_yaml() {
         let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start_1
     data:
@@ -32,14 +33,16 @@ nodes:
 edges: []
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        assert_eq!(schema.version, "0.1.0");
         assert_eq!(schema.nodes.len(), 1);
         assert_eq!(schema.nodes[0].data.node_type, "start");
     }
 
     #[test]
     fn test_parse_json() {
-        let json = r#"{"nodes":[{"id":"s","data":{"type":"start","title":"S"}}],"edges":[]}"#;
+        let json = r#"{"version":"0.1.0","nodes":[{"id":"s","data":{"type":"start","title":"S"}}],"edges":[]}"#;
         let schema = parse_dsl(json, DslFormat::Json).unwrap();
+        assert_eq!(schema.version, "0.1.0");
         assert_eq!(schema.nodes.len(), 1);
     }
 

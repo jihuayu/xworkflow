@@ -15,6 +15,7 @@ async fn main() {
     println!("=== XWorkflow Engine (Dify-compatible) ===\n");
 
     let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
     data:
