@@ -1,0 +1,77 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": []
+      }
+    },
+    {
+      "id": "http1",
+      "data": {
+        "type": "http-request",
+        "title": "Fetch API",
+        "method": "GET",
+        "url": "{{#sys.base_url#}}/api/check",
+        "timeout": 10
+      }
+    },
+    {
+      "id": "if1",
+      "data": {
+        "type": "if-else",
+        "title": "Check Status",
+        "cases": [
+          {
+            "case_id": "success",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["http1", "status_code"],
+                "comparison_operator": "equal",
+                "value": 200
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_ok",
+      "data": {
+        "type": "answer",
+        "title": "OK",
+        "answer": "API returned OK"
+      }
+    },
+    {
+      "id": "end_fail",
+      "data": {
+        "type": "answer",
+        "title": "Fail",
+        "answer": "API returned error"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "status_code", "value_selector": ["http1", "status_code"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "http1" },
+    { "source": "http1", "target": "if1" },
+    { "source": "if1", "target": "end_ok", "sourceHandle": "success" },
+    { "source": "if1", "target": "end_fail", "sourceHandle": "false" },
+    { "source": "end_ok", "target": "end" },
+    { "source": "end_fail", "target": "end" }
+  ]
+}

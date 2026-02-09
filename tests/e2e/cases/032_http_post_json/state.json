@@ -1,0 +1,12 @@
+{
+  "mock_server": [
+    {
+      "method": "POST",
+      "path": "/api/users",
+      "response_status": 201,
+      "response_headers": { "content-type": "application/json" },
+      "response_body": "{\"id\":1,\"name\":\"Alice\",\"created\":true}",
+      "match_body": "Alice"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "outputs": {
+    "status_code": 200,
+    "body": "{\"message\":\"hello\",\"count\":42}"
+  },
+  "partial_match": true
+}

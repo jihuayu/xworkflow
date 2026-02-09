@@ -1,0 +1,11 @@
+{
+  "mock_server": [
+    {
+      "method": "GET",
+      "path": "/api/items",
+      "response_status": 200,
+      "response_headers": { "content-type": "application/json" },
+      "response_body": "[{\"name\":\"Apple\",\"price\":1.5},{\"name\":\"Banana\",\"price\":0.75},{\"name\":\"Cherry\",\"price\":3.0}]"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "mock_server": [
+    {
+      "method": "GET",
+      "path": "/api/protected",
+      "response_status": 200,
+      "response_headers": { "content-type": "application/json" },
+      "response_body": "{\"access\":\"granted\"}",
+      "match_headers": {
+        "x-api-key": "secret-key-123",
+        "accept": "application/json"
+      }
+    }
+  ]
+}

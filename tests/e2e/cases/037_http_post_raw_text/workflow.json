@@ -1,0 +1,44 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "message", "label": "Message", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "http1",
+      "data": {
+        "type": "http-request",
+        "title": "Post Raw",
+        "method": "POST",
+        "url": "{{#sys.base_url#}}/api/echo",
+        "timeout": 10,
+        "body": {
+          "type": "raw_text",
+          "data": "{{#start.message#}}"
+        }
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "status_code", "value_selector": ["http1", "status_code"] },
+          { "variable": "body", "value_selector": ["http1", "body"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "http1" },
+    { "source": "http1", "target": "end" }
+  ]
+}

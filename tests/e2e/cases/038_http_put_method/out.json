@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "outputs": {
+    "status_code": 200,
+    "body": "{\"id\":1,\"name\":\"Bob\",\"age\":30,\"updated\":true}"
+  },
+  "partial_match": true
+}

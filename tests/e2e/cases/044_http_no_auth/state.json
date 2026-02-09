@@ -1,0 +1,10 @@
+{
+  "mock_server": [
+    {
+      "method": "GET",
+      "path": "/api/public",
+      "response_status": 200,
+      "response_body": "public data"
+    }
+  ]
+}

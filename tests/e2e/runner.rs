@@ -30,6 +30,8 @@ struct StateFile {
     fake_time: Option<FakeTimeConfig>,
     #[serde(default)]
     fake_id: Option<FakeIdConfig>,
+    #[serde(default)]
+    mock_server: Option<Vec<MockEndpoint>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +42,34 @@ struct FakeTimeConfig {
 #[derive(Debug, Deserialize)]
 struct FakeIdConfig {
     prefix: String,
+}
+
+/// Defines a mock HTTP endpoint for testing HTTP request nodes.
+#[derive(Debug, Deserialize)]
+struct MockEndpoint {
+    /// HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD
+    method: String,
+    /// URL path, e.g. "/api/data"
+    path: String,
+    /// Response HTTP status code
+    #[serde(default = "default_status")]
+    response_status: usize,
+    /// Response headers
+    #[serde(default)]
+    response_headers: HashMap<String, String>,
+    /// Response body string
+    #[serde(default)]
+    response_body: String,
+    /// Expected request headers (optional, for matching)
+    #[serde(default)]
+    match_headers: HashMap<String, String>,
+    /// Expected request body substring (optional, for matching)
+    #[serde(default)]
+    match_body: Option<String>,
+}
+
+fn default_status() -> usize {
+    200
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,8 +86,11 @@ struct ExpectedOutput {
 pub async fn run_case(case_dir: &Path) {
     let workflow_json = read_to_string(case_dir.join("workflow.json"));
     let inputs: HashMap<String, Value> = read_json(case_dir.join("in.json"));
-    let state: StateFile = read_json(case_dir.join("state.json"));
+    let mut state: StateFile = read_json(case_dir.join("state.json"));
     let expected: ExpectedOutput = read_json(case_dir.join("out.json"));
+
+    // Set up mock HTTP server if configured
+    let _mock_server_guard = setup_mock_server(&mut state).await;
 
     let schema = parse_dsl(&workflow_json, DslFormat::Json)
         .unwrap_or_else(|e| panic!("Failed to parse workflow.json: {}", e));
@@ -129,6 +162,57 @@ pub async fn run_case(case_dir: &Path) {
         },
         other => panic!("Unknown expected status: {}", other),
     }
+}
+
+/// A guard that keeps the mock server and its mocks alive for the test duration.
+struct MockServerGuard {
+    _server: mockito::ServerGuard,
+    _mocks: Vec<mockito::Mock>,
+}
+
+/// Set up a mock HTTP server based on the state file configuration.
+/// Injects `sys.base_url` into system_variables so workflows can reference it.
+async fn setup_mock_server(state: &mut StateFile) -> Option<MockServerGuard> {
+    let endpoints = state.mock_server.take()?;
+    if endpoints.is_empty() {
+        return None;
+    }
+
+    let mut server = mockito::Server::new_async().await;
+    let base_url = server.url();
+
+    // Inject base_url into system variables
+    state
+        .system_variables
+        .insert("base_url".to_string(), Value::String(base_url));
+
+    let mut mocks = Vec::new();
+    for ep in endpoints {
+        let mut mock = server.mock(ep.method.as_str(), ep.path.as_str());
+
+        // Set up request matchers
+        for (key, value) in &ep.match_headers {
+            mock = mock.match_header(key.as_str(), value.as_str());
+        }
+        if let Some(body_pattern) = &ep.match_body {
+            mock = mock.match_body(mockito::Matcher::Regex(body_pattern.clone()));
+        }
+
+        // Set up response
+        mock = mock.with_status(ep.response_status);
+        for (key, value) in &ep.response_headers {
+            mock = mock.with_header(key.as_str(), value.as_str());
+        }
+        mock = mock.with_body(&ep.response_body);
+
+        let created_mock = mock.create_async().await;
+        mocks.push(created_mock);
+    }
+
+    Some(MockServerGuard {
+        _server: server,
+        _mocks: mocks,
+    })
 }
 
 fn read_to_string(path: impl AsRef<Path>) -> String {

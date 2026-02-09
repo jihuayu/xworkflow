@@ -1,0 +1,11 @@
+{
+  "mock_server": [
+    {
+      "method": "PATCH",
+      "path": "/api/users/5",
+      "response_status": 200,
+      "response_headers": { "content-type": "application/json" },
+      "response_body": "{\"id\":5,\"email\":\"new@example.com\",\"patched\":true}"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "outputs": {
+    "status_code": 200,
+    "body": "{\"authenticated\":true,\"user\":\"admin\"}"
+  },
+  "partial_match": true
+}

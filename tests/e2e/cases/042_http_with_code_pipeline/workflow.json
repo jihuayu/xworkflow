@@ -1,0 +1,52 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": []
+      }
+    },
+    {
+      "id": "http1",
+      "data": {
+        "type": "http-request",
+        "title": "Fetch JSON",
+        "method": "GET",
+        "url": "{{#sys.base_url#}}/api/items",
+        "timeout": 10
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Parse Response",
+        "language": "javascript",
+        "code": "function main(inputs) { const data = JSON.parse(inputs.body); return { total: data.length, first_name: data[0].name }; }",
+        "variables": [
+          { "variable": "body", "value_selector": ["http1", "body"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "total", "value_selector": ["code1", "total"] },
+          { "variable": "first_name", "value_selector": ["code1", "first_name"] },
+          { "variable": "http_status", "value_selector": ["http1", "status_code"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "http1" },
+    { "source": "http1", "target": "code1" },
+    { "source": "code1", "target": "end" }
+  ]
+}

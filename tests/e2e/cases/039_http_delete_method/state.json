@@ -1,0 +1,10 @@
+{
+  "mock_server": [
+    {
+      "method": "DELETE",
+      "path": "/api/users/42",
+      "response_status": 204,
+      "response_body": ""
+    }
+  ]
+}
