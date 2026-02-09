@@ -15,12 +15,11 @@ use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
 use crate::template::render_template;
 
-use super::error::LlmError;
 use super::types::{
     ChatCompletionRequest, ChatContent, ChatMessage, ChatRole, ContentPart, ImageUrlDetail,
     StreamChunk,
 };
-use super::{LlmProvider, LlmProviderRegistry};
+use super::LlmProviderRegistry;
 
 pub struct LlmNodeExecutor {
     registry: Arc<LlmProviderRegistry>,
@@ -113,7 +112,7 @@ impl NodeExecutor for LlmNodeExecutor {
             credentials: data.model.credentials.clone().unwrap_or_default(),
         };
 
-        let mut response = if request.stream {
+        let response = if request.stream {
             if let Some(event_tx) = &context.event_tx {
                 let (chunk_tx, mut chunk_rx) = mpsc::channel::<StreamChunk>(64);
                 let event_tx = event_tx.clone();
@@ -263,6 +262,7 @@ fn append_memory_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{LlmError, LlmProvider};
     use crate::llm::types::{ChatCompletionResponse, ProviderInfo};
     use crate::dsl::schema::LlmUsage;
     use tokio::sync::mpsc;

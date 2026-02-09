@@ -9,8 +9,7 @@ use serde_json::Value;
 use crate::dsl::schema::LlmUsage;
 use crate::llm::error::LlmError;
 use crate::llm::types::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatContent, ChatMessage, ChatRole, ProviderInfo,
-    StreamChunk,
+    ChatCompletionRequest, ChatCompletionResponse, ChatContent, ChatRole, ProviderInfo, StreamChunk,
 };
 use crate::llm::LlmProvider;
 
@@ -322,6 +321,7 @@ impl LlmProvider for OpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::ChatMessage;
     use mockito::Server;
     use tokio::sync::mpsc;
 

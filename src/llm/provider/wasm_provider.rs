@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use wasmtime::{Engine, Linker, Module, Store};
 use anyhow::anyhow;
 
-use crate::dsl::schema::LlmUsage;
 use crate::llm::error::LlmError;
 use crate::llm::types::{
     ChatCompletionRequest, ChatCompletionResponse, ModelInfo, ProviderInfo, StreamChunk,
@@ -279,7 +278,7 @@ fn http_request_impl(
         .and_then(|e| e.into_func())
         .ok_or_else(|| anyhow!("Missing export: alloc"))?;
     let alloc = alloc
-        .typed::<i32, i32>(&mut *caller)
+        .typed::<i32, i32>(&mut caller)
         .map_err(|e| anyhow!(e.to_string()))?;
     let result_ptr = alloc
         .call(&mut caller, result_len)

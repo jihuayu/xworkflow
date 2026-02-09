@@ -4,10 +4,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::llm::provider::{OpenAiConfig, OpenAiProvider, WasmLlmProvider, WasmProviderManifest};
-
-use self::error::LlmError;
-use self::types::{ChatCompletionRequest, ChatCompletionResponse, ProviderInfo, StreamChunk};
 
 pub mod error;
 pub mod executor;
@@ -17,18 +13,18 @@ pub mod provider;
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     fn id(&self) -> &str;
-    fn info(&self) -> ProviderInfo;
+    fn info(&self) -> types::ProviderInfo;
 
     async fn chat_completion(
         &self,
-        request: ChatCompletionRequest,
-    ) -> Result<ChatCompletionResponse, LlmError>;
+        request: types::ChatCompletionRequest,
+    ) -> Result<types::ChatCompletionResponse, error::LlmError>;
 
     async fn chat_completion_stream(
         &self,
-        request: ChatCompletionRequest,
-        chunk_tx: mpsc::Sender<StreamChunk>,
-    ) -> Result<ChatCompletionResponse, LlmError>;
+        request: types::ChatCompletionRequest,
+        chunk_tx: mpsc::Sender<types::StreamChunk>,
+    ) -> Result<types::ChatCompletionResponse, error::LlmError>;
 }
 
 pub struct LlmProviderRegistry {
@@ -56,10 +52,10 @@ impl LlmProviderRegistry {
 
     pub fn register_wasm_provider(
         &mut self,
-        manifest: WasmProviderManifest,
+        manifest: provider::WasmProviderManifest,
         wasm_bytes: &[u8],
-    ) -> Result<(), LlmError> {
-        let provider = WasmLlmProvider::new(manifest, wasm_bytes)?;
+    ) -> Result<(), error::LlmError> {
+        let provider = provider::WasmLlmProvider::new(manifest, wasm_bytes)?;
         self.register(Arc::new(provider));
         Ok(())
     }
@@ -70,7 +66,7 @@ impl LlmProviderRegistry {
             let base_url = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into());
             let org_id = std::env::var("OPENAI_ORG_ID").ok();
-            reg.register(Arc::new(OpenAiProvider::new(OpenAiConfig {
+            reg.register(Arc::new(provider::OpenAiProvider::new(provider::OpenAiConfig {
                 api_key,
                 base_url,
                 org_id,
@@ -90,4 +86,15 @@ impl Default for LlmProviderRegistry {
 pub use error::LlmError;
 pub use executor::LlmNodeExecutor;
 pub use provider::{OpenAiConfig, OpenAiProvider, WasmLlmProvider, WasmProviderManifest};
-pub use types::*;
+pub use types::{
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatContent,
+    ChatMessage,
+    ChatRole,
+    ContentPart,
+    ImageUrlDetail,
+    ModelInfo,
+    ProviderInfo,
+    StreamChunk,
+};

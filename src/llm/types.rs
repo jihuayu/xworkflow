@@ -38,7 +38,7 @@ pub struct ChatMessage {
     pub content: ChatContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -49,7 +49,7 @@ pub struct ChatCompletionRequest {
     pub credentials: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionResponse {
     pub content: String,
     pub usage: LlmUsage,
@@ -57,7 +57,7 @@ pub struct ChatCompletionResponse {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
     pub finish_reason: Option<String>,
