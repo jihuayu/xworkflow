@@ -6,6 +6,7 @@ use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
+use crate::plugin::{PluginManager, PluginNodeExecutor};
 
 /// Trait for node execution. Each node type implements this.
 #[async_trait]
@@ -53,6 +54,20 @@ impl NodeExecutorRegistry {
         registry.register("human-input", Box::new(StubExecutor("human-input")));
         registry.register("iteration", Box::new(super::subgraph_nodes::IterationNodeExecutor::new()));
         registry.register("loop", Box::new(super::subgraph_nodes::LoopNodeExecutor::new()));
+        registry
+    }
+
+    pub fn new_with_plugins(plugin_manager: std::sync::Arc<PluginManager>) -> Self {
+        let mut registry = Self::new();
+        for (node_type, _) in plugin_manager.get_plugin_node_types() {
+            registry.register(
+                &node_type,
+                Box::new(PluginNodeExecutor::new(
+                    plugin_manager.clone(),
+                    Some(node_type.clone()),
+                )),
+            );
+        }
         registry
     }
 

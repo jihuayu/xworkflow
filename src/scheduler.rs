@@ -12,6 +12,7 @@ use crate::dsl::validator::validate_workflow_schema;
 use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
+use crate::plugin::PluginManager;
 
 /// Execution status of a workflow
 #[derive(Debug, Clone)]
@@ -59,6 +60,7 @@ pub struct WorkflowRunner {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
+  plugin_manager: Option<Arc<PluginManager>>,
 }
 
 impl WorkflowRunner {
@@ -71,6 +73,7 @@ impl WorkflowRunner {
       conversation_vars: HashMap::new(),
       config: EngineConfig::default(),
       context: RuntimeContext::default(),
+      plugin_manager: None,
     }
   }
 }
@@ -83,6 +86,7 @@ pub struct WorkflowRunnerBuilder {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
+  plugin_manager: Option<Arc<PluginManager>>,
 }
 
 impl WorkflowRunnerBuilder {
@@ -113,6 +117,11 @@ impl WorkflowRunnerBuilder {
 
   pub fn context(mut self, context: RuntimeContext) -> Self {
     self.context = context;
+    self
+  }
+
+  pub fn plugin_manager(mut self, plugin_manager: Arc<PluginManager>) -> Self {
+    self.plugin_manager = Some(plugin_manager);
     self
   }
 
@@ -150,7 +159,11 @@ impl WorkflowRunnerBuilder {
       );
     }
 
-    let registry = NodeExecutorRegistry::new();
+    let registry = if let Some(pm) = &self.plugin_manager {
+      NodeExecutorRegistry::new_with_plugins(pm.clone())
+    } else {
+      NodeExecutorRegistry::new()
+    };
     let (tx, mut rx) = mpsc::channel(256);
     let config = self.config;
     let context = Arc::new(self.context);
@@ -169,8 +182,17 @@ impl WorkflowRunnerBuilder {
 
     // Spawn workflow execution
     let status_exec = status.clone();
+    let plugin_manager = self.plugin_manager.clone();
     tokio::spawn(async move {
-      let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config, context);
+      let mut dispatcher = WorkflowDispatcher::new(
+        graph,
+        pool,
+        registry,
+        tx,
+        config,
+        context,
+        plugin_manager,
+      );
       match dispatcher.run().await {
         Ok(outputs) => {
           *status_exec.lock().await = ExecutionStatus::Completed(outputs);

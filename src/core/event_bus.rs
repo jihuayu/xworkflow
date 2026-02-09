@@ -124,6 +124,24 @@ pub enum GraphEngineEvent {
         error: String,
         steps: i32,
     },
+
+    // === Plugin events ===
+    PluginLoaded {
+        plugin_id: String,
+        name: String,
+    },
+    PluginUnloaded {
+        plugin_id: String,
+    },
+    PluginEvent {
+        plugin_id: String,
+        event_type: String,
+        data: Value,
+    },
+    PluginError {
+        plugin_id: String,
+        error: String,
+    },
 }
 
 impl GraphEngineEvent {
@@ -204,6 +222,22 @@ impl GraphEngineEvent {
             GraphEngineEvent::LoopFailed { node_id, node_title, error, steps } => serde_json::json!({
                 "type": "loop_failed",
                 "data": { "node_id": node_id, "node_title": node_title, "error": error, "steps": steps }
+            }),
+            GraphEngineEvent::PluginLoaded { plugin_id, name } => serde_json::json!({
+                "type": "plugin_loaded",
+                "data": { "plugin_id": plugin_id, "name": name }
+            }),
+            GraphEngineEvent::PluginUnloaded { plugin_id } => serde_json::json!({
+                "type": "plugin_unloaded",
+                "data": { "plugin_id": plugin_id }
+            }),
+            GraphEngineEvent::PluginEvent { plugin_id, event_type, data } => serde_json::json!({
+                "type": "plugin_event",
+                "data": { "plugin_id": plugin_id, "event_type": event_type, "data": data }
+            }),
+            GraphEngineEvent::PluginError { plugin_id, error } => serde_json::json!({
+                "type": "plugin_error",
+                "data": { "plugin_id": plugin_id, "error": error }
             }),
         }
     }

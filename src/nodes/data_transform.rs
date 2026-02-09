@@ -336,6 +336,7 @@ impl NodeExecutor for CodeNodeExecutor {
             "javascript" | "js" | "javascript3" => crate::sandbox::CodeLanguage::JavaScript,
             "typescript" | "ts" => crate::sandbox::CodeLanguage::TypeScript,
             "python" | "python3" => crate::sandbox::CodeLanguage::Python,
+            "wasm" => crate::sandbox::CodeLanguage::Wasm,
             other => {
                 return Err(NodeError::ConfigError(format!(
                     "Unsupported code language: {}",

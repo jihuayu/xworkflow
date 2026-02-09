@@ -7,6 +7,7 @@ pub mod nodes;
 pub mod sandbox;
 pub mod template;
 pub mod scheduler;
+pub mod plugin;
 
 pub use crate::core::{
 	GraphEngineEvent,

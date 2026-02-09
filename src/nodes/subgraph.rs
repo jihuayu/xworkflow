@@ -93,6 +93,7 @@ impl SubGraphExecutor {
             tx,
             EngineConfig::default(),
             std::sync::Arc::new(context.clone()),
+            None,
         );
 
         let outputs = dispatcher

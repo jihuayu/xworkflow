@@ -1,0 +1,27 @@
+{
+  "id": "com.example.echo",
+  "version": "1.0.0",
+  "name": "Echo Plugin",
+  "description": "Basic echo plugin for e2e",
+  "author": "tests",
+  "wasm_file": "plugin.wat",
+  "capabilities": {
+    "read_variables": false,
+    "write_variables": false,
+    "emit_events": false,
+    "http_access": false,
+    "fs_access": null,
+    "max_memory_pages": 64,
+    "max_fuel": 100000
+  },
+  "node_types": [
+    {
+      "node_type": "plugin.echo",
+      "label": "Echo",
+      "input_schema": null,
+      "output_schema": null,
+      "handler": "handle_echo"
+    }
+  ],
+  "hooks": []
+}

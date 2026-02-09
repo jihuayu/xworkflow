@@ -3,11 +3,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::{
+    plugin::{AllowedCapabilities, PluginManager, PluginManagerConfig},
     EngineConfig,
     ExecutionStatus,
     FakeIdGenerator,
@@ -30,6 +31,8 @@ struct StateFile {
     fake_time: Option<FakeTimeConfig>,
     #[serde(default)]
     fake_id: Option<FakeIdConfig>,
+    #[serde(default)]
+    plugin_dir: Option<String>,
     #[serde(default)]
     mock_server: Option<Vec<MockEndpoint>>,
 }
@@ -105,13 +108,38 @@ pub async fn run_case(case_dir: &Path) {
 
     let config = state.config.unwrap_or_default();
 
-    let handle = WorkflowRunner::builder(schema)
+    let mut builder = WorkflowRunner::builder(schema)
         .user_inputs(inputs)
         .system_vars(state.system_variables)
         .environment_vars(state.environment_variables)
         .conversation_vars(state.conversation_variables)
         .config(config)
-        .context(context)
+        .context(context);
+
+    if let Some(plugin_dir) = state.plugin_dir {
+        let plugin_path = if Path::new(&plugin_dir).is_absolute() {
+            PathBuf::from(plugin_dir)
+        } else {
+            case_dir.join(plugin_dir)
+        };
+        let manager = PluginManager::new(PluginManagerConfig {
+            plugin_dir: plugin_path,
+            auto_discover: true,
+            default_max_memory_pages: 64,
+            default_max_fuel: 100_000,
+            allowed_capabilities: AllowedCapabilities {
+                read_variables: true,
+                write_variables: true,
+                emit_events: true,
+                http_access: false,
+                fs_access: false,
+            },
+        })
+        .unwrap();
+        builder = builder.plugin_manager(Arc::new(manager));
+    }
+
+    let handle = builder
         .run()
         .await
         .unwrap_or_else(|e| panic!("Workflow failed to start: {}", e));

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::builtin::{BuiltinSandbox, BuiltinSandboxConfig};
+use super::wasm_sandbox::{WasmSandbox, WasmSandboxConfig};
 use super::error::SandboxError;
 use super::types::*;
 
@@ -10,12 +11,15 @@ use super::types::*;
 pub struct SandboxManagerConfig {
     /// Built-in sandbox configuration
     pub builtin_config: BuiltinSandboxConfig,
+    /// WASM sandbox configuration
+    pub wasm_config: WasmSandboxConfig,
 }
 
 impl Default for SandboxManagerConfig {
     fn default() -> Self {
         Self {
             builtin_config: BuiltinSandboxConfig::default(),
+            wasm_config: WasmSandboxConfig::default(),
         }
     }
 }
@@ -43,6 +47,10 @@ impl SandboxManager {
         sandboxes.insert(
             CodeLanguage::JavaScript,
             Arc::new(BuiltinSandbox::new(config.builtin_config.clone())) as Arc<dyn CodeSandbox>,
+        );
+        sandboxes.insert(
+            CodeLanguage::Wasm,
+            Arc::new(WasmSandbox::new(config.wasm_config.clone())) as Arc<dyn CodeSandbox>,
         );
 
         Self {

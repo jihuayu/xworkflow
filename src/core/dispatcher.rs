@@ -12,6 +12,7 @@ use crate::dsl::schema::{
 use crate::error::{WorkflowError, WorkflowResult};
 use crate::graph::types::{Graph, NodeState};
 use crate::nodes::executor::NodeExecutorRegistry;
+use crate::plugin::{PluginHookType, PluginManager};
 
 /// External command to control workflow execution
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ pub struct WorkflowDispatcher {
     config: EngineConfig,
     exceptions_count: i32,
     context: Arc<RuntimeContext>,
+  plugin_manager: Option<Arc<PluginManager>>,
 }
 
 impl WorkflowDispatcher {
@@ -56,6 +58,7 @@ impl WorkflowDispatcher {
         event_tx: mpsc::Sender<GraphEngineEvent>,
         config: EngineConfig,
         context: Arc<RuntimeContext>,
+      plugin_manager: Option<Arc<PluginManager>>,
     ) -> Self {
         WorkflowDispatcher {
             graph: Arc::new(RwLock::new(graph)),
@@ -65,6 +68,7 @@ impl WorkflowDispatcher {
             config,
             exceptions_count: 0,
             context,
+        plugin_manager,
         }
     }
 
@@ -72,6 +76,21 @@ impl WorkflowDispatcher {
     pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
         // Emit graph started
         let _ = self.event_tx.send(GraphEngineEvent::GraphRunStarted).await;
+
+      if let Some(pm) = &self.plugin_manager {
+        let pool_snapshot = self.variable_pool.read().await.clone();
+        let payload = serde_json::json!({
+          "event": "before_workflow_run",
+        });
+        pm.execute_hooks(
+          PluginHookType::BeforeWorkflowRun,
+          &payload,
+          Arc::new(std::sync::RwLock::new(pool_snapshot)),
+          Some(self.event_tx.clone()),
+        )
+        .await
+        .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+      }
 
         let root_id = {
             let g = self.graph.read().await;
@@ -136,6 +155,25 @@ impl WorkflowDispatcher {
                 node_title: node_title.clone(),
                 predecessor_node_id: None,
             }).await;
+
+            if let Some(pm) = &self.plugin_manager {
+              let pool_snapshot = self.variable_pool.read().await.clone();
+              let payload = serde_json::json!({
+                "event": "before_node_execute",
+                "node_id": node_id.clone(),
+                "node_type": node_type.clone(),
+                "node_title": node_title.clone(),
+                "config": node_config.clone(),
+              });
+              pm.execute_hooks(
+                PluginHookType::BeforeNodeExecute,
+                &payload,
+                Arc::new(std::sync::RwLock::new(pool_snapshot)),
+                Some(self.event_tx.clone()),
+              )
+              .await
+              .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+            }
 
             // Execute the node
             let pool_snapshot = {
@@ -236,34 +274,110 @@ impl WorkflowDispatcher {
 
             match run_result {
                 Ok(result) => {
+                if let Some(pm) = &self.plugin_manager {
+                  let pool_snapshot = self.variable_pool.read().await.clone();
+                  let payload = serde_json::json!({
+                    "event": "after_node_execute",
+                    "node_id": node_id.clone(),
+                    "node_type": node_type.clone(),
+                    "node_title": node_title.clone(),
+                    "status": format!("{:?}", result.status),
+                    "outputs": result.outputs.clone(),
+                    "error": result.error.clone(),
+                  });
+                  pm.execute_hooks(
+                    PluginHookType::AfterNodeExecute,
+                    &payload,
+                    Arc::new(std::sync::RwLock::new(pool_snapshot)),
+                    Some(self.event_tx.clone()),
+                  )
+                  .await
+                  .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+                }
+
                     // Store outputs in variable pool
-                    {
-                        let mut pool = self.variable_pool.write().await;
-
-                        // Handle variable assigner specially
-                        if node_type == "assigner" {
-                            let write_mode = result.outputs.get("write_mode")
-                                .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
-                                .unwrap_or(WriteMode::Overwrite);
-                            let assigned_sel: Vec<String> = result.outputs.get("assigned_variable_selector")
-                                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                                .unwrap_or_default();
-                            let output_val = result.outputs.get("output").cloned().unwrap_or(Value::Null);
-
-                            match write_mode {
-                                WriteMode::Overwrite => {
-                                    pool.set(&assigned_sel, Segment::from_value(&output_val));
-                                }
-                                WriteMode::Append => {
-                                    pool.append(&assigned_sel, Segment::from_value(&output_val));
-                                }
-                                WriteMode::Clear => {
-                                    pool.clear(&assigned_sel);
-                                }
-                            }
+                    let mut outputs_for_write = result.outputs.clone();
+                    if let Some(pm) = &self.plugin_manager {
+                      let pool_snapshot = self.variable_pool.read().await.clone();
+                      for (key, value) in outputs_for_write.iter_mut() {
+                        let payload = serde_json::json!({
+                          "event": "before_variable_write",
+                          "node_id": node_id.clone(),
+                          "selector": [node_id.clone(), key.clone()],
+                          "value": value.clone(),
+                        });
+                        let results = pm
+                          .execute_hooks(
+                            PluginHookType::BeforeVariableWrite,
+                            &payload,
+                            Arc::new(std::sync::RwLock::new(pool_snapshot.clone())),
+                            Some(self.event_tx.clone()),
+                          )
+                          .await
+                          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
+                          *value = last;
                         }
+                      }
+                    }
 
-                        pool.set_node_outputs(&node_id, &result.outputs);
+                    let mut assigner_meta: Option<(WriteMode, Vec<String>, Value)> = None;
+                    if node_type == "assigner" {
+                      let write_mode = result.outputs.get("write_mode")
+                        .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
+                        .unwrap_or(WriteMode::Overwrite);
+                      let assigned_sel: Vec<String> = result.outputs.get("assigned_variable_selector")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                      let mut output_val = outputs_for_write
+                        .get("output")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+
+                      if let Some(pm) = &self.plugin_manager {
+                        let pool_snapshot = self.variable_pool.read().await.clone();
+                        let payload = serde_json::json!({
+                          "event": "before_variable_write",
+                          "node_id": node_id.clone(),
+                          "selector": assigned_sel.clone(),
+                          "value": output_val.clone(),
+                        });
+                        let results = pm
+                          .execute_hooks(
+                            PluginHookType::BeforeVariableWrite,
+                            &payload,
+                            Arc::new(std::sync::RwLock::new(pool_snapshot)),
+                            Some(self.event_tx.clone()),
+                          )
+                          .await
+                          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
+                          output_val = last;
+                        }
+                      }
+
+                      assigner_meta = Some((write_mode, assigned_sel, output_val));
+                    }
+
+                    {
+                      let mut pool = self.variable_pool.write().await;
+
+                      // Handle variable assigner specially
+                      if let Some((write_mode, assigned_sel, output_val)) = assigner_meta {
+                        match write_mode {
+                          WriteMode::Overwrite => {
+                            pool.set(&assigned_sel, Segment::from_value(&output_val));
+                          }
+                          WriteMode::Append => {
+                            pool.append(&assigned_sel, Segment::from_value(&output_val));
+                          }
+                          WriteMode::Clear => {
+                            pool.clear(&assigned_sel);
+                          }
+                        }
+                      }
+
+                      pool.set_node_outputs(&node_id, &outputs_for_write);
                     }
 
                     // Track final outputs for end/answer nodes
@@ -364,6 +478,23 @@ impl WorkflowDispatcher {
             }).await;
         }
 
+        if let Some(pm) = &self.plugin_manager {
+          let pool_snapshot = self.variable_pool.read().await.clone();
+          let payload = serde_json::json!({
+            "event": "after_workflow_run",
+            "outputs": final_outputs.clone(),
+            "exceptions_count": self.exceptions_count,
+          });
+          pm.execute_hooks(
+            PluginHookType::AfterWorkflowRun,
+            &payload,
+            Arc::new(std::sync::RwLock::new(pool_snapshot)),
+            Some(self.event_tx.clone()),
+          )
+          .await
+          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+        }
+
         Ok(final_outputs)
     }
 }
@@ -417,7 +548,15 @@ edges:
         let (tx, mut rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("result"), Some(&Value::String("hello".into())));
@@ -485,7 +624,15 @@ edges:
         let (tx, _rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("branch"), Some(&serde_json::json!(10)));
@@ -543,7 +690,15 @@ edges:
         let (tx, _rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("went"), Some(&serde_json::json!(3)));
@@ -584,7 +739,15 @@ edges:
         let (tx, _rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("answer"), Some(&Value::String("Hello Alice!".into())));
@@ -612,7 +775,15 @@ edges:
 
         let config = EngineConfig { max_steps: 0, max_execution_time_secs: 600 };
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config, context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          config,
+          context,
+          None,
+        );
         let result = dispatcher.run().await;
         assert!(result.is_err());
     }
@@ -655,7 +826,15 @@ edges:
         let (tx, _rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("result"), Some(&Value::String("Hello World!".into())));
@@ -723,7 +902,15 @@ edges:
         let (tx, _rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let result = dispatcher.run().await.unwrap();
 
         // The aggregator picks up code_a's result (first non-null in the list)
@@ -750,7 +937,15 @@ edges:
         let (tx, mut rx) = mpsc::channel(100);
 
         let context = Arc::new(RuntimeContext::default());
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
+        let mut dispatcher = WorkflowDispatcher::new(
+          graph,
+          pool,
+          registry,
+          tx,
+          EngineConfig::default(),
+          context,
+          None,
+        );
         let _ = dispatcher.run().await.unwrap();
 
         let mut event_types = Vec::new();
