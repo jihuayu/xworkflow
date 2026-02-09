@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{ComparisonOperator, Condition, NodeRunResult, WorkflowNodeExecutionStatus};
 use crate::error::NodeError;
@@ -88,6 +89,7 @@ impl NodeExecutor for IterationNodeExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let config: IterationNodeConfig = serde_json::from_value(config.clone())
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
@@ -108,9 +110,9 @@ impl NodeExecutor for IterationNodeExecutor {
         }
 
         let results = if Self::resolve_parallel(&config) {
-            self.execute_parallel(&config, items, variable_pool).await?
+            self.execute_parallel(&config, items, variable_pool, context).await?
         } else {
-            self.execute_sequential(&config, items, variable_pool).await?
+            self.execute_sequential(&config, items, variable_pool, context).await?
         };
 
         let mut outputs = HashMap::new();
@@ -131,6 +133,7 @@ impl IterationNodeExecutor {
         config: &IterationNodeConfig,
         items: &[Value],
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<Vec<Value>, NodeError> {
         let mut results = Vec::with_capacity(items.len());
 
@@ -141,7 +144,7 @@ impl IterationNodeExecutor {
 
             let result = self
                 .sub_graph_executor
-                .execute(&config.sub_graph, pool, scope_vars)
+                .execute(&config.sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -156,6 +159,7 @@ impl IterationNodeExecutor {
         config: &IterationNodeConfig,
         items: &[Value],
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<Vec<Value>, NodeError> {
         let semaphore = Arc::new(Semaphore::new(Self::resolve_parallelism(config)));
         let mut tasks = Vec::with_capacity(items.len());
@@ -166,13 +170,14 @@ impl IterationNodeExecutor {
             let sub_graph = config.sub_graph.clone();
             let pool_clone = pool.clone();
             let item_clone = item.clone();
+            let context_clone = context.clone();
 
             let task = tokio::spawn(async move {
                 let mut scope_vars = HashMap::new();
                 scope_vars.insert("item".to_string(), item_clone);
                 scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-                let result = executor.execute(&sub_graph, &pool_clone, scope_vars).await;
+                let result = executor.execute(&sub_graph, &pool_clone, scope_vars, &context_clone).await;
                 drop(permit);
                 (index, result)
             });
@@ -256,6 +261,7 @@ impl NodeExecutor for LoopNodeExecutor {
         _node_id: &str,
         config: &Value,
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let config: LoopNodeConfig = serde_json::from_value(config.clone())
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
@@ -284,7 +290,7 @@ impl NodeExecutor for LoopNodeExecutor {
 
             let result = self
                 .sub_graph_executor
-                .execute(&config.sub_graph, pool, scope_vars)
+                .execute(&config.sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -380,6 +386,7 @@ impl NodeExecutor for ListOperatorNodeExecutor {
         _node_id: &str,
         config: &Value,
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let config: ListOperatorNodeConfig = serde_json::from_value(config.clone())
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
@@ -390,10 +397,10 @@ impl NodeExecutor for ListOperatorNodeExecutor {
 
         let result = match config.operation {
             ListOperation::Filter => {
-                self.execute_filter(&config, &input, pool).await?
+                self.execute_filter(&config, &input, pool, context).await?
             }
             ListOperation::Map => {
-                self.execute_map(&config, &input, pool).await?
+                self.execute_map(&config, &input, pool, context).await?
             }
             ListOperation::Sort => self.execute_sort(&config, &input)?,
             ListOperation::Slice => self.execute_slice(&config, &input)?,
@@ -403,7 +410,7 @@ impl NodeExecutor for ListOperatorNodeExecutor {
             ListOperation::Unique => self.execute_unique(&input)?,
             ListOperation::Reverse => self.execute_reverse(&input)?,
             ListOperation::Concat => self.execute_concat(&config, &input, pool)?,
-            ListOperation::Reduce => self.execute_reduce(&config, &input, pool).await?,
+            ListOperation::Reduce => self.execute_reduce(&config, &input, pool, context).await?,
             ListOperation::Length => self.execute_length(&input)?,
         };
 
@@ -425,6 +432,7 @@ impl ListOperatorNodeExecutor {
         config: &ListOperatorNodeConfig,
         input: &Value,
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
         let items = input
             .as_array()
@@ -435,7 +443,7 @@ impl ListOperatorNodeExecutor {
         })?;
 
         if config.parallel {
-            return self.execute_filter_parallel(items, sub_graph, pool).await;
+            return self.execute_filter_parallel(items, sub_graph, pool, context).await;
         }
 
         let mut results = Vec::new();
@@ -446,7 +454,7 @@ impl ListOperatorNodeExecutor {
 
             let result = self
                 .sub_graph_executor
-                .execute(sub_graph, pool, scope_vars)
+                .execute(sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -467,6 +475,7 @@ impl ListOperatorNodeExecutor {
         items: &[Value],
         sub_graph: &SubGraphDefinition,
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
         let semaphore = Arc::new(Semaphore::new(10));
         let mut tasks = Vec::with_capacity(items.len());
@@ -477,13 +486,14 @@ impl ListOperatorNodeExecutor {
             let sub_graph = sub_graph.clone();
             let pool_clone = pool.clone();
             let item_clone = item.clone();
+            let context_clone = context.clone();
 
             let task = tokio::spawn(async move {
                 let mut scope_vars = HashMap::new();
                 scope_vars.insert("item".to_string(), item_clone);
                 scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-                let result = executor.execute(&sub_graph, &pool_clone, scope_vars).await;
+                let result = executor.execute(&sub_graph, &pool_clone, scope_vars, &context_clone).await;
                 drop(permit);
                 (index, result)
             });
@@ -518,6 +528,7 @@ impl ListOperatorNodeExecutor {
         config: &ListOperatorNodeConfig,
         input: &Value,
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
         let items = input
             .as_array()
@@ -535,7 +546,7 @@ impl ListOperatorNodeExecutor {
 
             let result = self
                 .sub_graph_executor
-                .execute(sub_graph, pool, scope_vars)
+                .execute(sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -690,6 +701,7 @@ impl ListOperatorNodeExecutor {
         config: &ListOperatorNodeConfig,
         input: &Value,
         pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
         let items = input
             .as_array()
@@ -709,7 +721,7 @@ impl ListOperatorNodeExecutor {
 
             let result = self
                 .sub_graph_executor
-                .execute(sub_graph, pool, scope_vars)
+                .execute(sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -744,6 +756,7 @@ mod tests {
     #[tokio::test]
     async fn test_iteration_sequential() {
         let executor = IterationNodeExecutor::new();
+        let context = RuntimeContext::default();
 
         let config = serde_json::json!({
             "input_selector": "input.items",
@@ -762,7 +775,7 @@ mod tests {
             "output_variable": "results"
         });
 
-        let result = executor.execute("iter1", &config, &make_pool()).await.unwrap();
+        let result = executor.execute("iter1", &config, &make_pool(), &context).await.unwrap();
         assert_eq!(result.outputs.get("results"), Some(&serde_json::json!([
             {"value": 1},
             {"value": 2},
@@ -773,6 +786,7 @@ mod tests {
     #[tokio::test]
     async fn test_loop_basic() {
         let executor = LoopNodeExecutor::new();
+        let context = RuntimeContext::default();
 
         let config = serde_json::json!({
             "condition": {
@@ -798,7 +812,7 @@ mod tests {
             "output_variable": "loop_result"
         });
 
-        let result = executor.execute("loop1", &config, &make_pool()).await.unwrap();
+        let result = executor.execute("loop1", &config, &make_pool(), &context).await.unwrap();
         assert!(result.outputs.contains_key("loop_result"));
         assert_eq!(result.outputs.get("_iterations"), Some(&serde_json::json!(0)));
     }
@@ -806,6 +820,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_operator_filter() {
         let executor = ListOperatorNodeExecutor::new();
+        let context = RuntimeContext::default();
 
         let config = serde_json::json!({
             "operation": "filter",
@@ -826,7 +841,7 @@ mod tests {
             "output_variable": "filtered"
         });
 
-        let result = executor.execute("list1", &config, &make_pool()).await.unwrap();
+        let result = executor.execute("list1", &config, &make_pool(), &context).await.unwrap();
         assert!(result.outputs.get("filtered").is_some());
     }
 }

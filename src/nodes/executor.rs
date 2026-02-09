@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
@@ -15,6 +16,7 @@ pub trait NodeExecutor: Send + Sync {
         node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError>;
 }
 
@@ -80,6 +82,7 @@ impl NodeExecutor for StubExecutor {
         node_id: &str,
         _config: &Value,
         _variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         Ok(NodeRunResult {
             outputs: {

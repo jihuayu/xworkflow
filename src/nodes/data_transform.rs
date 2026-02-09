@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::{
     NodeRunResult,
@@ -25,6 +26,7 @@ impl NodeExecutor for TemplateTransformExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let template = config
             .get("template")
@@ -70,6 +72,7 @@ impl NodeExecutor for VariableAggregatorExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let selectors: Vec<Vec<String>> = config
             .get("variables")
@@ -107,8 +110,9 @@ impl NodeExecutor for LegacyVariableAggregatorExecutor {
         node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
-        VariableAggregatorExecutor.execute(node_id, config, variable_pool).await
+        VariableAggregatorExecutor.execute(node_id, config, variable_pool, context).await
     }
 }
 
@@ -125,6 +129,7 @@ impl NodeExecutor for VariableAssignerExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         // Parse config
         let assigned_sel: Vec<String> = config
@@ -175,6 +180,7 @@ impl NodeExecutor for HttpRequestExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let method = config.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         let url_template = config.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -317,6 +323,7 @@ impl NodeExecutor for CodeNodeExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let code = config.get("code").and_then(|v| v.as_str()).unwrap_or("");
         let language_str = config
@@ -437,7 +444,8 @@ mod tests {
         });
 
         let executor = TemplateTransformExecutor;
-        let result = executor.execute("tt1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("tt1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("output"), Some(&Value::String("Hello World!".into())));
     }
 
@@ -455,7 +463,8 @@ mod tests {
         });
 
         let executor = VariableAggregatorExecutor;
-        let result = executor.execute("agg1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("agg1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("output"), Some(&Value::String("found".into())));
     }
 
@@ -467,7 +476,8 @@ mod tests {
         });
 
         let executor = VariableAggregatorExecutor;
-        let result = executor.execute("agg1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("agg1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("output"), Some(&Value::Null));
     }
 
@@ -486,7 +496,8 @@ mod tests {
         });
 
         let executor = VariableAssignerExecutor;
-        let result = executor.execute("va1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("va1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("output"), Some(&Value::String("data".into())));
     }
 
@@ -499,7 +510,8 @@ mod tests {
         });
 
         let executor = CodeNodeExecutor::new();
-        let result = executor.execute("code1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("code1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("result"), Some(&Value::Number(serde_json::Number::from(42))));
     }
 
@@ -518,7 +530,8 @@ mod tests {
         });
 
         let executor = CodeNodeExecutor::new();
-        let result = executor.execute("code2", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("code2", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("doubled"), Some(&Value::Number(serde_json::Number::from(20))));
     }
 
@@ -531,7 +544,8 @@ mod tests {
         });
 
         let executor = CodeNodeExecutor::new();
-        let result = executor.execute("code3", &config, &pool).await;
+        let context = RuntimeContext::default();
+        let result = executor.execute("code3", &config, &pool, &context).await;
         assert!(result.is_err());
     }
 }

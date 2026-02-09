@@ -1,0 +1,50 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          {
+            "variable": "name",
+            "label": "Name",
+            "type": "string",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "Template",
+        "template": "Hello {{ name }}!",
+        "variables": [
+          {
+            "variable": "name",
+            "value_selector": ["start", "name"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          {
+            "variable": "result",
+            "value_selector": ["tmpl", "output"]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "tmpl" },
+    { "source": "tmpl", "target": "end" }
+  ]
+}

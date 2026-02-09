@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::{
     Case, NodeRunResult, OutputVariable, StartVariable, WorkflowNodeExecutionStatus,
@@ -25,6 +26,7 @@ impl NodeExecutor for StartNodeExecutor {
         node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let mut outputs = HashMap::new();
 
@@ -67,6 +69,7 @@ impl NodeExecutor for EndNodeExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let mut outputs = HashMap::new();
         let mut inputs = HashMap::new();
@@ -120,6 +123,7 @@ impl NodeExecutor for AnswerNodeExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let answer_template = config
             .get("answer")
@@ -153,6 +157,7 @@ impl NodeExecutor for IfElseNodeExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
+        _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         // Parse cases from config
         let cases: Vec<Case> = config
@@ -196,7 +201,8 @@ mod tests {
         });
 
         let executor = StartNodeExecutor;
-        let result = executor.execute("start1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("start1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("query"), Some(&Value::String("hello".into())));
         assert_eq!(result.outputs.get("sys.query"), Some(&Value::String("sys_query".into())));
     }
@@ -214,7 +220,8 @@ mod tests {
         });
 
         let executor = EndNodeExecutor;
-        let result = executor.execute("end1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("end1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("result"), Some(&Value::String("result text".into())));
     }
 
@@ -231,7 +238,8 @@ mod tests {
         });
 
         let executor = AnswerNodeExecutor;
-        let result = executor.execute("ans1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("ans1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("answer"), Some(&Value::String("Hello Alice!".into())));
     }
 
@@ -256,7 +264,8 @@ mod tests {
         });
 
         let executor = IfElseNodeExecutor;
-        let result = executor.execute("if1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.edge_source_handle, "case1");
     }
 
@@ -281,7 +290,8 @@ mod tests {
         });
 
         let executor = IfElseNodeExecutor;
-        let result = executor.execute("if1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.edge_source_handle, "false");
     }
 
@@ -317,7 +327,8 @@ mod tests {
         });
 
         let executor = IfElseNodeExecutor;
-        let result = executor.execute("if1", &config, &pool).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.edge_source_handle, "case2");
     }
 }

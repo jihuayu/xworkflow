@@ -5,9 +5,11 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::core::dispatcher::{EngineConfig, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::WorkflowSchema;
 use crate::dsl::validator::validate_workflow_schema;
+use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
 
@@ -47,84 +49,140 @@ impl WorkflowHandle {
     }
 }
 
-/// Workflow scheduler: manages async workflow execution
-pub struct WorkflowScheduler;
-
-impl WorkflowScheduler {
-    pub fn new() -> Self {
-        WorkflowScheduler
-    }
-
-    /// Submit a workflow for execution with user inputs
-    pub async fn submit(
-        &self,
-        schema: WorkflowSchema,
-        user_inputs: HashMap<String, Value>,
-        system_vars: HashMap<String, Value>,
-        config: Option<EngineConfig>,
-    ) -> Result<WorkflowHandle, crate::error::WorkflowError> {
-        validate_workflow_schema(&schema)?;
-        let graph = build_graph(&schema)?;
-
-        // Build variable pool
-        let mut pool = VariablePool::new();
-
-        // Set system variables
-        for (k, v) in &system_vars {
-            pool.set(
-                &["sys".to_string(), k.clone()],
-                Segment::from_value(v),
-            );
-        }
-
-        // Set user inputs mapped to start node
-        let start_node_id = graph.root_node_id.clone();
-        for (k, v) in &user_inputs {
-            pool.set(
-                &[start_node_id.clone(), k.clone()],
-                Segment::from_value(v),
-            );
-        }
-
-        let registry = NodeExecutorRegistry::new();
-        let (tx, mut rx) = mpsc::channel(256);
-        let config = config.unwrap_or_default();
-
-        let status = Arc::new(Mutex::new(ExecutionStatus::Running));
-        let events = Arc::new(Mutex::new(Vec::new()));
-
-        let _status_clone = status.clone();
-        let events_clone = events.clone();
-
-        // Spawn event collector
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                events_clone.lock().await.push(event);
-            }
-        });
-
-        // Spawn workflow execution
-        let status_exec = status.clone();
-        tokio::spawn(async move {
-            let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config);
-            match dispatcher.run().await {
-                Ok(outputs) => {
-                    *status_exec.lock().await = ExecutionStatus::Completed(outputs);
-                }
-                Err(e) => {
-                    *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
-                }
-            }
-        });
-
-        Ok(WorkflowHandle { status, events })
-    }
+/// Workflow runner with builder-based configuration
+#[allow(dead_code)]
+pub struct WorkflowRunner {
+  schema: WorkflowSchema,
+  user_inputs: HashMap<String, Value>,
+  system_vars: HashMap<String, Value>,
+  environment_vars: HashMap<String, Value>,
+  conversation_vars: HashMap<String, Value>,
+  config: EngineConfig,
+  context: RuntimeContext,
 }
 
-impl Default for WorkflowScheduler {
-    fn default() -> Self {
-        Self::new()
+impl WorkflowRunner {
+  pub fn builder(schema: WorkflowSchema) -> WorkflowRunnerBuilder {
+    WorkflowRunnerBuilder {
+      schema,
+      user_inputs: HashMap::new(),
+      system_vars: HashMap::new(),
+      environment_vars: HashMap::new(),
+      conversation_vars: HashMap::new(),
+      config: EngineConfig::default(),
+      context: RuntimeContext::default(),
     }
+  }
+}
+
+pub struct WorkflowRunnerBuilder {
+  schema: WorkflowSchema,
+  user_inputs: HashMap<String, Value>,
+  system_vars: HashMap<String, Value>,
+  environment_vars: HashMap<String, Value>,
+  conversation_vars: HashMap<String, Value>,
+  config: EngineConfig,
+  context: RuntimeContext,
+}
+
+impl WorkflowRunnerBuilder {
+  pub fn user_inputs(mut self, inputs: HashMap<String, Value>) -> Self {
+    self.user_inputs = inputs;
+    self
+  }
+
+  pub fn system_vars(mut self, vars: HashMap<String, Value>) -> Self {
+    self.system_vars = vars;
+    self
+  }
+
+  pub fn environment_vars(mut self, vars: HashMap<String, Value>) -> Self {
+    self.environment_vars = vars;
+    self
+  }
+
+  pub fn conversation_vars(mut self, vars: HashMap<String, Value>) -> Self {
+    self.conversation_vars = vars;
+    self
+  }
+
+  pub fn config(mut self, config: EngineConfig) -> Self {
+    self.config = config;
+    self
+  }
+
+  pub fn context(mut self, context: RuntimeContext) -> Self {
+    self.context = context;
+    self
+  }
+
+  pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
+    validate_workflow_schema(&self.schema)?;
+    let graph = build_graph(&self.schema)?;
+
+    // Build variable pool
+    let mut pool = VariablePool::new();
+
+    // Set system variables
+    for (k, v) in &self.system_vars {
+      pool.set(&["sys".to_string(), k.clone()], Segment::from_value(v));
+    }
+
+    // Set environment variables
+    for (k, v) in &self.environment_vars {
+      pool.set(&["env".to_string(), k.clone()], Segment::from_value(v));
+    }
+
+    // Set conversation variables
+    for (k, v) in &self.conversation_vars {
+      pool.set(
+        &["conversation".to_string(), k.clone()],
+        Segment::from_value(v),
+      );
+    }
+
+    // Set user inputs mapped to start node
+    let start_node_id = graph.root_node_id.clone();
+    for (k, v) in &self.user_inputs {
+      pool.set(
+        &[start_node_id.clone(), k.clone()],
+        Segment::from_value(v),
+      );
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    let (tx, mut rx) = mpsc::channel(256);
+    let config = self.config;
+    let context = Arc::new(self.context);
+
+    let status = Arc::new(Mutex::new(ExecutionStatus::Running));
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let events_clone = events.clone();
+
+    // Spawn event collector
+    tokio::spawn(async move {
+      while let Some(event) = rx.recv().await {
+        events_clone.lock().await.push(event);
+      }
+    });
+
+    // Spawn workflow execution
+    let status_exec = status.clone();
+    tokio::spawn(async move {
+      let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config, context);
+      match dispatcher.run().await {
+        Ok(outputs) => {
+          *status_exec.lock().await = ExecutionStatus::Completed(outputs);
+        }
+        Err(e) => {
+          *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+        }
+      }
+    });
+
+    Ok(WorkflowHandle { status, events })
+  }
 }
 
 #[cfg(test)]
@@ -157,7 +215,6 @@ edges:
     target: end
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
-        let scheduler = WorkflowScheduler::new();
 
         let mut inputs = HashMap::new();
         inputs.insert("query".to_string(), Value::String("test".into()));
@@ -165,7 +222,12 @@ edges:
         let mut sys = HashMap::new();
         sys.insert("query".to_string(), Value::String("test".into()));
 
-        let handle = scheduler.submit(schema, inputs, sys, None).await.unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .user_inputs(inputs)
+            .system_vars(sys)
+            .run()
+            .await
+            .unwrap();
         let status = handle.wait().await;
 
         match status {
@@ -218,12 +280,15 @@ edges:
     sourceHandle: "false"
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
-        let scheduler = WorkflowScheduler::new();
 
         let mut inputs = HashMap::new();
         inputs.insert("n".to_string(), serde_json::json!(10));
 
-        let handle = scheduler.submit(schema, inputs, HashMap::new(), None).await.unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .user_inputs(inputs)
+            .run()
+            .await
+            .unwrap();
         let status = handle.wait().await;
 
         match status {

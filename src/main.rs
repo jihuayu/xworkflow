@@ -1,11 +1,7 @@
-use tokio::sync::mpsc;
+use std::collections::HashMap;
 
-use xworkflow::core::dispatcher::{EngineConfig, WorkflowDispatcher};
-use xworkflow::core::variable_pool::{Segment, VariablePool};
 use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::dsl::validator::validate_workflow_schema;
-use xworkflow::graph::build_graph;
-use xworkflow::nodes::executor::NodeExecutorRegistry;
+use xworkflow::scheduler::{ExecutionStatus, WorkflowRunner};
 
 #[tokio::main]
 async fn main() {
@@ -72,85 +68,35 @@ edges:
     target: end
 "#;
 
-    // Parse and validate
+    // Parse
     let schema = parse_dsl(yaml, DslFormat::Yaml).expect("Failed to parse DSL");
-    validate_workflow_schema(&schema).expect("Schema validation failed");
-    println!("[OK] DSL parsed and validated ({} nodes, {} edges)", schema.nodes.len(), schema.edges.len());
+    println!("[OK] DSL parsed ({} nodes, {} edges)", schema.nodes.len(), schema.edges.len());
 
-    // Build graph
-    let graph = build_graph(&schema).expect("Failed to build graph");
-    println!("[OK] Graph built (root: {})", graph.root_node_id);
+    let mut inputs = HashMap::new();
+    inputs.insert("query".to_string(), serde_json::Value::String("Hello, Dify!".to_string()));
 
-    // Initialize variable pool
-    let mut pool = VariablePool::new();
-    pool.set(
-        &["start".to_string(), "query".to_string()],
-        Segment::String("Hello, Dify!".to_string()),
-    );
-    pool.set(
-        &["sys".to_string(), "query".to_string()],
-        Segment::String("Hello, Dify!".to_string()),
-    );
+    let mut sys = HashMap::new();
+    sys.insert("query".to_string(), serde_json::Value::String("Hello, Dify!".to_string()));
 
-    // Run
-    let registry = NodeExecutorRegistry::new();
-    let (tx, mut rx) = mpsc::channel(100);
-    let config = EngineConfig::default();
+    let handle = WorkflowRunner::builder(schema)
+      .user_inputs(inputs)
+      .system_vars(sys)
+      .run()
+      .await
+      .expect("Failed to run workflow");
 
-    let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config);
-
-    let handle = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let json = event.to_json();
-            let event_type = json["type"].as_str().unwrap_or("unknown");
-            match event_type {
-                "graph_run_started" => println!("\n>>> Graph execution started"),
-                "graph_run_succeeded" => {
-                    println!(">>> Graph execution succeeded");
-                    if let Some(outputs) = json["data"]["outputs"].as_object() {
-                        for (k, v) in outputs {
-                            println!("    Output: {} = {}", k, v);
-                        }
-                    }
-                }
-                "graph_run_failed" => {
-                    println!(">>> Graph execution FAILED: {}", json["data"]["error"]);
-                }
-                "node_run_started" => {
-                    println!(
-                        "  > Node started: {} ({})",
-                        json["data"]["node_title"].as_str().unwrap_or(""),
-                        json["data"]["node_type"].as_str().unwrap_or("")
-                    );
-                }
-                "node_run_succeeded" => {
-                    println!(
-                        "  > Node succeeded: {}",
-                        json["data"]["node_id"].as_str().unwrap_or("")
-                    );
-                }
-                _ => {
-                    println!("  > Event: {}", event_type);
-                }
-            }
+    match handle.wait().await {
+      ExecutionStatus::Completed(outputs) => {
+        println!("\n=== Workflow completed ===");
+        for (k, v) in &outputs {
+          println!("  {} = {}", k, v);
         }
-    });
-
-    let result = dispatcher.run().await;
-    drop(dispatcher);
-
-    // Wait for event handler to finish
-    let _ = handle.await;
-
-    match result {
-        Ok(outputs) => {
-            println!("\n=== Workflow completed ===");
-            for (k, v) in &outputs {
-                println!("  {} = {}", k, v);
-            }
-        }
-        Err(e) => {
-            println!("\n=== Workflow failed: {} ===", e);
-        }
+      }
+      ExecutionStatus::Failed(error) => {
+        println!("\n=== Workflow failed: {} ===", error);
+      }
+      ExecutionStatus::Running => {
+        println!("\n=== Workflow still running ===");
+      }
     }
 }

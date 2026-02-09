@@ -2,9 +2,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use uuid::Uuid;
 
 use crate::core::event_bus::GraphEngineEvent;
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{
     NodeRunResult, WorkflowNodeExecutionStatus, WriteMode,
@@ -22,7 +22,7 @@ pub enum Command {
 }
 
 /// Configuration for the workflow engine
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct EngineConfig {
     pub max_steps: i32,
     pub max_execution_time_secs: u64,
@@ -45,6 +45,7 @@ pub struct WorkflowDispatcher {
     event_tx: mpsc::Sender<GraphEngineEvent>,
     config: EngineConfig,
     exceptions_count: i32,
+    context: Arc<RuntimeContext>,
 }
 
 impl WorkflowDispatcher {
@@ -54,6 +55,7 @@ impl WorkflowDispatcher {
         registry: NodeExecutorRegistry,
         event_tx: mpsc::Sender<GraphEngineEvent>,
         config: EngineConfig,
+        context: Arc<RuntimeContext>,
     ) -> Self {
         WorkflowDispatcher {
             graph: Arc::new(RwLock::new(graph)),
@@ -62,6 +64,7 @@ impl WorkflowDispatcher {
             event_tx,
             config,
             exceptions_count: 0,
+            context,
         }
     }
 
@@ -78,7 +81,7 @@ impl WorkflowDispatcher {
         let mut queue: Vec<String> = vec![root_id];
         let mut step_count: i32 = 0;
         let mut final_outputs: HashMap<String, Value> = HashMap::new();
-        let start_time = std::time::Instant::now();
+        let start_time = self.context.time_provider.now_timestamp();
 
         while let Some(node_id) = queue.pop() {
             // Check max steps
@@ -92,7 +95,7 @@ impl WorkflowDispatcher {
             }
 
             // Check max time
-            if start_time.elapsed().as_secs() > self.config.max_execution_time_secs {
+            if self.context.time_provider.elapsed_secs(start_time) > self.config.max_execution_time_secs {
                 let _ = self.event_tx.send(GraphEngineEvent::GraphRunFailed {
                     error: "Max execution time exceeded".into(),
                     exceptions_count: self.exceptions_count,
@@ -123,7 +126,7 @@ impl WorkflowDispatcher {
                 }
             }
 
-            let exec_id = Uuid::new_v4().to_string();
+            let exec_id = self.context.id_generator.next_id();
 
             // Emit NodeRunStarted
             let _ = self.event_tx.send(GraphEngineEvent::NodeRunStarted {
@@ -157,7 +160,7 @@ impl WorkflowDispatcher {
                 let mut result = None;
 
                 for attempt in 0..=max_retries {
-                    match exec.execute(&node_id, &node_config, &pool_snapshot).await {
+                    match exec.execute(&node_id, &node_config, &pool_snapshot, &self.context).await {
                         Ok(r) => {
                             result = Some(r);
                             break;
@@ -370,6 +373,7 @@ mod tests {
     use super::*;
     use crate::dsl::{parse_dsl, DslFormat};
     use crate::graph::build_graph;
+  use std::sync::Arc;
 
     #[tokio::test]
     async fn test_simple_start_end() {
@@ -411,7 +415,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, mut rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("result"), Some(&Value::String("hello".into())));
@@ -477,7 +482,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, _rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("branch"), Some(&serde_json::json!(10)));
@@ -533,7 +539,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, _rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("went"), Some(&serde_json::json!(3)));
@@ -572,7 +579,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, _rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("answer"), Some(&Value::String("Hello Alice!".into())));
@@ -598,7 +606,8 @@ edges:
         let (tx, _rx) = mpsc::channel(100);
 
         let config = EngineConfig { max_steps: 0, max_execution_time_secs: 600 };
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config);
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, config, context);
         let result = dispatcher.run().await;
         assert!(result.is_err());
     }
@@ -639,7 +648,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, _rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let result = dispatcher.run().await.unwrap();
 
         assert_eq!(result.get("result"), Some(&Value::String("Hello World!".into())));
@@ -705,7 +715,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, _rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let result = dispatcher.run().await.unwrap();
 
         // The aggregator picks up code_a's result (first non-null in the list)
@@ -730,7 +741,8 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (tx, mut rx) = mpsc::channel(100);
 
-        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default());
+        let context = Arc::new(RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(graph, pool, registry, tx, EngineConfig::default(), context);
         let _ = dispatcher.run().await.unwrap();
 
         let mut event_types = Vec::new();

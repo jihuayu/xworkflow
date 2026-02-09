@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::core::dispatcher::{EngineConfig, WorkflowDispatcher};
+use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::graph::types::{Graph, GraphEdge, GraphNode, NodeState};
 use crate::nodes::executor::NodeExecutorRegistry;
@@ -76,6 +77,7 @@ impl SubGraphExecutor {
         sub_graph: &SubGraphDefinition,
         parent_pool: &VariablePool,
         scope_vars: HashMap<String, Value>,
+        context: &RuntimeContext,
     ) -> Result<Value, SubGraphError> {
         let mut scoped_pool = parent_pool.clone();
         inject_scope_vars(&mut scoped_pool, scope_vars)?;
@@ -90,6 +92,7 @@ impl SubGraphExecutor {
             registry,
             tx,
             EngineConfig::default(),
+            std::sync::Arc::new(context.clone()),
         );
 
         let outputs = dispatcher
@@ -284,7 +287,8 @@ mod tests {
         scope.insert("item".to_string(), json!(42));
 
         let executor = SubGraphExecutor::new();
-        let result = executor.execute(&sub_graph, &make_pool(), scope).await.unwrap();
+        let context = RuntimeContext::default();
+        let result = executor.execute(&sub_graph, &make_pool(), scope, &context).await.unwrap();
         assert_eq!(result.get("value"), Some(&json!(42)));
     }
 }
