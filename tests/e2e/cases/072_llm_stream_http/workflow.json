@@ -1,0 +1,53 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Query", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "llm1",
+      "data": {
+        "type": "llm",
+        "title": "LLM Streaming",
+        "model": { "provider": "openai", "name": "gpt-4o" },
+        "prompt_template": [
+          { "role": "user", "text": "{{#start.query#}}" }
+        ],
+        "stream": true
+      }
+    },
+    {
+      "id": "http1",
+      "data": {
+        "type": "http-request",
+        "title": "HTTP with Stream",
+        "method": "GET",
+        "url": "{{#sys.base_url#}}/api/echo?text={{#llm1.text#}}",
+        "headers": [],
+        "params": []
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "body", "value_selector": ["http1", "body"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "llm1" },
+    { "source": "llm1", "target": "http1" },
+    { "source": "http1", "target": "end" }
+  ]
+}

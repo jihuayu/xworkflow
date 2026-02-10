@@ -1,0 +1,66 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Query", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "llm1",
+      "data": {
+        "type": "llm",
+        "title": "LLM Streaming",
+        "model": { "provider": "openai", "name": "gpt-4o" },
+        "prompt_template": [
+          { "role": "user", "text": "{{#start.query#}}" }
+        ],
+        "stream": true
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Uppercase Chunks",
+        "language": "javascript",
+        "code": "function main(inputs) { var acc = ''; inputs.text.on_chunk(function(chunk) { var upper = chunk.toUpperCase(); acc = acc + upper; return upper; }).on_end(function(val) { return acc; }); return ''; }",
+        "variables": [
+          { "variable": "text", "value_selector": ["llm1", "text"] }
+        ]
+      }
+    },
+    {
+      "id": "tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "Wrap Result",
+        "template": "[{{ text }}]",
+        "variables": [
+          { "variable": "text", "value_selector": ["code1", "output"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["tmpl", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "llm1" },
+    { "source": "llm1", "target": "code1" },
+    { "source": "code1", "target": "tmpl" },
+    { "source": "tmpl", "target": "end" }
+  ]
+}

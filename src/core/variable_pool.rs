@@ -250,6 +250,7 @@ impl StreamReader {
             let chunks = snapshot.chunks.clone();
             let final_value = snapshot.final_value.clone();
             let error = snapshot.error.clone();
+            drop(snapshot);
             if self.cursor < chunks.len() {
                 let item = chunks[self.cursor].clone();
                 self.cursor += 1;

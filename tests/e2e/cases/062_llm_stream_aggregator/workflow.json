@@ -1,0 +1,64 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Query", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "llm1",
+      "data": {
+        "type": "llm",
+        "title": "LLM Stream",
+        "model": { "provider": "openai", "name": "gpt-4o" },
+        "prompt_template": [
+          { "role": "user", "text": "{{#start.query#}}" }
+        ],
+        "stream": true
+      }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Static",
+        "language": "javascript",
+        "code": "function main(inputs) { return { result: 'fallback_value' }; }"
+      }
+    },
+    {
+      "id": "agg",
+      "data": {
+        "type": "variable-aggregator",
+        "title": "Aggregator",
+        "variables": [
+          ["llm1", "text"],
+          ["code1", "result"]
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["agg", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "llm1" },
+    { "source": "start", "target": "code1" },
+    { "source": "llm1", "target": "agg" },
+    { "source": "code1", "target": "agg" },
+    { "source": "agg", "target": "end" }
+  ]
+}

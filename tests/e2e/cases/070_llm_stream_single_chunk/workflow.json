@@ -1,0 +1,50 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Query", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "llm1",
+      "data": {
+        "type": "llm",
+        "title": "LLM Single Chunk",
+        "model": { "provider": "openai", "name": "gpt-4o" },
+        "prompt_template": [
+          { "role": "user", "text": "{{#start.query#}}" }
+        ],
+        "stream": true
+      }
+    },
+    {
+      "id": "ans",
+      "data": {
+        "type": "answer",
+        "title": "Answer",
+        "answer": "Got: {{#llm1.text#}}"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["ans", "answer"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "llm1" },
+    { "source": "llm1", "target": "ans" },
+    { "source": "ans", "target": "end" }
+  ]
+}

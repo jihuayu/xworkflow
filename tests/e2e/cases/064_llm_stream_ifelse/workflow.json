@@ -1,0 +1,95 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "query", "label": "Query", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "llm1",
+      "data": {
+        "type": "llm",
+        "title": "LLM Streaming",
+        "model": { "provider": "openai", "name": "gpt-4o" },
+        "prompt_template": [
+          { "role": "user", "text": "{{#start.query#}}" }
+        ],
+        "stream": true
+      }
+    },
+    {
+      "id": "if1",
+      "data": {
+        "type": "if-else",
+        "title": "Check LLM Output",
+        "cases": [
+          {
+            "case_id": "has_yes",
+            "logical_operator": "and",
+            "conditions": [
+              {
+                "variable_selector": ["llm1", "text"],
+                "comparison_operator": "contains",
+                "value": "yes"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "code_yes",
+      "data": {
+        "type": "code",
+        "title": "Yes Branch",
+        "language": "javascript",
+        "code": "function main(inputs) { return { result: 'matched_yes' }; }"
+      }
+    },
+    {
+      "id": "code_no",
+      "data": {
+        "type": "code",
+        "title": "No Branch",
+        "language": "javascript",
+        "code": "function main(inputs) { return { result: 'no_match' }; }"
+      }
+    },
+    {
+      "id": "agg",
+      "data": {
+        "type": "variable-aggregator",
+        "title": "Merge",
+        "variables": [
+          ["code_yes", "result"],
+          ["code_no", "result"]
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["agg", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "llm1" },
+    { "source": "llm1", "target": "if1" },
+    { "source": "if1", "target": "code_yes", "sourceHandle": "has_yes" },
+    { "source": "if1", "target": "code_no", "sourceHandle": "false" },
+    { "source": "code_yes", "target": "agg" },
+    { "source": "code_no", "target": "agg" },
+    { "source": "agg", "target": "end" }
+  ]
+}
