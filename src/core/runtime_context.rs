@@ -11,8 +11,19 @@ pub struct RuntimeContext {
     pub time_provider: Arc<dyn TimeProvider>,
     pub id_generator: Arc<dyn IdGenerator>,
     pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
+    pub sub_graph_runner: Option<Arc<dyn crate::core::sub_graph_runner::SubGraphRunner>>,
     #[cfg(feature = "plugin-system")]
     pub template_functions: Option<Arc<std::collections::HashMap<String, Arc<dyn crate::plugin_system::TemplateFunction>>>>,
+    #[cfg(feature = "security")]
+    pub resource_group: Option<crate::security::ResourceGroup>,
+    #[cfg(feature = "security")]
+    pub security_policy: Option<crate::security::SecurityPolicy>,
+    #[cfg(feature = "security")]
+    pub resource_governor: Option<Arc<dyn crate::security::ResourceGovernor>>,
+    #[cfg(feature = "security")]
+    pub credential_provider: Option<Arc<dyn crate::security::CredentialProvider>>,
+    #[cfg(feature = "security")]
+    pub audit_logger: Option<Arc<dyn crate::security::AuditLogger>>,
 }
 
 impl Default for RuntimeContext {
@@ -21,8 +32,19 @@ impl Default for RuntimeContext {
             time_provider: Arc::new(RealTimeProvider::default()),
             id_generator: Arc::new(RealIdGenerator::default()),
             event_tx: None,
+            sub_graph_runner: None,
             #[cfg(feature = "plugin-system")]
             template_functions: None,
+            #[cfg(feature = "security")]
+            resource_group: None,
+            #[cfg(feature = "security")]
+            security_policy: None,
+            #[cfg(feature = "security")]
+            resource_governor: None,
+            #[cfg(feature = "security")]
+            credential_provider: None,
+            #[cfg(feature = "security")]
+            audit_logger: None,
         }
     }
 }

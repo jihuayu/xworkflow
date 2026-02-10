@@ -13,6 +13,9 @@ use tokio::sync::RwLock;
 use boa_engine::{Context, Source};
 use serde_json::Value;
 
+#[cfg(feature = "security")]
+use crate::security::sandbox::{AstCodeAnalyzer, CodeAnalyzer};
+
 use super::error::SandboxError;
 use super::types::*;
 
@@ -27,6 +30,18 @@ pub struct BuiltinSandboxConfig {
 
     /// Whether to enable console.log (captured in stdout)
     pub enable_console: bool,
+
+    /// Estimated memory cap (bytes)
+    pub max_memory_estimate: usize,
+
+    /// Max output JSON bytes
+    pub max_output_bytes: usize,
+
+    /// Freeze global objects
+    pub freeze_globals: bool,
+
+    /// Allowed globals whitelist
+    pub allowed_globals: Vec<String>,
 }
 
 impl Default for BuiltinSandboxConfig {
@@ -35,6 +50,37 @@ impl Default for BuiltinSandboxConfig {
             max_code_length: 1_000_000, // 1MB
             default_timeout: Duration::from_secs(30),
             enable_console: true,
+            max_memory_estimate: 32 * 1024 * 1024,
+            max_output_bytes: 1 * 1024 * 1024,
+            freeze_globals: true,
+            allowed_globals: vec![
+                "JSON".into(),
+                "Math".into(),
+                "parseInt".into(),
+                "parseFloat".into(),
+                "isNaN".into(),
+                "isFinite".into(),
+                "Number".into(),
+                "String".into(),
+                "Boolean".into(),
+                "Array".into(),
+                "Object".into(),
+                "Error".into(),
+                "encodeURIComponent".into(),
+                "decodeURIComponent".into(),
+                "encodeURI".into(),
+                "decodeURI".into(),
+                "btoa".into(),
+                "atob".into(),
+                "RegExp".into(),
+                "Date".into(),
+                "datetime".into(),
+                "crypto".into(),
+                "uuidv4".into(),
+                "randomInt".into(),
+                "randomFloat".into(),
+                "randomBytes".into(),
+            ],
         }
     }
 }
@@ -63,21 +109,19 @@ impl BuiltinSandbox {
             });
         }
 
-        // 2. Check for dangerous patterns
-        let dangerous_patterns = [
-            (r"eval\s*\(", "eval()"),
-            (r"Function\s*\(", "Function()"),
-            (r"require\s*\(", "require()"),
-            (r"import\s+", "import"),
-            (r"__proto__", "__proto__"),
-            (r"constructor\s*\[", "constructor[]"),
-        ];
-
-        for (pattern, desc) in &dangerous_patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(code) {
-                    return Err(SandboxError::DangerousCode(desc.to_string()));
-                }
+        // 2. AST-based dangerous code analysis
+        #[cfg(feature = "security")]
+        {
+            let analyzer = AstCodeAnalyzer::default();
+            let result = analyzer.analyze(code)?;
+            if !result.is_safe {
+                let summary = result
+                    .violations
+                    .iter()
+                    .map(|v| v.description.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(SandboxError::DangerousCode(summary));
             }
         }
 
@@ -110,6 +154,10 @@ impl BuiltinSandbox {
         let inputs_json = serde_json::to_string(inputs)
             .map_err(|e| SandboxError::SerializationError(e.to_string()))?;
 
+        if inputs_json.len() > self.config.max_memory_estimate {
+            return Err(SandboxError::MemoryLimitExceeded);
+        }
+
         // Console log capture - collect logs
         let console_setup = if self.config.enable_console {
             r#"
@@ -135,9 +183,46 @@ var console = {
             ""
         };
 
+        let mut allowed = self.config.allowed_globals.clone();
+        if self.config.enable_console {
+            allowed.push("console".into());
+            allowed.push("__console_logs".into());
+        }
+        allowed.sort();
+        allowed.dedup();
+        let allowed_list = allowed
+            .iter()
+            .map(|s| format!("\"{}\"", s))
+            .collect::<Vec<_>>()
+            .join(",");
+        let security_setup = if self.config.freeze_globals || !allowed.is_empty() {
+            format!(
+                r#"
+var __allowed_globals = new Set([{allowed_list}]);
+var __global = (typeof globalThis !== 'undefined') ? globalThis : this;
+var __Function = __global.Function;
+Object.getOwnPropertyNames(__global).forEach(function(key) {{
+    if (!__allowed_globals.has(key)) {{
+        try {{ delete __global[key]; }} catch (e) {{ __global[key] = undefined; }}
+    }}
+}});
+{freeze_globals}
+"#,
+                allowed_list = allowed_list,
+                freeze_globals = if self.config.freeze_globals {
+                    "Object.freeze(__global); Object.freeze(Object.prototype); Object.freeze(Array.prototype); if (typeof __Function !== 'undefined') { Object.freeze(__Function.prototype); }"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            String::new()
+        };
+
         let full_code = format!(
             r#"
 {console_setup}
+{security_setup}
 
 // User code
 {code}
@@ -153,6 +238,7 @@ var console = {
 }})();
 "#,
             console_setup = console_setup,
+            security_setup = security_setup,
             code = code,
             inputs_json_escaped = inputs_json.replace('\\', "\\\\").replace('\'', "\\'"),
         );
@@ -188,6 +274,15 @@ var console = {
             .cloned()
             .unwrap_or(Value::Null);
 
+        let output_bytes = serde_json::to_vec(&output)
+            .map_err(|e| SandboxError::SerializationError(e.to_string()))?;
+        if output_bytes.len() > self.config.max_output_bytes {
+            return Err(SandboxError::OutputTooLarge {
+                max: self.config.max_output_bytes,
+                actual: output_bytes.len(),
+            });
+        }
+
         let console_logs: Vec<String> = wrapper
             .get("__console_logs")
             .and_then(|v| v.as_array())
@@ -206,7 +301,7 @@ var console = {
             stdout,
             stderr: String::new(),
             execution_time,
-            memory_used: 0,
+            memory_used: inputs_json.len() + result_str.len(),
             error: None,
         })
     }

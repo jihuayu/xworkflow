@@ -2,6 +2,7 @@ pub mod event_bus;
 pub mod variable_pool;
 pub mod dispatcher;
 pub mod runtime_context;
+pub mod sub_graph_runner;
 pub mod debug;
 
 pub use variable_pool::{
@@ -18,6 +19,7 @@ pub use variable_pool::{
 pub use event_bus::{GraphEngineEvent, PauseReason};
 pub use dispatcher::WorkflowDispatcher;
 pub use runtime_context::{RuntimeContext, TimeProvider, IdGenerator, RealTimeProvider, RealIdGenerator, FakeTimeProvider, FakeIdGenerator};
+pub use sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 pub use debug::{
 	DebugAction,
 	DebugCommand,

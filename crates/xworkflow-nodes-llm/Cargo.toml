@@ -1,0 +1,8 @@
+[package]
+name = "xworkflow-nodes-llm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+xworkflow = { path = "../..", features = ["plugin-system", "builtin-llm-node"] }

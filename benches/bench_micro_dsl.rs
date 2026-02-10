@@ -1,7 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::dsl::validator::validate_workflow_schema;
+use xworkflow::dsl::{parse_dsl, validate_schema, DslFormat};
 use xworkflow::graph::build_graph;
 
 mod helpers;
@@ -56,7 +55,7 @@ fn bench_dsl(c: &mut Criterion) {
         let yaml = build_linear_workflow(50, "template-transform");
         let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
         b.iter(|| {
-            let _ = black_box(validate_workflow_schema(&schema).unwrap());
+            let _ = black_box(validate_schema(&schema));
         });
     });
 

@@ -26,7 +26,7 @@ fn bench_segment(c: &mut Criterion) {
     });
 
     c.bench_function("segment_to_value_array_1000", |b| {
-        let seg = Segment::ArrayAny((0..1000).map(|i| Segment::Integer(i)).collect());
+        let seg = Segment::Array((0..1000).map(|i| Segment::Integer(i)).collect());
         b.iter(|| {
             let _ = black_box(seg.to_value());
         });

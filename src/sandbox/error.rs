@@ -12,6 +12,9 @@ pub enum SandboxError {
     #[error("Dangerous code detected: {0}")]
     DangerousCode(String),
 
+    #[error("Input too large (max {max} bytes, got {actual} bytes)")]
+    InputTooLarge { max: usize, actual: usize },
+
     #[error("Compilation error: {0}")]
     CompilationError(String),
 
@@ -23,6 +26,9 @@ pub enum SandboxError {
 
     #[error("Memory limit exceeded")]
     MemoryLimitExceeded,
+
+    #[error("Output too large (max {max} bytes, got {actual} bytes)")]
+    OutputTooLarge { max: usize, actual: usize },
 
     #[error("Execution timeout")]
     ExecutionTimeout,

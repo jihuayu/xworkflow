@@ -27,6 +27,15 @@ pub struct WasmSandboxConfig {
     pub max_fuel: u64,
     /// Enable fuel metering
     pub enable_fuel: bool,
+
+    /// Max input JSON size (bytes)
+    pub max_input_bytes: usize,
+    /// Max output JSON size (bytes)
+    pub max_output_bytes: usize,
+    /// Allow WASI (always false)
+    pub allow_wasi: bool,
+    /// Fuel warning threshold
+    pub fuel_warning_threshold: u64,
 }
 
 impl Default for WasmSandboxConfig {
@@ -37,6 +46,10 @@ impl Default for WasmSandboxConfig {
             max_memory_pages: 256,
             max_fuel: 1_000_000_000,
             enable_fuel: true,
+            max_input_bytes: 1 * 1024 * 1024,
+            max_output_bytes: 1 * 1024 * 1024,
+            allow_wasi: false,
+            fuel_warning_threshold: 800_000_000,
         }
     }
 }
@@ -196,6 +209,12 @@ impl CodeSandbox for WasmSandbox {
 
             let input_bytes = serde_json::to_vec(&inputs)
                 .map_err(|e| SandboxError::SerializationError(e.to_string()))?;
+            if input_bytes.len() > config.max_input_bytes {
+                return Err(SandboxError::InputTooLarge {
+                    max: config.max_input_bytes,
+                    actual: input_bytes.len(),
+                });
+            }
             let input_len = input_bytes.len() as i32;
             let input_ptr = alloc
                 .call(&mut store, input_len)
@@ -220,6 +239,13 @@ impl CodeSandbox for WasmSandbox {
             memory
                 .read(&mut store, out_ptr, &mut out_bytes)
                 .map_err(|e| SandboxError::ExecutionError(e.to_string()))?;
+
+            if out_bytes.len() > config.max_output_bytes {
+                return Err(SandboxError::OutputTooLarge {
+                    max: config.max_output_bytes,
+                    actual: out_bytes.len(),
+                });
+            }
 
             let output: Value = serde_json::from_slice(&out_bytes)
                 .map_err(|e| SandboxError::SerializationError(e.to_string()))?;

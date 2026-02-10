@@ -246,25 +246,28 @@ impl StreamReader {
     pub async fn next(&mut self) -> Option<StreamEvent> {
         loop {
             let snapshot = self.stream.state.read().await;
-            let status = snapshot.status.clone();
-            let chunks = snapshot.chunks.clone();
-            let final_value = snapshot.final_value.clone();
-            let error = snapshot.error.clone();
-            drop(snapshot);
-            if self.cursor < chunks.len() {
-                let item = chunks[self.cursor].clone();
+            if self.cursor < snapshot.chunks.len() {
+                let item = snapshot.chunks[self.cursor].clone();
                 self.cursor += 1;
                 return Some(StreamEvent::Chunk(item));
             }
-            match status {
+            match snapshot.status {
                 StreamStatus::Running => {
+                    drop(snapshot);
                     self.stream.notify.notified().await;
                 }
                 StreamStatus::Completed => {
-                    return Some(StreamEvent::End(final_value.unwrap_or(Segment::None)));
+                    return Some(StreamEvent::End(
+                        snapshot.final_value.clone().unwrap_or(Segment::None),
+                    ));
                 }
                 StreamStatus::Failed => {
-                    return Some(StreamEvent::Error(error.unwrap_or_else(|| "stream failed".into())));
+                    return Some(StreamEvent::Error(
+                        snapshot
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "stream failed".into()),
+                    ));
                 }
             }
         }
@@ -476,6 +479,21 @@ impl Segment {
             _ => false,
         }
     }
+
+    pub fn estimate_bytes(&self) -> usize {
+        match self {
+            Segment::None => 0,
+            Segment::String(s) => s.len(),
+            Segment::Integer(_) | Segment::Float(_) | Segment::Boolean(_) => 8,
+            Segment::ArrayString(items) => items.iter().map(|s| s.len()).sum(),
+            Segment::Array(items) => items.iter().map(|s| s.estimate_bytes()).sum(),
+            Segment::Object(map) => map
+                .iter()
+                .map(|(k, v)| k.len() + v.estimate_bytes())
+                .sum(),
+            Segment::Stream(stream) => stream.snapshot_segment().estimate_bytes(),
+        }
+    }
 }
 
 impl PartialEq for Segment {
@@ -503,27 +521,123 @@ impl std::fmt::Display for Segment {
 
 // ================================
 // VariablePool – Dify-compatible
-// Key: (node_id, variable_name)
+// Key: "node_id\0variable_name"
 // ================================
 
 #[derive(Debug, Clone)]
 pub struct VariablePool {
-    variables: HashMap<(String, String), Segment>,
+    variables: HashMap<String, Segment>,
+    #[cfg(feature = "security")]
+    selector_validation: Option<crate::security::validation::SelectorValidation>,
+    #[cfg(not(feature = "security"))]
+    selector_validation: Option<()>,
 }
 
 impl VariablePool {
     pub fn new() -> Self {
         VariablePool {
             variables: HashMap::new(),
+            #[cfg(feature = "security")]
+            selector_validation: None,
+            #[cfg(not(feature = "security"))]
+            selector_validation: None,
         }
+    }
+
+    #[cfg(feature = "security")]
+    pub fn new_with_selector_validation(
+        selector_validation: Option<crate::security::validation::SelectorValidation>,
+    ) -> Self {
+        VariablePool {
+            variables: HashMap::new(),
+            selector_validation,
+        }
+    }
+
+    #[cfg(not(feature = "security"))]
+    pub fn new_with_selector_validation(_selector_validation: Option<()>) -> Self {
+        VariablePool {
+            variables: HashMap::new(),
+            selector_validation: None,
+        }
+    }
+
+    #[cfg(feature = "security")]
+    pub fn set_selector_validation(
+        &mut self,
+        selector_validation: Option<crate::security::validation::SelectorValidation>,
+    ) {
+        self.selector_validation = selector_validation;
+    }
+
+    pub fn len(&self) -> usize {
+        self.variables.len()
+    }
+
+    pub fn estimate_total_bytes(&self) -> usize {
+        self.variables
+            .iter()
+            .map(|(k, v)| k.len() + v.estimate_bytes())
+            .sum()
+    }
+
+    /// Build key from node_id and variable name.
+    pub fn make_key(node_id: &str, var_name: &str) -> String {
+        let mut key = String::with_capacity(node_id.len() + 1 + var_name.len());
+        key.push_str(node_id);
+        key.push('\0');
+        key.push_str(var_name);
+        key
+    }
+
+    fn make_key_from_selector(selector: &[String]) -> Option<String> {
+        if selector.len() < 2 {
+            return None;
+        }
+        Some(Self::make_key(&selector[0], &selector[1]))
+    }
+
+    fn key_prefix(node_id: &str) -> String {
+        let mut prefix = String::with_capacity(node_id.len() + 1);
+        prefix.push_str(node_id);
+        prefix.push('\0');
+        prefix
+    }
+
+    #[cfg(feature = "security")]
+    fn selector_allowed(&self, selector: &[String]) -> bool {
+        let Some(cfg) = &self.selector_validation else {
+            return true;
+        };
+        if selector.len() < 2 || selector.len() > cfg.max_depth {
+            return false;
+        }
+
+        let total_len = selector
+            .iter()
+            .map(|s| s.len())
+            .sum::<usize>()
+            .saturating_add(selector.len().saturating_sub(1));
+        if total_len > cfg.max_length {
+            return false;
+        }
+
+        if cfg.allowed_prefixes.iter().any(|p| p == "*") {
+            return true;
+        }
+        let prefix = selector.first().map(|s| s.as_str()).unwrap_or("");
+        cfg.allowed_prefixes.iter().any(|p| p == prefix)
     }
 
     /// Get variable by selector: ["node_id", "var_name"] or ["sys", "query"]
     pub fn get(&self, selector: &[String]) -> Segment {
-        if selector.len() < 2 {
+        #[cfg(feature = "security")]
+        if !self.selector_allowed(selector) {
             return Segment::None;
         }
-        let key = (selector[0].clone(), selector[1].clone());
+        let Some(key) = Self::make_key_from_selector(selector) else {
+            return Segment::None;
+        };
         self.variables.get(&key).cloned().unwrap_or(Segment::None)
     }
 
@@ -542,56 +656,88 @@ impl VariablePool {
 
     /// Set a single variable
     pub fn set(&mut self, selector: &[String], value: Segment) {
-        if selector.len() >= 2 {
-            let key = (selector[0].clone(), selector[1].clone());
+        if let Some(key) = Self::make_key_from_selector(selector) {
             self.variables.insert(key, value);
         }
+    }
+
+    #[cfg(feature = "security")]
+    pub fn set_checked(
+        &mut self,
+        selector: &[String],
+        value: Segment,
+        max_entries: usize,
+        max_memory_bytes: usize,
+    ) -> Result<(), crate::security::QuotaError> {
+        if self.variables.len() >= max_entries {
+            return Err(crate::security::QuotaError::VariablePoolTooLarge {
+                max_entries,
+                current: self.variables.len(),
+            });
+        }
+        let estimated_size = self.estimate_total_bytes() + value.estimate_bytes();
+        if estimated_size > max_memory_bytes {
+            return Err(crate::security::QuotaError::VariablePoolMemoryExceeded {
+                max_bytes: max_memory_bytes,
+                current: estimated_size,
+            });
+        }
+        self.set(selector, value);
+        Ok(())
     }
 
     /// Set node outputs as (node_id, key) -> value
     pub fn set_node_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Value>) {
         for (key, val) in outputs {
             let seg = Segment::from_value(val);
-            self.variables.insert((node_id.to_string(), key.clone()), seg);
+            self.variables.insert(Self::make_key(node_id, key), seg);
         }
     }
 
     /// Set node outputs from Segment map
     pub fn set_node_segment_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Segment>) {
         for (key, val) in outputs {
-            self.variables.insert((node_id.to_string(), key.clone()), val.clone());
+            self.variables
+                .insert(Self::make_key(node_id, key), val.clone());
         }
     }
 
     /// Check if variable exists and is not None
     pub fn has(&self, selector: &[String]) -> bool {
-        if selector.len() < 2 {
+        #[cfg(feature = "security")]
+        if !self.selector_allowed(selector) {
             return false;
         }
-        let key = (selector[0].clone(), selector[1].clone());
+        let Some(key) = Self::make_key_from_selector(selector) else {
+            return false;
+        };
         self.variables.get(&key).map_or(false, |s| !s.is_none())
     }
 
     /// Get all variables for a given node_id
     pub fn get_node_variables(&self, node_id: &str) -> HashMap<String, Segment> {
+        let prefix = Self::key_prefix(node_id);
         self.variables
             .iter()
-            .filter(|((nid, _), _)| nid == node_id)
-            .map(|((_, key), val)| (key.clone(), val.clone()))
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .filter_map(|(key, val)| {
+                key.split_once('\0')
+                    .map(|(_, var)| (var.to_string(), val.clone()))
+            })
             .collect()
     }
 
     /// Remove all variables for a given node
     pub fn remove_node(&mut self, node_id: &str) {
-        self.variables.retain(|(nid, _), _| nid != node_id);
+        let prefix = Self::key_prefix(node_id);
+        self.variables.retain(|key, _| !key.starts_with(&prefix));
     }
 
     /// Append value to an existing array variable
     pub fn append(&mut self, selector: &[String], value: Segment) {
-        if selector.len() < 2 {
+        let Some(key) = Self::make_key_from_selector(selector) else {
             return;
-        }
-        let key = (selector[0].clone(), selector[1].clone());
+        };
         let existing = self.variables.entry(key).or_insert(Segment::Array(vec![]));
         match existing {
             Segment::Array(arr) => arr.push(value),
@@ -624,14 +770,13 @@ impl VariablePool {
 
     /// Clear a variable (set to None)
     pub fn clear(&mut self, selector: &[String]) {
-        if selector.len() >= 2 {
-            let key = (selector[0].clone(), selector[1].clone());
+        if let Some(key) = Self::make_key_from_selector(selector) {
             self.variables.insert(key, Segment::None);
         }
     }
 
     /// Snapshot entire pool for serialization
-    pub fn snapshot(&self) -> HashMap<(String, String), Segment> {
+    pub fn snapshot(&self) -> HashMap<String, Segment> {
         self.variables.clone()
     }
 }

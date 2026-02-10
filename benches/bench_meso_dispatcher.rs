@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use tokio::sync::mpsc;
 
-use xworkflow::core::dispatcher::{EngineConfig, WorkflowDispatcher};
+use xworkflow::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use xworkflow::core::variable_pool::{Segment, VariablePool};
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::graph::build_graph;
@@ -25,13 +26,15 @@ async fn run_dispatcher(yaml: &str, pool: VariablePool) {
     tokio::spawn(async move {
         while rx.recv().await.is_some() {}
     });
+    let active = Arc::new(AtomicBool::new(true));
+    let emitter = EventEmitter::new(tx, active);
     let context = Arc::new(bench_context());
 
     let mut dispatcher = WorkflowDispatcher::new(
         graph,
         pool,
         registry,
-        tx,
+        emitter,
         EngineConfig::default(),
         context,
         None,

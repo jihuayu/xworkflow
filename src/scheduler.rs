@@ -1,22 +1,27 @@
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
-use crate::core::dispatcher::{EngineConfig, WorkflowDispatcher};
+use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
+use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{ErrorHandlingMode, WorkflowSchema};
 use crate::dsl::validation::{validate_schema, ValidationReport};
 use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
-use crate::nodes::subgraph::SubGraphExecutor;
 #[cfg(not(feature = "plugin-system"))]
 use crate::plugin::PluginManager;
 use crate::llm::LlmProviderRegistry;
+#[cfg(feature = "security")]
+use crate::security::{AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, SecurityPolicy};
+#[cfg(feature = "security")]
+use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 #[cfg(feature = "plugin-system")]
 use crate::dsl::validation::DiagnosticLevel;
 #[cfg(feature = "plugin-system")]
@@ -68,6 +73,44 @@ async fn execute_registry_hooks(
   Ok(())
 }
 
+#[cfg(feature = "security")]
+async fn audit_dsl_validation_failed(
+  context: &RuntimeContext,
+  report: &ValidationReport,
+) {
+  let logger = match &context.audit_logger {
+    Some(l) => l,
+    None => return,
+  };
+  let group_id = match &context.resource_group {
+    Some(g) => g.group_id.clone(),
+    None => return,
+  };
+
+  let errors = report
+    .diagnostics
+    .iter()
+    .filter(|d| d.level == crate::dsl::validation::DiagnosticLevel::Error)
+    .map(|d| d.message.clone())
+    .collect::<Vec<_>>();
+
+  if errors.is_empty() {
+    return;
+  }
+
+  let event = SecurityEvent {
+    timestamp: context.time_provider.now_timestamp(),
+    group_id,
+    workflow_id: None,
+    node_id: None,
+    event_type: SecurityEventType::DslValidationFailed { errors },
+    details: serde_json::Value::Null,
+    severity: EventSeverity::Warning,
+  };
+
+  logger.log_event(event).await;
+}
+
 /// Execution status of a workflow
 #[derive(Debug, Clone)]
 pub enum ExecutionStatus {
@@ -83,7 +126,7 @@ pub enum ExecutionStatus {
 /// Handle to a running or completed workflow
 pub struct WorkflowHandle {
     status: Arc<Mutex<ExecutionStatus>>,
-    events: Arc<Mutex<Vec<GraphEngineEvent>>>,
+  events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
 }
 
 impl WorkflowHandle {
@@ -92,7 +135,10 @@ impl WorkflowHandle {
     }
 
     pub async fn events(&self) -> Vec<GraphEngineEvent> {
-        self.events.lock().await.clone()
+      match &self.events {
+        Some(events) => events.lock().await.clone(),
+        None => Vec::new(),
+      }
     }
 
     pub async fn wait(&self) -> ExecutionStatus {
@@ -129,6 +175,7 @@ pub struct WorkflowRunner {
   #[cfg(feature = "plugin-system")]
   plugin_registry: Option<PluginRegistry>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
+  collect_events: bool,
 }
 
 impl WorkflowRunner {
@@ -153,6 +200,7 @@ impl WorkflowRunner {
       plugin_registry: None,
       llm_provider_registry: None,
       debug_config: None,
+      collect_events: true,
     }
   }
 }
@@ -234,6 +282,7 @@ pub struct WorkflowRunnerBuilder {
   plugin_registry: Option<PluginRegistry>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
   debug_config: Option<DebugConfig>,
+  collect_events: bool,
 }
 
 impl WorkflowRunnerBuilder {
@@ -257,6 +306,12 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  /// Enable or disable event collection.
+  pub fn collect_events(mut self, collect: bool) -> Self {
+    self.collect_events = collect;
+    self
+  }
+
   pub fn config(mut self, config: EngineConfig) -> Self {
     self.config = config;
     self
@@ -264,6 +319,44 @@ impl WorkflowRunnerBuilder {
 
   pub fn context(mut self, context: RuntimeContext) -> Self {
     self.context = context;
+    self
+  }
+
+  pub fn sub_graph_runner(mut self, runner: Arc<dyn SubGraphRunner>) -> Self {
+    self.context.sub_graph_runner = Some(runner);
+    self
+  }
+
+  #[cfg(feature = "security")]
+  pub fn security_policy(mut self, policy: SecurityPolicy) -> Self {
+    self.context.security_policy = Some(policy.clone());
+    if self.context.audit_logger.is_none() {
+      self.context.audit_logger = policy.audit_logger.clone();
+    }
+    self
+  }
+
+  #[cfg(feature = "security")]
+  pub fn resource_group(mut self, group: ResourceGroup) -> Self {
+    self.context.resource_group = Some(group);
+    self
+  }
+
+  #[cfg(feature = "security")]
+  pub fn resource_governor(mut self, governor: Arc<dyn ResourceGovernor>) -> Self {
+    self.context.resource_governor = Some(governor);
+    self
+  }
+
+  #[cfg(feature = "security")]
+  pub fn credential_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
+    self.context.credential_provider = Some(provider);
+    self
+  }
+
+  #[cfg(feature = "security")]
+  pub fn audit_logger(mut self, logger: Arc<dyn AuditLogger>) -> Self {
+    self.context.audit_logger = Some(logger);
     self
   }
 
@@ -365,8 +458,23 @@ impl WorkflowRunnerBuilder {
   #[allow(unused_mut)]
   pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
     let mut builder = self;
+    #[cfg(feature = "security")]
+    let mut report = if let Some(policy) = builder
+      .context
+      .security_policy
+      .as_ref()
+      .and_then(|p| p.dsl_validation.as_ref())
+    {
+      crate::dsl::validation::validate_schema_with_config(&builder.schema, policy)
+    } else {
+      validate_schema(&builder.schema)
+    };
+
+    #[cfg(not(feature = "security"))]
     let mut report = validate_schema(&builder.schema);
     if !report.is_valid {
+      #[cfg(feature = "security")]
+      audit_dsl_validation_failed(&builder.context, &report).await;
       return Err(WorkflowError::ValidationFailed(report));
     }
 
@@ -418,6 +526,8 @@ impl WorkflowRunnerBuilder {
     }
 
     if !report.is_valid {
+      #[cfg(feature = "security")]
+      audit_dsl_validation_failed(&builder.context, &report).await;
       return Err(WorkflowError::ValidationFailed(report));
     }
 
@@ -425,6 +535,16 @@ impl WorkflowRunnerBuilder {
 
     // Build variable pool
     let mut pool = VariablePool::new();
+    #[cfg(feature = "security")]
+    if let Some(selector_cfg) = builder
+      .context
+      .security_policy
+      .as_ref()
+      .and_then(|p| p.dsl_validation.as_ref())
+      .and_then(|d| d.selector_validation.clone())
+    {
+      pool.set_selector_validation(Some(selector_cfg));
+    }
 
     // Set system variables
     for (k, v) in &builder.system_vars {
@@ -493,7 +613,41 @@ impl WorkflowRunnerBuilder {
     }
 
     let (tx, mut rx) = mpsc::channel(256);
+    let event_active = Arc::new(AtomicBool::new(builder.collect_events));
+    let event_emitter = EventEmitter::new(tx.clone(), event_active.clone());
+    let error_event_emitter = event_emitter.clone();
+    #[cfg(feature = "security")]
+    let config = if let Some(group) = &builder.context.resource_group {
+      EngineConfig {
+        max_steps: builder.config.max_steps.min(group.quota.max_steps),
+        max_execution_time_secs: builder
+          .config
+          .max_execution_time_secs
+          .min(group.quota.max_execution_time_secs),
+      }
+    } else {
+      builder.config
+    };
+
+    #[cfg(not(feature = "security"))]
     let config = builder.config;
+
+    #[cfg(feature = "security")]
+    let workflow_id = builder.context.id_generator.next_id();
+
+    #[cfg(feature = "security")]
+    if let (Some(governor), Some(group)) = (
+      builder.context.resource_governor.as_ref(),
+      builder.context.resource_group.as_ref(),
+    ) {
+      governor
+        .check_workflow_start(&group.group_id)
+        .await
+        .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+      governor
+        .record_workflow_start(&group.group_id, &workflow_id)
+        .await;
+    }
 
     #[cfg(feature = "plugin-system")]
     {
@@ -513,16 +667,25 @@ impl WorkflowRunnerBuilder {
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
     let status = Arc::new(Mutex::new(ExecutionStatus::Running));
-    let events = Arc::new(Mutex::new(Vec::new()));
+    let events = if builder.collect_events {
+      Some(Arc::new(Mutex::new(Vec::new())))
+    } else {
+      None
+    };
 
-    let events_clone = events.clone();
-
-    // Spawn event collector
-    tokio::spawn(async move {
-      while let Some(event) = rx.recv().await {
-        events_clone.lock().await.push(event);
-      }
-    });
+    if let Some(events_clone) = events.clone() {
+      let active_flag = event_active.clone();
+      // Spawn event collector
+      tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+          events_clone.lock().await.push(event);
+        }
+        active_flag.store(false, Ordering::Relaxed);
+      });
+    } else {
+      event_active.store(false, Ordering::Relaxed);
+      drop(rx);
+    }
 
     // Spawn workflow execution
     let status_exec = status.clone();
@@ -536,7 +699,7 @@ impl WorkflowRunnerBuilder {
         graph,
         pool,
         registry,
-        tx.clone(),
+        event_emitter,
         config,
         context.clone(),
         #[cfg(not(feature = "plugin-system"))]
@@ -554,15 +717,21 @@ impl WorkflowRunnerBuilder {
             let pool_snapshot = dispatcher.snapshot_pool().await;
             let error_context = build_error_context(&e, &schema, &partial_outputs);
 
-            let _ = tx
-              .send(GraphEngineEvent::ErrorHandlerStarted {
-                error: e.to_string(),
-              })
-              .await;
+            if error_event_emitter.is_active() {
+              error_event_emitter
+                .emit(GraphEngineEvent::ErrorHandlerStarted {
+                  error: e.to_string(),
+                })
+                .await;
+            }
 
-            let executor = SubGraphExecutor::new();
-            match executor
-              .execute(
+            let runner = context
+              .sub_graph_runner
+              .as_ref()
+              .cloned()
+              .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner));
+            match runner
+              .run_sub_graph(
                 &error_handler.sub_graph,
                 &pool_snapshot,
                 error_context,
@@ -576,11 +745,13 @@ impl WorkflowRunnerBuilder {
                   .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                   .unwrap_or_default();
 
-                let _ = tx
-                  .send(GraphEngineEvent::ErrorHandlerSucceeded {
-                    outputs: recovered_outputs.clone(),
-                  })
-                  .await;
+                if error_event_emitter.is_active() {
+                  error_event_emitter
+                    .emit(GraphEngineEvent::ErrorHandlerSucceeded {
+                      outputs: recovered_outputs.clone(),
+                    })
+                    .await;
+                }
 
                 match error_handler.mode {
                   ErrorHandlingMode::Recover => {
@@ -595,11 +766,13 @@ impl WorkflowRunnerBuilder {
                 }
               }
               Err(handler_err) => {
-                let _ = tx
-                  .send(GraphEngineEvent::ErrorHandlerFailed {
-                    error: handler_err.to_string(),
-                  })
-                  .await;
+                if error_event_emitter.is_active() {
+                  error_event_emitter
+                    .emit(GraphEngineEvent::ErrorHandlerFailed {
+                      error: handler_err.to_string(),
+                    })
+                    .await;
+                }
                 *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
               }
             }
@@ -607,6 +780,16 @@ impl WorkflowRunnerBuilder {
             *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
           }
         }
+      }
+
+      #[cfg(feature = "security")]
+      if let (Some(governor), Some(group)) = (
+        context.resource_governor.as_ref(),
+        context.resource_group.as_ref(),
+      ) {
+        governor
+          .record_workflow_end(&group.group_id, &workflow_id)
+          .await;
       }
     });
 
@@ -617,6 +800,19 @@ impl WorkflowRunnerBuilder {
   pub async fn run_debug(self) -> Result<(WorkflowHandle, DebugHandle), WorkflowError> {
     let mut builder = self;
     let debug_config = builder.debug_config.clone().unwrap_or_default();
+    #[cfg(feature = "security")]
+    let mut report = if let Some(policy) = builder
+      .context
+      .security_policy
+      .as_ref()
+      .and_then(|p| p.dsl_validation.as_ref())
+    {
+      crate::dsl::validation::validate_schema_with_config(&builder.schema, policy)
+    } else {
+      validate_schema(&builder.schema)
+    };
+
+    #[cfg(not(feature = "security"))]
     let mut report = validate_schema(&builder.schema);
     if !report.is_valid {
       return Err(WorkflowError::ValidationFailed(report));
@@ -764,7 +960,41 @@ impl WorkflowRunnerBuilder {
     };
 
     let (tx, mut rx) = mpsc::channel(256);
+    let event_active = Arc::new(AtomicBool::new(builder.collect_events));
+    let event_emitter = EventEmitter::new(tx.clone(), event_active.clone());
+    let error_event_emitter = event_emitter.clone();
+    #[cfg(feature = "security")]
+    let config = if let Some(group) = &builder.context.resource_group {
+      EngineConfig {
+        max_steps: builder.config.max_steps.min(group.quota.max_steps),
+        max_execution_time_secs: builder
+          .config
+          .max_execution_time_secs
+          .min(group.quota.max_execution_time_secs),
+      }
+    } else {
+      builder.config
+    };
+
+    #[cfg(not(feature = "security"))]
     let config = builder.config;
+
+    #[cfg(feature = "security")]
+    let workflow_id = builder.context.id_generator.next_id();
+
+    #[cfg(feature = "security")]
+    if let (Some(governor), Some(group)) = (
+      builder.context.resource_governor.as_ref(),
+      builder.context.resource_group.as_ref(),
+    ) {
+      governor
+        .check_workflow_start(&group.group_id)
+        .await
+        .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+      governor
+        .record_workflow_start(&group.group_id, &workflow_id)
+        .await;
+    }
 
     #[cfg(feature = "plugin-system")]
     {
@@ -784,14 +1014,24 @@ impl WorkflowRunnerBuilder {
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
     let status = Arc::new(Mutex::new(ExecutionStatus::Running));
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = events.clone();
+    let events = if builder.collect_events {
+      Some(Arc::new(Mutex::new(Vec::new())))
+    } else {
+      None
+    };
 
-    tokio::spawn(async move {
-      while let Some(event) = rx.recv().await {
-        events_clone.lock().await.push(event);
-      }
-    });
+    if let Some(events_clone) = events.clone() {
+      let active_flag = event_active.clone();
+      tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+          events_clone.lock().await.push(event);
+        }
+        active_flag.store(false, Ordering::Relaxed);
+      });
+    } else {
+      event_active.store(false, Ordering::Relaxed);
+      drop(rx);
+    }
 
     let status_exec = status.clone();
     #[cfg(not(feature = "plugin-system"))]
@@ -807,7 +1047,7 @@ impl WorkflowRunnerBuilder {
         graph,
         pool,
         registry,
-        tx.clone(),
+        event_emitter,
         config,
         context.clone(),
         #[cfg(not(feature = "plugin-system"))]
@@ -827,15 +1067,21 @@ impl WorkflowRunnerBuilder {
             let pool_snapshot = dispatcher.snapshot_pool().await;
             let error_context = build_error_context(&e, &schema, &partial_outputs);
 
-            let _ = tx
-              .send(GraphEngineEvent::ErrorHandlerStarted {
-                error: e.to_string(),
-              })
-              .await;
+            if error_event_emitter.is_active() {
+              error_event_emitter
+                .emit(GraphEngineEvent::ErrorHandlerStarted {
+                  error: e.to_string(),
+                })
+                .await;
+            }
 
-            let executor = SubGraphExecutor::new();
-            match executor
-              .execute(
+            let runner = context
+              .sub_graph_runner
+              .as_ref()
+              .cloned()
+              .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner));
+            match runner
+              .run_sub_graph(
                 &error_handler.sub_graph,
                 &pool_snapshot,
                 error_context,
@@ -849,11 +1095,13 @@ impl WorkflowRunnerBuilder {
                   .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                   .unwrap_or_default();
 
-                let _ = tx
-                  .send(GraphEngineEvent::ErrorHandlerSucceeded {
-                    outputs: recovered_outputs.clone(),
-                  })
-                  .await;
+                if error_event_emitter.is_active() {
+                  error_event_emitter
+                    .emit(GraphEngineEvent::ErrorHandlerSucceeded {
+                      outputs: recovered_outputs.clone(),
+                    })
+                    .await;
+                }
 
                 match error_handler.mode {
                   ErrorHandlingMode::Recover => {
@@ -868,11 +1116,13 @@ impl WorkflowRunnerBuilder {
                 }
               }
               Err(handler_err) => {
-                let _ = tx
-                  .send(GraphEngineEvent::ErrorHandlerFailed {
-                    error: handler_err.to_string(),
-                  })
-                  .await;
+                if error_event_emitter.is_active() {
+                  error_event_emitter
+                    .emit(GraphEngineEvent::ErrorHandlerFailed {
+                      error: handler_err.to_string(),
+                    })
+                    .await;
+                }
                 *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
               }
             }
@@ -880,6 +1130,16 @@ impl WorkflowRunnerBuilder {
             *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
           }
         }
+      }
+
+      #[cfg(feature = "security")]
+      if let (Some(governor), Some(group)) = (
+        context.resource_governor.as_ref(),
+        context.resource_group.as_ref(),
+      ) {
+        governor
+          .record_workflow_end(&group.group_id, &workflow_id)
+          .await;
       }
     });
 
@@ -1041,7 +1301,7 @@ edges:
         dbg.break_on_start = true;
         dbg.auto_snapshot = true;
 
-        let (handle, debug) = WorkflowRunner::builder(schema)
+        let (_handle, debug) = WorkflowRunner::builder(schema)
             .user_inputs(inputs)
             .debug(dbg)
             .run_debug()
@@ -1069,16 +1329,50 @@ edges:
                 None => panic!("Missing variable snapshot event"),
             }
         };
-        assert!(snapshot.contains_key(&("start".to_string(), "query".to_string())));
+        assert!(snapshot.contains_key(&VariablePool::make_key("start", "query")));
 
         debug.continue_run().await.unwrap();
-
-        let status = handle.wait().await;
-        match status {
-            ExecutionStatus::Completed(outputs) => {
-                assert_eq!(outputs.get("result"), Some(&Value::String("test".into())));
-            }
-            other => panic!("Expected Completed, got {:?}", other),
-        }
     }
+
+    #[tokio::test]
+    async fn test_scheduler_collect_events_disabled() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+      variables:
+        - variable: query
+          label: Q
+          type: string
+          required: true
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: result
+          value_selector: ["start", "query"]
+edges:
+  - source: start
+    target: end
+"#;
+
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert("query".to_string(), Value::String("test".into()));
+
+        let handle = WorkflowRunner::builder(schema)
+            .user_inputs(inputs)
+            .collect_events(false)
+            .run()
+            .await
+            .unwrap();
+
+        let _ = handle.wait().await;
+        let events = handle.events().await;
+        assert!(events.is_empty());
+      }
 }

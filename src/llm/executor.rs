@@ -14,6 +14,10 @@ use crate::dsl::schema::{
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
 use crate::template::render_template_async;
+#[cfg(feature = "security")]
+use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
+#[cfg(feature = "security")]
+use crate::security::network::validate_url;
 
 use super::types::{
     ChatCompletionRequest, ChatContent, ChatMessage, ChatRole, ContentPart, ImageUrlDetail,
@@ -75,6 +79,28 @@ impl NodeExecutor for LlmNodeExecutor {
                     let seg = variable_pool.get_resolved(sel).await;
                     let urls = extract_image_urls(&seg);
                     if !urls.is_empty() {
+                        #[cfg(feature = "security")]
+                        if let Some(policy) = context
+                            .security_policy
+                            .as_ref()
+                            .and_then(|p| p.network.as_ref())
+                        {
+                            for url in &urls {
+                                if let Err(err) = validate_url(url, policy).await {
+                                    audit_security_event(
+                                        context,
+                                        SecurityEventType::SsrfBlocked {
+                                            url: url.clone(),
+                                            reason: err.to_string(),
+                                        },
+                                        EventSeverity::Warning,
+                                        Some(node_id.to_string()),
+                                    )
+                                    .await;
+                                    return Err(NodeError::InputValidationError(err.to_string()));
+                                }
+                            }
+                        }
                         let parts = urls
                             .into_iter()
                             .map(|url| ContentPart::ImageUrl {
@@ -111,6 +137,53 @@ impl NodeExecutor for LlmNodeExecutor {
             stream: data.stream.unwrap_or(false),
             credentials: data.model.credentials.clone().unwrap_or_default(),
         };
+
+        #[cfg(feature = "security")]
+        let request = {
+            let mut req = request;
+            if let (Some(provider), Some(group)) = (
+                context.credential_provider.as_ref(),
+                context.resource_group.as_ref(),
+            ) {
+                match provider
+                    .get_credentials(&group.group_id, &data.model.provider)
+                    .await
+                {
+                    Ok(creds) => {
+                        audit_security_event(
+                            context,
+                            SecurityEventType::CredentialAccess {
+                                provider: data.model.provider.clone(),
+                                success: true,
+                            },
+                            EventSeverity::Info,
+                            Some(node_id.to_string()),
+                        )
+                        .await;
+                        let mut merged = req.credentials.clone();
+                        merged.extend(creds);
+                        req.credentials = merged;
+                    }
+                    Err(err) => {
+                        audit_security_event(
+                            context,
+                            SecurityEventType::CredentialAccess {
+                                provider: data.model.provider.clone(),
+                                success: false,
+                            },
+                            EventSeverity::Warning,
+                            Some(node_id.to_string()),
+                        )
+                        .await;
+                        return Err(NodeError::ExecutionError(err.to_string()));
+                    }
+                }
+            }
+            req
+        };
+
+        #[cfg(not(feature = "security"))]
+        let request = request;
 
         if request.stream {
             let (stream, writer) = SegmentStream::channel();
@@ -212,6 +285,33 @@ impl NodeExecutor for LlmNodeExecutor {
             ..Default::default()
         })
     }
+}
+
+#[cfg(feature = "security")]
+async fn audit_security_event(
+    context: &RuntimeContext,
+    event_type: SecurityEventType,
+    severity: EventSeverity,
+    node_id: Option<String>,
+) {
+    let logger = match &context.audit_logger {
+        Some(l) => l,
+        None => return,
+    };
+    let group_id = match &context.resource_group {
+        Some(g) => g.group_id.clone(),
+        None => return,
+    };
+    let event = SecurityEvent {
+        timestamp: context.time_provider.now_timestamp(),
+        group_id,
+        workflow_id: None,
+        node_id,
+        event_type,
+        details: serde_json::Value::Null,
+        severity,
+    };
+    logger.log_event(event).await;
 }
 
 fn map_role(role: &str) -> Result<ChatRole, NodeError> {

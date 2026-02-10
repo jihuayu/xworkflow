@@ -10,12 +10,19 @@ pub fn build_linear_workflow(node_count: usize, node_type: &str) -> String {
 
     for i in 0..node_count {
         writeln!(&mut yaml, "  - id: n{}", i).ok();
-        writeln!(
-            &mut yaml,
-            "    data: {{ type: {}, title: N{} }}",
-            node_type, i
-        )
-        .ok();
+        if node_type == "template-transform" {
+            writeln!(&mut yaml, "    data:").ok();
+            writeln!(&mut yaml, "      type: {}", node_type).ok();
+            writeln!(&mut yaml, "      title: N{}", i).ok();
+            writeln!(&mut yaml, "      template: \"hello\"").ok();
+        } else {
+            writeln!(
+                &mut yaml,
+                "    data: {{ type: {}, title: N{} }}",
+                node_type, i
+            )
+            .ok();
+        }
     }
 
     writeln!(&mut yaml, "  - id: end").ok();
@@ -179,6 +186,15 @@ pub fn build_diamond_workflow(branch_count: usize) -> String {
         .ok();
     }
 
+    writeln!(&mut yaml, "  - id: b_false").ok();
+    writeln!(&mut yaml, "    data:").ok();
+    writeln!(&mut yaml, "      type: template-transform").ok();
+    writeln!(&mut yaml, "      title: Branch F").ok();
+    writeln!(&mut yaml, "      template: \"b_false: {{ value }}\"").ok();
+    writeln!(&mut yaml, "      variables:").ok();
+    writeln!(&mut yaml, "        - variable: value").ok();
+    writeln!(&mut yaml, "          value_selector: [\"start\", \"query\"]").ok();
+
     writeln!(&mut yaml, "  - id: join").ok();
     writeln!(&mut yaml, "    data:").ok();
     writeln!(&mut yaml, "      type: variable-aggregator").ok();
@@ -192,6 +208,7 @@ pub fn build_diamond_workflow(branch_count: usize) -> String {
         )
         .ok();
     }
+    writeln!(&mut yaml, "        - [\"b_false\", \"output\"]").ok();
     writeln!(&mut yaml, "  - id: end").ok();
     writeln!(&mut yaml, "    data: {{ type: end, title: End, outputs: [] }}").ok();
 
@@ -205,6 +222,11 @@ pub fn build_diamond_workflow(branch_count: usize) -> String {
         writeln!(&mut yaml, "  - source: b{}", i).ok();
         writeln!(&mut yaml, "    target: join").ok();
     }
+    writeln!(&mut yaml, "  - source: if1").ok();
+    writeln!(&mut yaml, "    target: b_false").ok();
+    writeln!(&mut yaml, "    sourceHandle: \"false\"").ok();
+    writeln!(&mut yaml, "  - source: b_false").ok();
+    writeln!(&mut yaml, "    target: join").ok();
     writeln!(&mut yaml, "  - source: join").ok();
     writeln!(&mut yaml, "    target: end").ok();
 
@@ -403,7 +425,7 @@ pub fn build_iteration_workflow(items: usize, parallel: bool, parallelism: usize
     writeln!(&mut yaml, "      variables:").ok();
     writeln!(&mut yaml, "        - variable: items").ok();
     writeln!(&mut yaml, "          label: Items").ok();
-    writeln!(&mut yaml, "          type: array_string").ok();
+    writeln!(&mut yaml, "          type: array[string]").ok();
     writeln!(&mut yaml, "          required: false").ok();
 
     writeln!(&mut yaml, "  - id: iter1").ok();

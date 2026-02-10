@@ -28,6 +28,8 @@ pub enum NodeError {
     SandboxError(String),
     #[error("Event send error: {0}")]
     EventSendError(String),
+    #[error("Output too large for node {node_id} (max {max} bytes, got {actual} bytes)")]
+    OutputTooLarge { node_id: String, max: usize, actual: usize },
 
     #[error("{}", .context.message)]
     WithContext {
@@ -80,6 +82,7 @@ impl NodeError {
             NodeError::HttpError(_) => "http_error".to_string(),
             NodeError::SandboxError(_) => "sandbox_error".to_string(),
             NodeError::EventSendError(_) => "event_send_error".to_string(),
+            NodeError::OutputTooLarge { .. } => "output_too_large".to_string(),
         }
     }
 

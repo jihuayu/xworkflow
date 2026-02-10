@@ -77,7 +77,7 @@ pub enum DebugEvent {
     Resumed,
     BreakpointAdded { node_id: String },
     BreakpointRemoved { node_id: String },
-    VariableSnapshot { variables: HashMap<(String, String), Segment> },
+    VariableSnapshot { variables: HashMap<String, Segment> },
     NodeVariableSnapshot { node_id: String, variables: HashMap<String, Segment> },
     StateReport { state: DebugState, breakpoints: HashSet<String>, step_count: i32 },
     VariablesUpdated { updated_keys: Vec<String> },
@@ -89,7 +89,7 @@ pub enum DebugState {
     Running,
     Paused {
         location: PauseLocation,
-        variable_snapshot: Option<HashMap<(String, String), Segment>>,
+        variable_snapshot: Option<HashMap<String, Segment>>,
     },
     Finished,
 }

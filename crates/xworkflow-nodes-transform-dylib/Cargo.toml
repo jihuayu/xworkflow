@@ -1,0 +1,14 @@
+[package]
+name = "xworkflow-nodes-transform-dylib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+xworkflow = { path = "../..", features = ["plugin-system"] }
+xworkflow-nodes-transform = { path = "../xworkflow-nodes-transform" }

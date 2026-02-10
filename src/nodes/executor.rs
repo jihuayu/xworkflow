@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use parking_lot::Mutex;
 
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
@@ -26,25 +28,76 @@ pub trait NodeExecutor: Send + Sync {
 
 /// Registry of node executors by node type string
 pub struct NodeExecutorRegistry {
-    executors: HashMap<String, Box<dyn NodeExecutor>>,
+    executors: HashMap<String, OnceLock<Box<dyn NodeExecutor>>>,
+    factories: Mutex<HashMap<String, Box<dyn Fn() -> Box<dyn NodeExecutor> + Send + Sync>>>,
 }
 
 impl NodeExecutorRegistry {
     pub fn new() -> Self {
-        let mut registry = NodeExecutorRegistry {
+        Self::with_builtins()
+    }
+
+    pub fn empty() -> Self {
+        NodeExecutorRegistry {
             executors: HashMap::new(),
-        };
+            factories: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_builtins() -> Self {
+        let mut registry = NodeExecutorRegistry::empty();
         // Register built-in executors
-        registry.register("start", Box::new(super::control_flow::StartNodeExecutor));
-        registry.register("end", Box::new(super::control_flow::EndNodeExecutor));
-        registry.register("answer", Box::new(super::control_flow::AnswerNodeExecutor));
-        registry.register("if-else", Box::new(super::control_flow::IfElseNodeExecutor));
-        registry.register("template-transform", Box::new(super::data_transform::TemplateTransformExecutor));
-        registry.register("variable-aggregator", Box::new(super::data_transform::VariableAggregatorExecutor));
-        registry.register("variable-assigner", Box::new(super::data_transform::LegacyVariableAggregatorExecutor));
-        registry.register("assigner", Box::new(super::data_transform::VariableAssignerExecutor));
-        registry.register("http-request", Box::new(super::data_transform::HttpRequestExecutor));
-        registry.register("code", Box::new(super::data_transform::CodeNodeExecutor::new()));
+        #[cfg(feature = "builtin-core-nodes")]
+        {
+            registry.register("start", Box::new(super::control_flow::StartNodeExecutor));
+            registry.register("end", Box::new(super::control_flow::EndNodeExecutor));
+            registry.register("answer", Box::new(super::control_flow::AnswerNodeExecutor));
+            registry.register("if-else", Box::new(super::control_flow::IfElseNodeExecutor));
+        }
+
+        #[cfg(feature = "builtin-transform-nodes")]
+        {
+            registry.register(
+                "template-transform",
+                Box::new(super::data_transform::TemplateTransformExecutor),
+            );
+            registry.register(
+                "variable-aggregator",
+                Box::new(super::data_transform::VariableAggregatorExecutor),
+            );
+            registry.register(
+                "variable-assigner",
+                Box::new(super::data_transform::LegacyVariableAggregatorExecutor),
+            );
+            registry.register("assigner", Box::new(super::data_transform::VariableAssignerExecutor));
+        }
+
+        #[cfg(feature = "builtin-http-node")]
+        {
+            registry.register("http-request", Box::new(super::data_transform::HttpRequestExecutor));
+        }
+
+        #[cfg(feature = "builtin-code-node")]
+        {
+            registry.register_lazy("code", Box::new(|| Box::new(super::data_transform::CodeNodeExecutor::new())));
+        }
+
+        #[cfg(feature = "builtin-subgraph-nodes")]
+        {
+            registry.register(
+                "list-operator",
+                Box::new(super::subgraph_nodes::ListOperatorNodeExecutor::new()),
+            );
+            registry.register(
+                "iteration",
+                Box::new(super::subgraph_nodes::IterationNodeExecutor::new()),
+            );
+            registry.register(
+                "loop",
+                Box::new(super::subgraph_nodes::LoopNodeExecutor::new()),
+            );
+        }
+
         // Stub executors for types that need external services
         // LLM executor is injected via set_llm_provider_registry
         registry.register("knowledge-retrieval", Box::new(StubExecutor("knowledge-retrieval")));
@@ -52,11 +105,8 @@ impl NodeExecutorRegistry {
         registry.register("parameter-extractor", Box::new(StubExecutor("parameter-extractor")));
         registry.register("tool", Box::new(StubExecutor("tool")));
         registry.register("document-extractor", Box::new(StubExecutor("document-extractor")));
-        registry.register("list-operator", Box::new(super::subgraph_nodes::ListOperatorNodeExecutor::new()));
         registry.register("agent", Box::new(StubExecutor("agent")));
         registry.register("human-input", Box::new(StubExecutor("human-input")));
-        registry.register("iteration", Box::new(super::subgraph_nodes::IterationNodeExecutor::new()));
-        registry.register("loop", Box::new(super::subgraph_nodes::LoopNodeExecutor::new()));
         registry
     }
 
@@ -86,18 +136,41 @@ impl NodeExecutorRegistry {
     }
 
     pub fn register(&mut self, node_type: &str, executor: Box<dyn NodeExecutor>) {
-        self.executors.insert(node_type.to_string(), executor);
+        let cell = OnceLock::new();
+        let _ = cell.set(executor);
+        self.executors.insert(node_type.to_string(), cell);
+        self.factories.lock().remove(node_type);
     }
 
+    pub fn register_lazy(
+        &mut self,
+        node_type: &str,
+        factory: Box<dyn Fn() -> Box<dyn NodeExecutor> + Send + Sync>,
+    ) {
+        self.executors
+            .entry(node_type.to_string())
+            .or_insert_with(OnceLock::new);
+        self.factories.lock().insert(node_type.to_string(), factory);
+    }
+
+    #[cfg(feature = "builtin-llm-node")]
     pub fn set_llm_provider_registry(&mut self, registry: std::sync::Arc<LlmProviderRegistry>) {
-        self.executors.insert(
-            "llm".to_string(),
-            Box::new(LlmNodeExecutor::new(registry)),
-        );
+        self.register("llm", Box::new(LlmNodeExecutor::new(registry)));
+    }
+
+    #[cfg(not(feature = "builtin-llm-node"))]
+    pub fn set_llm_provider_registry(&mut self, _registry: std::sync::Arc<LlmProviderRegistry>) {
     }
 
     pub fn get(&self, node_type: &str) -> Option<&dyn NodeExecutor> {
-        self.executors.get(node_type).map(|e| e.as_ref())
+        let cell = self.executors.get(node_type)?;
+        if cell.get().is_none() {
+            let factory = self.factories.lock().remove(node_type);
+            if let Some(factory) = factory {
+                let _ = cell.set(factory());
+            }
+        }
+        cell.get().map(|e| e.as_ref())
     }
 }
 

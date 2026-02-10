@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use xworkflow::core::debug::{DebugConfig, DebugEvent, PauseLocation, PauseReason};
+use xworkflow::core::variable_pool::VariablePool;
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::{
     EngineConfig,
@@ -1028,7 +1029,7 @@ pub async fn run_debug_case(case_dir: &Path) {
                         for (key, expected_val) in expected_vars {
                             let parts: Vec<&str> = key.splitn(2, '.').collect();
                             if parts.len() == 2 {
-                                let pool_key = (parts[0].to_string(), parts[1].to_string());
+                                let pool_key = VariablePool::make_key(parts[0], parts[1]);
                                 let actual = snapshot_event.get(&pool_key);
                                 assert!(
                                     actual.is_some(),

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures::StreamExt;
 use boa_engine::{Context, Source};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -14,7 +15,11 @@ use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
 use crate::sandbox::js_builtins;
-use crate::template::{render_jinja2_with_functions, render_template_async};
+use crate::template::{CompiledTemplate, render_jinja2_with_functions_and_config, render_template_async};
+#[cfg(feature = "security")]
+use crate::security::network::{validate_url, SecureHttpClientFactory};
+#[cfg(feature = "security")]
+use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 
 // ================================
 // Template Transform
@@ -26,15 +31,17 @@ pub struct TemplateTransformExecutor;
 impl NodeExecutor for TemplateTransformExecutor {
     async fn execute(
         &self,
-        _node_id: &str,
+        node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
-        _context: &RuntimeContext,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let template = config
             .get("template")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        #[cfg(feature = "security")]
+        let template_len = template.len();
 
         // Build variable map from config variable mappings
         let mut static_vars: HashMap<String, Value> = HashMap::new();
@@ -64,10 +71,38 @@ impl NodeExecutor for TemplateTransformExecutor {
 
         if stream_vars.is_empty() {
             #[cfg(feature = "plugin-system")]
-            let tmpl_functions = _context.template_functions.as_ref().map(|f| f.as_ref());
+            let tmpl_functions = context.template_functions.as_ref().map(|f| f.as_ref());
             #[cfg(not(feature = "plugin-system"))]
             let tmpl_functions: Option<&std::collections::HashMap<String, ()>> = None;
 
+            #[cfg(feature = "security")]
+            let rendered = match render_jinja2_with_functions_and_config(
+                template,
+                &static_vars,
+                tmpl_functions,
+                context
+                    .security_policy
+                    .as_ref()
+                    .and_then(|p| p.template.as_ref()),
+            ) {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    if is_template_anomaly_error(&e) {
+                        audit_security_event(
+                            context,
+                            SecurityEventType::TemplateRenderingAnomaly {
+                                template_length: template_len,
+                            },
+                            EventSeverity::Warning,
+                            Some(node_id.to_string()),
+                        )
+                        .await;
+                    }
+                    return Err(NodeError::TemplateError(e));
+                }
+            };
+
+            #[cfg(not(feature = "security"))]
             let rendered = render_jinja2_with_functions(template, &static_vars, tmpl_functions)
                 .map_err(|e| NodeError::TemplateError(e))?;
 
@@ -89,7 +124,7 @@ impl NodeExecutor for TemplateTransformExecutor {
         let tmpl_functions = {
             #[cfg(feature = "plugin-system")]
             {
-                _context.template_functions.as_ref().map(|f| f.clone())
+                context.template_functions.as_ref().map(|f| f.clone())
             }
             #[cfg(not(feature = "plugin-system"))]
             {
@@ -98,9 +133,47 @@ impl NodeExecutor for TemplateTransformExecutor {
             }
         };
 
+        let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
+        #[cfg(feature = "security")]
+        let compiled = match CompiledTemplate::new_with_config(
+            &template_str,
+            funcs_ref,
+            context
+                .security_policy
+                .as_ref()
+                .and_then(|p| p.template.as_ref()),
+        ) {
+            Ok(compiled) => compiled,
+            Err(e) => {
+                if is_template_anomaly_error(&e) {
+                    audit_security_event(
+                        context,
+                        SecurityEventType::TemplateRenderingAnomaly {
+                            template_length: template_len,
+                        },
+                        EventSeverity::Warning,
+                        Some(node_id.to_string()),
+                    )
+                    .await;
+                }
+                return Err(NodeError::TemplateError(e));
+            }
+        };
+
+        #[cfg(not(feature = "security"))]
+        let compiled = CompiledTemplate::new(&template_str, funcs_ref)
+            .map_err(|e| NodeError::TemplateError(e))?;
+
+        #[cfg(feature = "security")]
+        let context_for_stream = context.clone();
+        #[cfg(feature = "security")]
+        let node_id_for_stream = node_id.to_string();
+        #[cfg(feature = "security")]
+        let template_len_for_stream = template_len;
         tokio::spawn(async move {
             let mut accumulated: HashMap<String, String> = HashMap::new();
             let mut last_rendered = String::new();
+            let mut vars = base_vars.clone();
 
             for (name, stream) in stream_vars {
                 let mut reader = stream.reader();
@@ -109,14 +182,10 @@ impl NodeExecutor for TemplateTransformExecutor {
                         Some(StreamEvent::Chunk(seg)) => {
                             let entry = accumulated.entry(name.clone()).or_default();
                             entry.push_str(&seg.to_display_string());
-                            let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
-                            match render_jinja2_with_functions(&template_str, &{
-                                let mut vars = base_vars.clone();
-                                for (k, v) in &accumulated {
-                                    vars.insert(k.clone(), Value::String(v.clone()));
-                                }
-                                vars
-                            }, funcs_ref) {
+                            for (k, v) in &accumulated {
+                                vars.insert(k.clone(), Value::String(v.clone()));
+                            }
+                            match compiled.render(&vars) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
                                         rendered[last_rendered.len()..].to_string()
@@ -131,6 +200,18 @@ impl NodeExecutor for TemplateTransformExecutor {
                                     }
                                 }
                                 Err(e) => {
+                                    #[cfg(feature = "security")]
+                                    if is_template_anomaly_error(&e) {
+                                        audit_security_event(
+                                            &context_for_stream,
+                                            SecurityEventType::TemplateRenderingAnomaly {
+                                                template_length: template_len_for_stream,
+                                            },
+                                            EventSeverity::Warning,
+                                            Some(node_id_for_stream.clone()),
+                                        )
+                                        .await;
+                                    }
                                     writer.error(e).await;
                                     return;
                                 }
@@ -138,14 +219,10 @@ impl NodeExecutor for TemplateTransformExecutor {
                         }
                         Some(StreamEvent::End(final_seg)) => {
                             accumulated.insert(name.clone(), final_seg.to_display_string());
-                            let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
-                            match render_jinja2_with_functions(&template_str, &{
-                                let mut vars = base_vars.clone();
-                                for (k, v) in &accumulated {
-                                    vars.insert(k.clone(), Value::String(v.clone()));
-                                }
-                                vars
-                            }, funcs_ref) {
+                            for (k, v) in &accumulated {
+                                vars.insert(k.clone(), Value::String(v.clone()));
+                            }
+                            match compiled.render(&vars) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
                                         rendered[last_rendered.len()..].to_string()
@@ -160,6 +237,18 @@ impl NodeExecutor for TemplateTransformExecutor {
                                     }
                                 }
                                 Err(e) => {
+                                    #[cfg(feature = "security")]
+                                    if is_template_anomaly_error(&e) {
+                                        audit_security_event(
+                                            &context_for_stream,
+                                            SecurityEventType::TemplateRenderingAnomaly {
+                                                template_length: template_len_for_stream,
+                                            },
+                                            EventSeverity::Warning,
+                                            Some(node_id_for_stream.clone()),
+                                        )
+                                        .await;
+                                    }
                                     writer.error(e).await;
                                     return;
                                 }
@@ -308,7 +397,7 @@ pub struct HttpRequestExecutor;
 impl NodeExecutor for HttpRequestExecutor {
     async fn execute(
         &self,
-        _node_id: &str,
+        node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
         _context: &RuntimeContext,
@@ -364,6 +453,37 @@ impl NodeExecutor for HttpRequestExecutor {
         }
 
         // Send request
+        #[cfg(feature = "security")]
+        let client = {
+            if let Some(policy) = _context
+                .security_policy
+                .as_ref()
+                .and_then(|p| p.network.as_ref())
+            {
+                if let Err(err) = validate_url(&url, policy).await {
+                    audit_security_event(
+                        _context,
+                        SecurityEventType::SsrfBlocked {
+                            url: url.clone(),
+                            reason: err.to_string(),
+                        },
+                        EventSeverity::Warning,
+                        Some(node_id.to_string()),
+                    )
+                    .await;
+                    return Err(NodeError::InputValidationError(err.to_string()));
+                }
+                SecureHttpClientFactory::build(policy, std::time::Duration::from_secs(timeout))
+                    .map_err(|e| NodeError::HttpError(e.to_string()))?
+            } else {
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(timeout))
+                    .build()
+                    .map_err(|e| NodeError::HttpError(e.to_string()))?
+            }
+        };
+
+        #[cfg(not(feature = "security"))]
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout))
             .build()
@@ -408,10 +528,24 @@ impl NodeExecutor for HttpRequestExecutor {
         let status_code = resp.status().as_u16();
         let headers_snapshot = resp.headers().clone();
         let resp_headers = format!("{:?}", headers_snapshot);
-        let resp_body = resp
-            .text()
-            .await
-            .map_err(|e| NodeError::HttpError(e.to_string()))?;
+        #[cfg(feature = "security")]
+        let max_response_bytes = {
+            let mut max = _context
+                .resource_group
+                .as_ref()
+                .map(|g| g.quota.http_max_response_bytes);
+            if let Some(policy) = _context.security_policy.as_ref() {
+                if let Some(limit) = policy.node_limits.get("http-request") {
+                    max = Some(max.map(|m| m.min(limit.max_output_bytes)).unwrap_or(limit.max_output_bytes));
+                }
+            }
+            max
+        };
+
+        #[cfg(not(feature = "security"))]
+        let max_response_bytes: Option<usize> = None;
+
+        let resp_body = read_response_with_limit(resp, max_response_bytes).await?;
 
         if fail_on_error_status && status_code >= 400 {
             let body_preview: String = resp_body.chars().take(512).collect();
@@ -469,6 +603,158 @@ impl NodeExecutor for HttpRequestExecutor {
             ..Default::default()
         })
     }
+}
+
+async fn read_response_with_limit(
+    resp: reqwest::Response,
+    max_bytes: Option<usize>,
+) -> Result<String, NodeError> {
+    if let Some(limit) = max_bytes {
+        if let Some(len) = resp.content_length() {
+            if len as usize > limit {
+                return Err(NodeError::HttpError(format!(
+                    "HTTP response too large (max {} bytes, got {})",
+                    limit,
+                    len
+                )));
+            }
+        }
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| NodeError::HttpError(e.to_string()))?;
+        if let Some(limit) = max_bytes {
+            if buf.len() + chunk.len() > limit {
+                return Err(NodeError::HttpError(format!(
+                    "HTTP response too large (max {} bytes)",
+                    limit
+                )));
+            }
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+#[cfg(feature = "security")]
+async fn audit_security_event(
+    context: &RuntimeContext,
+    event_type: SecurityEventType,
+    severity: EventSeverity,
+    node_id: Option<String>,
+) {
+    let logger = match &context.audit_logger {
+        Some(l) => l,
+        None => return,
+    };
+    let group_id = match &context.resource_group {
+        Some(g) => g.group_id.clone(),
+        None => return,
+    };
+    let event = SecurityEvent {
+        timestamp: context.time_provider.now_timestamp(),
+        group_id,
+        workflow_id: None,
+        node_id,
+        event_type,
+        details: serde_json::Value::Null,
+        severity,
+    };
+    logger.log_event(event).await;
+}
+
+#[cfg(feature = "security")]
+fn is_template_anomaly_error(message: &str) -> bool {
+    let msg = message.to_lowercase();
+    msg.contains("output too large")
+        || msg.contains("template output too large")
+        || msg.contains("fuel")
+        || msg.contains("loop")
+        || msg.contains("recursion")
+        || msg.contains("timeout")
+}
+
+async fn execute_sandbox_with_audit(
+    manager: &crate::sandbox::SandboxManager,
+    request: crate::sandbox::SandboxRequest,
+    context: &RuntimeContext,
+    node_id: &str,
+    language: crate::sandbox::CodeLanguage,
+) -> Result<crate::sandbox::SandboxResult, NodeError> {
+    let result = manager.execute(request).await;
+
+    let result = match result {
+        Ok(result) => result,
+        Err(e) => {
+            #[cfg(feature = "security")]
+            audit_security_event(
+                context,
+                SecurityEventType::SandboxViolation {
+                    sandbox_type: format!("{:?}", language),
+                    violation: e.to_string(),
+                },
+                EventSeverity::Warning,
+                Some(node_id.to_string()),
+            )
+            .await;
+
+            let error_context = match &e {
+                crate::sandbox::SandboxError::ExecutionTimeout => ErrorContext::retryable(
+                    ErrorCode::SandboxTimeout,
+                    e.to_string(),
+                ),
+                crate::sandbox::SandboxError::InputTooLarge { .. }
+                | crate::sandbox::SandboxError::OutputTooLarge { .. } => ErrorContext::non_retryable(
+                    ErrorCode::SandboxMemoryLimit,
+                    e.to_string(),
+                ),
+                crate::sandbox::SandboxError::MemoryLimitExceeded => ErrorContext::non_retryable(
+                    ErrorCode::SandboxMemoryLimit,
+                    e.to_string(),
+                ),
+                crate::sandbox::SandboxError::CompilationError(_) => ErrorContext::non_retryable(
+                    ErrorCode::SandboxCompilationError,
+                    e.to_string(),
+                ),
+                crate::sandbox::SandboxError::DangerousCode(_) => ErrorContext::non_retryable(
+                    ErrorCode::SandboxDangerousCode,
+                    e.to_string(),
+                ),
+                _ => ErrorContext::non_retryable(
+                    ErrorCode::SandboxExecutionError,
+                    e.to_string(),
+                ),
+            };
+
+            return Err(NodeError::SandboxError(e.to_string()).with_context(error_context));
+        }
+    };
+
+    if !result.success {
+        let message = result
+            .error
+            .unwrap_or_else(|| "Unknown sandbox error".to_string());
+        #[cfg(feature = "security")]
+        audit_security_event(
+            context,
+            SecurityEventType::SandboxViolation {
+                sandbox_type: format!("{:?}", language),
+                violation: message.clone(),
+            },
+            EventSeverity::Warning,
+            Some(node_id.to_string()),
+        )
+        .await;
+
+        let error_context =
+            ErrorContext::non_retryable(ErrorCode::SandboxExecutionError, &message);
+        return Err(NodeError::ExecutionError(message).with_context(error_context));
+    }
+
+    Ok(result)
 }
 
 // ================================
@@ -706,10 +992,10 @@ impl Default for CodeNodeExecutor {
 impl NodeExecutor for CodeNodeExecutor {
     async fn execute(
         &self,
-        _node_id: &str,
+        node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
-        _context: &RuntimeContext,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let code = config.get("code").and_then(|v| v.as_str()).unwrap_or("");
         let language_str = config
@@ -831,43 +1117,14 @@ impl NodeExecutor for CodeNodeExecutor {
                     inputs: Value::Object(resolved_inputs.clone()),
                     config: exec_config,
                 };
-                let result = self
-                    .sandbox_manager
-                    .execute(request)
-                    .await
-                    .map_err(|e| {
-                        let context = match &e {
-                            crate::sandbox::SandboxError::ExecutionTimeout => ErrorContext::retryable(
-                                ErrorCode::SandboxTimeout,
-                                e.to_string(),
-                            ),
-                            crate::sandbox::SandboxError::MemoryLimitExceeded => ErrorContext::non_retryable(
-                                ErrorCode::SandboxMemoryLimit,
-                                e.to_string(),
-                            ),
-                            crate::sandbox::SandboxError::CompilationError(_) => ErrorContext::non_retryable(
-                                ErrorCode::SandboxCompilationError,
-                                e.to_string(),
-                            ),
-                            crate::sandbox::SandboxError::DangerousCode(_) => ErrorContext::non_retryable(
-                                ErrorCode::SandboxDangerousCode,
-                                e.to_string(),
-                            ),
-                            _ => ErrorContext::non_retryable(
-                                ErrorCode::SandboxExecutionError,
-                                e.to_string(),
-                            ),
-                        };
-                        NodeError::SandboxError(e.to_string()).with_context(context)
-                    })?;
-
-                if !result.success {
-                    let message = result
-                        .error
-                        .unwrap_or_else(|| "Unknown sandbox error".to_string());
-                    let context = ErrorContext::non_retryable(ErrorCode::SandboxExecutionError, &message);
-                    return Err(NodeError::ExecutionError(message).with_context(context));
-                }
+                let result = execute_sandbox_with_audit(
+                    &self.sandbox_manager,
+                    request,
+                    context,
+                    node_id,
+                    language,
+                )
+                .await?;
 
                 let mut outputs = HashMap::new();
                 if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
@@ -1002,43 +1259,14 @@ impl NodeExecutor for CodeNodeExecutor {
                 inputs: Value::Object(resolved_inputs.clone()),
                 config: exec_config,
             };
-            let result = self
-                .sandbox_manager
-                .execute(request)
-                .await
-                .map_err(|e| {
-                    let context = match &e {
-                        crate::sandbox::SandboxError::ExecutionTimeout => ErrorContext::retryable(
-                            ErrorCode::SandboxTimeout,
-                            e.to_string(),
-                        ),
-                        crate::sandbox::SandboxError::MemoryLimitExceeded => ErrorContext::non_retryable(
-                            ErrorCode::SandboxMemoryLimit,
-                            e.to_string(),
-                        ),
-                        crate::sandbox::SandboxError::CompilationError(_) => ErrorContext::non_retryable(
-                            ErrorCode::SandboxCompilationError,
-                            e.to_string(),
-                        ),
-                        crate::sandbox::SandboxError::DangerousCode(_) => ErrorContext::non_retryable(
-                            ErrorCode::SandboxDangerousCode,
-                            e.to_string(),
-                        ),
-                        _ => ErrorContext::non_retryable(
-                            ErrorCode::SandboxExecutionError,
-                            e.to_string(),
-                        ),
-                    };
-                    NodeError::SandboxError(e.to_string()).with_context(context)
-                })?;
-
-            if !result.success {
-                let message = result
-                    .error
-                    .unwrap_or_else(|| "Unknown sandbox error".to_string());
-                let context = ErrorContext::non_retryable(ErrorCode::SandboxExecutionError, &message);
-                return Err(NodeError::ExecutionError(message).with_context(context));
-            }
+            let result = execute_sandbox_with_audit(
+                &self.sandbox_manager,
+                request,
+                context,
+                node_id,
+                language,
+            )
+            .await?;
 
             let mut outputs = HashMap::new();
             if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
@@ -1067,43 +1295,14 @@ impl NodeExecutor for CodeNodeExecutor {
             config: exec_config,
         };
 
-        let result = self
-            .sandbox_manager
-            .execute(request)
-            .await
-            .map_err(|e| {
-                let context = match &e {
-                    crate::sandbox::SandboxError::ExecutionTimeout => ErrorContext::retryable(
-                        ErrorCode::SandboxTimeout,
-                        e.to_string(),
-                    ),
-                    crate::sandbox::SandboxError::MemoryLimitExceeded => ErrorContext::non_retryable(
-                        ErrorCode::SandboxMemoryLimit,
-                        e.to_string(),
-                    ),
-                    crate::sandbox::SandboxError::CompilationError(_) => ErrorContext::non_retryable(
-                        ErrorCode::SandboxCompilationError,
-                        e.to_string(),
-                    ),
-                    crate::sandbox::SandboxError::DangerousCode(_) => ErrorContext::non_retryable(
-                        ErrorCode::SandboxDangerousCode,
-                        e.to_string(),
-                    ),
-                    _ => ErrorContext::non_retryable(
-                        ErrorCode::SandboxExecutionError,
-                        e.to_string(),
-                    ),
-                };
-                NodeError::SandboxError(e.to_string()).with_context(context)
-            })?;
-
-        if !result.success {
-            let message = result
-                .error
-                .unwrap_or_else(|| "Unknown sandbox error".to_string());
-            let context = ErrorContext::non_retryable(ErrorCode::SandboxExecutionError, &message);
-            return Err(NodeError::ExecutionError(message).with_context(context));
-        }
+        let result = execute_sandbox_with_audit(
+            &self.sandbox_manager,
+            request,
+            context,
+            node_id,
+            language,
+        )
+        .await?;
 
         // Convert output to HashMap
         let mut outputs = HashMap::new();

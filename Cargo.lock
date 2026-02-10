@@ -4512,10 +4512,114 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
  "wat",
+]
+
+[[package]]
+name = "xworkflow-nodes-code"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "xworkflow",
+]
+
+[[package]]
+name = "xworkflow-nodes-code-dylib"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
+ "xworkflow-nodes-code",
+]
+
+[[package]]
+name = "xworkflow-nodes-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "xworkflow",
+]
+
+[[package]]
+name = "xworkflow-nodes-core-dylib"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
+ "xworkflow-nodes-core",
+]
+
+[[package]]
+name = "xworkflow-nodes-http"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "xworkflow",
+]
+
+[[package]]
+name = "xworkflow-nodes-http-dylib"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
+ "xworkflow-nodes-http",
+]
+
+[[package]]
+name = "xworkflow-nodes-llm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "xworkflow",
+]
+
+[[package]]
+name = "xworkflow-nodes-llm-dylib"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
+ "xworkflow-nodes-llm",
+]
+
+[[package]]
+name = "xworkflow-nodes-subgraph"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "xworkflow",
+]
+
+[[package]]
+name = "xworkflow-nodes-subgraph-dylib"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
+ "xworkflow-nodes-subgraph",
+]
+
+[[package]]
+name = "xworkflow-nodes-transform"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "xworkflow",
+]
+
+[[package]]
+name = "xworkflow-nodes-transform-dylib"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
+ "xworkflow-nodes-transform",
+]
+
+[[package]]
+name = "xworkflow-types"
+version = "0.1.0"
+dependencies = [
+ "xworkflow",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::core::runtime_context::RuntimeContext;
+use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{
     ComparisonOperator, Condition, IterationErrorMode, NodeRunResult, WorkflowNodeExecutionStatus,
@@ -14,7 +15,7 @@ use crate::dsl::schema::{
 use crate::error::NodeError;
 use crate::evaluator::condition::evaluate_condition;
 use crate::nodes::executor::NodeExecutor;
-use crate::nodes::subgraph::{SubGraphDefinition, SubGraphExecutor};
+use crate::nodes::subgraph::SubGraphDefinition;
 use crate::nodes::utils::selector_from_value;
 
 // ================================
@@ -46,15 +47,19 @@ pub struct IterationNodeConfig {
 
 fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Terminated }
 
-pub struct IterationNodeExecutor {
-    sub_graph_executor: Arc<SubGraphExecutor>,
+fn resolve_sub_graph_runner(context: &RuntimeContext) -> Arc<dyn SubGraphRunner> {
+    context
+        .sub_graph_runner
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner))
 }
+
+pub struct IterationNodeExecutor;
 
 impl IterationNodeExecutor {
     pub fn new() -> Self {
-        Self {
-            sub_graph_executor: Arc::new(SubGraphExecutor::new()),
-        }
+        Self
     }
 
     fn resolve_input_selector(config: &IterationNodeConfig) -> Result<Vec<String>, NodeError> {
@@ -143,14 +148,15 @@ impl IterationNodeExecutor {
     ) -> Result<Vec<Value>, NodeError> {
         let mut results = Vec::with_capacity(items.len());
 
+        let runner = resolve_sub_graph_runner(context);
+
         for (index, item) in items.iter().enumerate() {
             let mut scope_vars = HashMap::new();
             scope_vars.insert("item".to_string(), item.clone());
             scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-            let result = self
-                .sub_graph_executor
-                .execute(&config.sub_graph, pool, scope_vars, context)
+            let result = runner
+                .run_sub_graph(&config.sub_graph, pool, scope_vars, context)
                 .await;
 
             match result {
@@ -180,11 +186,12 @@ impl IterationNodeExecutor {
         context: &RuntimeContext,
     ) -> Result<Vec<Value>, NodeError> {
         let semaphore = Arc::new(Semaphore::new(Self::resolve_parallelism(config)));
+        let runner = resolve_sub_graph_runner(context);
         let mut tasks = Vec::with_capacity(items.len());
 
         for (index, item) in items.iter().enumerate() {
             let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let executor = self.sub_graph_executor.clone();
+            let runner = runner.clone();
             let sub_graph = config.sub_graph.clone();
             let pool_clone = pool.clone();
             let item_clone = item.clone();
@@ -195,7 +202,9 @@ impl IterationNodeExecutor {
                 scope_vars.insert("item".to_string(), item_clone);
                 scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-                let result = executor.execute(&sub_graph, &pool_clone, scope_vars, &context_clone).await;
+                let result = runner
+                    .run_sub_graph(&sub_graph, &pool_clone, scope_vars, &context_clone)
+                    .await;
                 drop(permit);
                 (index, result)
             });
@@ -261,15 +270,11 @@ pub struct LoopNodeConfig {
     pub output_variable: String,
 }
 
-pub struct LoopNodeExecutor {
-    sub_graph_executor: Arc<SubGraphExecutor>,
-}
+pub struct LoopNodeExecutor;
 
 impl LoopNodeExecutor {
     pub fn new() -> Self {
-        Self {
-            sub_graph_executor: Arc::new(SubGraphExecutor::new()),
-        }
+        Self
     }
 
     async fn evaluate_condition(
@@ -310,6 +315,7 @@ impl NodeExecutor for LoopNodeExecutor {
         let mut loop_vars = config.initial_vars.clone();
         let mut iteration_count = 0usize;
         let max_iterations = config.max_iterations.unwrap_or(100);
+        let runner = resolve_sub_graph_runner(context);
 
         loop {
             if iteration_count >= max_iterations {
@@ -329,9 +335,8 @@ impl NodeExecutor for LoopNodeExecutor {
             }
             scope_vars.insert("_iteration".to_string(), serde_json::json!(iteration_count));
 
-            let result = self
-                .sub_graph_executor
-                .execute(&config.sub_graph, pool, scope_vars, context)
+            let result = runner
+                .run_sub_graph(&config.sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -408,15 +413,11 @@ pub struct ListOperatorNodeConfig {
     pub output_variable: String,
 }
 
-pub struct ListOperatorNodeExecutor {
-    sub_graph_executor: Arc<SubGraphExecutor>,
-}
+pub struct ListOperatorNodeExecutor;
 
 impl ListOperatorNodeExecutor {
     pub fn new() -> Self {
-        Self {
-            sub_graph_executor: Arc::new(SubGraphExecutor::new()),
-        }
+        Self
     }
 }
 
@@ -475,6 +476,7 @@ impl ListOperatorNodeExecutor {
         pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
+        let runner = resolve_sub_graph_runner(context);
         let items = input
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Input must be an array".to_string()))?;
@@ -493,9 +495,8 @@ impl ListOperatorNodeExecutor {
             scope_vars.insert("item".to_string(), item.clone());
             scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-            let result = self
-                .sub_graph_executor
-                .execute(sub_graph, pool, scope_vars, context)
+            let result = runner
+                .run_sub_graph(sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -518,12 +519,13 @@ impl ListOperatorNodeExecutor {
         pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
+        let runner = resolve_sub_graph_runner(context);
         let semaphore = Arc::new(Semaphore::new(10));
         let mut tasks = Vec::with_capacity(items.len());
 
         for (index, item) in items.iter().enumerate() {
             let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let executor = self.sub_graph_executor.clone();
+            let runner = runner.clone();
             let sub_graph = sub_graph.clone();
             let pool_clone = pool.clone();
             let item_clone = item.clone();
@@ -534,7 +536,9 @@ impl ListOperatorNodeExecutor {
                 scope_vars.insert("item".to_string(), item_clone);
                 scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-                let result = executor.execute(&sub_graph, &pool_clone, scope_vars, &context_clone).await;
+                let result = runner
+                    .run_sub_graph(&sub_graph, &pool_clone, scope_vars, &context_clone)
+                    .await;
                 drop(permit);
                 (index, result)
             });
@@ -571,6 +575,7 @@ impl ListOperatorNodeExecutor {
         pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
+        let runner = resolve_sub_graph_runner(context);
         let items = input
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Input must be an array".to_string()))?;
@@ -585,9 +590,8 @@ impl ListOperatorNodeExecutor {
             scope_vars.insert("item".to_string(), item.clone());
             scope_vars.insert("index".to_string(), serde_json::json!(index));
 
-            let result = self
-                .sub_graph_executor
-                .execute(sub_graph, pool, scope_vars, context)
+            let result = runner
+                .run_sub_graph(sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
@@ -744,6 +748,7 @@ impl ListOperatorNodeExecutor {
         pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<Value, NodeError> {
+        let runner = resolve_sub_graph_runner(context);
         let items = input
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Input must be an array".to_string()))?;
@@ -760,9 +765,8 @@ impl ListOperatorNodeExecutor {
             scope_vars.insert("index".to_string(), serde_json::json!(index));
             scope_vars.insert("accumulator".to_string(), accumulator.clone());
 
-            let result = self
-                .sub_graph_executor
-                .execute(sub_graph, pool, scope_vars, context)
+            let result = runner
+                .run_sub_graph(sub_graph, pool, scope_vars, context)
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 

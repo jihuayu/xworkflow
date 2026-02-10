@@ -9,6 +9,8 @@ pub mod template;
 pub mod scheduler;
 pub mod plugin;
 pub mod llm;
+#[cfg(feature = "security")]
+pub mod security;
 #[cfg(feature = "plugin-system")]
 pub mod plugin_system;
 
@@ -19,6 +21,8 @@ pub use crate::core::{
 	VariablePool,
 	WorkflowDispatcher,
 	RuntimeContext,
+	SubGraphRunner,
+	DefaultSubGraphRunner,
 	TimeProvider,
 	IdGenerator,
 	RealTimeProvider,
@@ -41,6 +45,8 @@ pub use crate::graph::{build_graph, Graph};
 pub use crate::nodes::NodeExecutorRegistry;
 pub use crate::core::dispatcher::{Command, EngineConfig};
 pub use crate::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};
+#[cfg(feature = "security")]
+pub use crate::security::*;
 #[cfg(feature = "plugin-system")]
 pub use crate::plugin_system::{
 	Plugin,

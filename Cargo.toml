@@ -23,7 +23,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 
 # Template engine
-minijinja = { version = "2.0", features = ["builtins"] }
+minijinja = { version = "2.0", features = ["builtins", "fuel"] }
 
 # HTTP client (for LLM APIs and persistence services)
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1"
 base64 = "0.22"
 libloading = { version = "0.8", optional = true }
+url = "2.5"
 
 # WASM runtime
 wasmtime = "27"
@@ -69,8 +70,42 @@ tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 [features]
-default = []
+default = [
+	"security",
+	"builtin-core-nodes",
+	"builtin-transform-nodes",
+	"builtin-http-node",
+	"builtin-code-node",
+	"builtin-subgraph-nodes",
+	"builtin-llm-node",
+]
+security = []
 plugin-system = ["libloading"]
+builtin-core-nodes = []
+builtin-transform-nodes = []
+builtin-http-node = []
+builtin-code-node = []
+builtin-subgraph-nodes = []
+builtin-llm-node = []
+
+[workspace]
+resolver = "2"
+members = [
+	".",
+	"crates/xworkflow-types",
+	"crates/xworkflow-nodes-core",
+	"crates/xworkflow-nodes-transform",
+	"crates/xworkflow-nodes-http",
+	"crates/xworkflow-nodes-code",
+	"crates/xworkflow-nodes-subgraph",
+	"crates/xworkflow-nodes-llm",
+	"crates/xworkflow-nodes-core-dylib",
+	"crates/xworkflow-nodes-transform-dylib",
+	"crates/xworkflow-nodes-http-dylib",
+	"crates/xworkflow-nodes-code-dylib",
+	"crates/xworkflow-nodes-subgraph-dylib",
+	"crates/xworkflow-nodes-llm-dylib",
+]
 
 [[bench]]
 name = "bench_micro_variable_pool"

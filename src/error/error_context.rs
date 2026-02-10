@@ -58,6 +58,8 @@ pub enum ErrorCode {
     VariableNotFound,
     TemplateError,
     InputValidationError,
+    OutputTooLarge,
+    ResourceLimitExceeded,
 }
 
 /// Structured error context
