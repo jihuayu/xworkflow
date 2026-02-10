@@ -361,16 +361,25 @@ mod tests {
     #[tokio::test]
     async fn test_wasm_execute() {
         let sandbox = WasmSandbox::new(WasmSandboxConfig::default());
+        // Simple test module that returns a hardcoded JSON result
         let wat = r#"(module
             (memory (export "memory") 1)
-            (func (export "alloc") (param i32) (result i32)
-                (local.get 0)
-                (i32.const 4)
-                (i32.add)
+            (global $heap (mut i32) (i32.const 1024))
+            (func (export "alloc") (param $size i32) (result i32)
+                (local $addr i32)
+                global.get $heap
+                local.set $addr
+                global.get $heap
+                local.get $size
+                i32.add
+                global.set $heap
+                local.get $addr
             )
             (func (export "dealloc") (param i32) (param i32))
-            (func (export "main") (param i32) (result i32)
-                (i32.const 4)
+            (data (i32.const 0) "{\"test\":true}")
+            (data (i32.const 32) "\00\00\00\00\0d\00\00\00")
+            (func (export "main") (param i32 i32) (result i32)
+                (i32.const 32)
             )
         )"#;
 
