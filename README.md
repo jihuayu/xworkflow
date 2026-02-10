@@ -1,225 +1,131 @@
-# xworkflow - Dify Workflow Engine Rust Implementation
+# xworkflow: Universal Workflow Runtime (Rust)
 
-A high-performance workflow execution engine, rewritten in Rust for Dify's core workflow engine.
+> **⚠️ EARLY DEVELOPMENT WARNING**
+> 
+> This project is in very early stages of active development. APIs are unstable and subject to breaking changes without notice. Not recommended for production use yet.
 
-## Project Features
+xworkflow is a universal workflow runtime designed for "embeddable" scenarios: it parses and validates a workflow DSL, then executes it in-memory as a directed graph. Its goal is not to be a "platform," but rather a runtime that can be integrated into host processes written in Node.js, Python, Go, Rust, and other languages.
 
-- 🚀 **High Performance**: 5-10x faster than the Python version
-- 🔒 **Memory Safety**: Rust's ownership model ensures no data races
-- ⚡ **True Concurrency**: Based on Tokio async runtime
-- 🔌 **Python Integration**: Python FFI via PyO3
-- 📊 **Async Persistence**: Delegates to external services, non-blocking execution
+This project is designed for **short-lived workflows that do not require mid-execution persistence**, emphasizing three key principles:
 
-## Architecture Overview
+- **Fast**: Tokio async runtime with concurrent scheduling, minimizing unnecessary synchronization and copying.
+- **Safe**: Rust memory safety; optional sandbox and security capabilities (via feature flags).
+- **Explicit**: APIs and behaviors are intentionally explicit — no reliance on implicit global state, no hidden storage writes, no concealed side effects; all I/O and extension points are expressed through clear node/config/plugin interfaces.
 
-```
-┌─────────────────────────────────────────┐
-│         Python Host Environment (Dify)  │
-│              ↓ PyO3 FFI                 │
-├─────────────────────────────────────────┤
-│         Rust Workflow Engine Core       │
-│  • Event-driven Dispatcher              │
-│  • Thread-safe VariablePool             │
-│  • Graph Execution Engine (petgraph)    │
-│  • 15+ Node Types Supported             │
-├─────────────────────────────────────────┤
-│         External Service Integration    │
-│  • LLM API (OpenAI/Anthropic/etc)       │
-│  • Vector DB (Weaviate/Qdrant)          │
-│  • Code Sandbox (gRPC)                  │
-│  • Persistence Service (HTTP)           │
-└─────────────────────────────────────────┘
-```
+## Key Capabilities
+
+- **DSL Parsing & Validation**: Supports YAML and JSON formats with schema validation and diagnostic reporting.
+- **Graph Execution Model**: Execution based on nodes and edges; runtime data managed through `VariablePool`.
+- **Values + Streams**: Variable segments (Segment) support both plain values and streams, enabling nodes with streaming output.
+- **Pluggable Node System**: Built-in common nodes; also supports loading plugins via dynamic libraries (optional feature).
+- **Sandboxed Execution**: Built-in JavaScript (Boa) and WASM (Wasmtime) runtimes for isolated execution of untrusted code (see implementation and features for details).
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust 1.75+
-- Python 3.8+ (for FFI)
+- Rust stable (recent version recommended)
 
-### Build Project
+### Build & Test
 
 ```bash
-# Clone repository
-git clone <repository-url>
-cd xworkflow
-
-# Build Rust library
-cargo build --release
-
-# Run tests
+cargo build
 cargo test
-
-# Build Python extension
-maturin develop
 ```
 
-### Usage Example
+### Run Example
 
-```python
-from xworkflow import RustGraphEngine
+The repository includes a runnable example:
 
-# Create engine instance
-engine = RustGraphEngine()
+```bash
+cargo run --example scheduler_demo
+```
 
-# Workflow DSL
-dsl = """
+### Minimal Rust Usage Example
+
+Below is a minimal example showing how to parse a YAML DSL and execute a simple workflow (Start → End):
+
+```rust
+use serde_json::json;
+use std::collections::HashMap;
+
+use xworkflow::dsl::{parse_dsl, DslFormat};
+use xworkflow::scheduler::{ExecutionStatus, WorkflowRunner};
+
+#[tokio::main]
+async fn main() {
+    let yaml = r#"
+version: "0.1.0"
 nodes:
   - id: start
-    type: start
-  - id: llm1
-    type: llm
     data:
-      model: gpt-4
-      prompt_template:
-        - role: user
-          content: "{{#input.query#}}"
+      type: start
+      title: Start
+      variables:
+        - variable: query
+          label: Query
+          type: string
+          required: true
   - id: end
-    type: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: result
+          value_selector: ["start", "query"]
 edges:
   - source: start
-    target: llm1
-  - source: llm1
     target: end
-"""
+"#;
 
-# Execute workflow
-result = engine.run(
-    dsl_json=dsl,
-    inputs='{"query": "Hello"}',
-    user_id="user_123"
-)
+    let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
 
-print(result)
-```
+    let mut inputs = HashMap::new();
+    inputs.insert("query".into(), json!("hello"));
 
-## Project Structure
+    let handle = WorkflowRunner::builder(schema)
+        .user_inputs(inputs)
+        .run()
+        .await
+        .unwrap();
 
-```
-xworkflow/
-├── src/
-│   ├── core/           # Core engine (dispatcher, event bus, variable pool)
-│   ├── graph/          # Graph operations (build, validate, traverse)
-│   ├── nodes/          # Node executors (15+ node types)
-│   ├── dsl/            # DSL parsing
-│   ├── template/       # Template engine (Minijinja)
-│   ├── evaluator/      # Expression evaluation
-│   ├── clients/        # External service clients
-│   ├── storage/        # Persistence client
-│   ├── streaming/      # Streaming output
-│   ├── error/          # Error handling
-│   ├── ffi/            # Python FFI
-│   └── utils/          # Utility functions
-├── tests/              # Test cases
-├── Cargo.toml          # Rust project config
-├── 技术设计文档.md      # Full technical design doc
-└── README.md           # This file
-```
-
-## Supported Node Types
-
-### Control Flow Nodes
-- ✅ Start - Workflow entry
-- ✅ End - Workflow exit
-- ✅ If/Else - Conditional branch
-- ✅ Iteration - Loop
-
-### Cognitive Processing Nodes
-- ✅ LLM - Large language model call
-- ✅ Knowledge Retrieval - RAG
-- ✅ Question Classifier - Question classification
-- ✅ Parameter Extractor - Parameter extraction
-
-### Data Transformation Nodes
-- ✅ Template - Template rendering
-- ✅ Code - Code execution (sandbox)
-- ✅ HTTP Request - HTTP request
-- ✅ Variable Assigner - Variable assignment
-- ✅ Variable Aggregator - Variable aggregation
-
-### Tool Nodes
-- ✅ Tool - Dynamic tool invocation
-
-## External Persistence Service
-
-This engine delegates data persistence to external services, does not access DB directly.
-
-### Persistence Service API
-
-```
-POST /api/v1/events
-Content-Type: application/json
-
-{
-  "event_type": "WorkflowStarted",
-  "data": {
-    "execution_id": "uuid",
-    "workflow_id": "workflow_123",
-    "user_id": "user_456",
-    "inputs": {...},
-    "timestamp": "2026-02-09T10:00:00Z"
-  }
+    match handle.wait().await {
+        ExecutionStatus::Completed(outputs) => println!("outputs={:?}", outputs),
+        other => println!("status={:?}", other),
+    }
 }
 ```
 
-See [技术设计文档.md](./技术设计文档.md#13-外部持久化服务规范) for details.
+## Embedding in Other Languages
 
-## Performance Metrics
+The core form of this project is a Rust crate (used directly as a dependency in Rust host applications).
 
-| Metric | Python Version | Rust Version | Improvement |
-|--------|---------------|-------------|-------------|
-| Simple workflow latency | 100ms | 10-20ms | 5-10x |
-| Complex workflow latency | 500ms | 50-100ms | 5-10x |
-| Concurrent throughput | 100 req/s | 500-1000 req/s | 5-10x |
-| Memory usage | 200MB | 50-100MB | 2-4x |
+**Multi-Language Bindings (Planned)**: Future plans include support for embedding in Node.js, Python, Go, and other host processes. Recommended implementation approaches:
 
-## Development Guide
+- Expose runtime entry points via **C ABI / dynamic library**, with the host calling through FFI;
+- Or provide more "explicit" binding layers for target languages (e.g., Node-API, Python extensions, cgo wrappers).
 
-This project is designed for AI Agent development. See:
+The repository already includes **dynamic library plugin** related ABI and sample node plugins (see `crates/*-dylib`), which load node capabilities as shared libraries on-demand. These mechanisms can serve as the foundation for multi-language bindings.
 
-- [技术设计文档.md](./技术设计文档.md) - Full architecture and implementation plan
-- [需求.md](./需求.md) - Original requirements analysis
+## Directory Structure
 
-### Development Phases
-
-1. **Phase 1 (2 weeks)**: Core foundation - event bus, variable pool, dispatcher
-2. **Phase 2 (2 weeks)**: Basic nodes - Start/End/Template
-3. **Phase 3 (2 weeks)**: Control flow - If/Else/Iteration
-4. **Phase 4 (3 weeks)**: Cognitive nodes - LLM/Knowledge Retrieval
-5. **Phase 5 (2 weeks)**: External integration - Code/HTTP/Tools
-6. **Phase 6 (2 weeks)**: Persistence & FFI
-7. **Phase 7 (2 weeks)**: Testing & optimization
-
-## Testing
-
-```bash
-# Run all tests
-cargo test
-
-# Run specific module tests
-cargo test --package xworkflow --lib core::dispatcher
-
-# Run integration tests
-cargo test --test integration
-
-# Performance tests
-cargo test --release -- --ignored
 ```
-
-## Documentation
-
-- [技术设计文档](./技术设计文档.md) - Full technical design
-- [API Docs](https://docs.rs/xworkflow) - Rust API docs (rustdoc)
-
-## License
-
-[TBD]
-
-## Contribution
-
-This project is mainly developed by AI Agent. For questions or suggestions, please submit an Issue.
-
----
-
-**Note**: This project is currently under development, API may change.
+.
+├── src/
+│   ├── core/           # Runtime core: scheduler, variable pool, context, etc.
+│   ├── dsl/            # DSL parsing & validation
+│   ├── evaluator/      # Condition/expression evaluation
+│   ├── graph/          # Graph construction & execution
+│   ├── llm/            # LLM-related capabilities (depending on nodes/implementation)
+│   ├── nodes/          # Built-in node executors
+│   ├── plugin/         # Plugin foundations
+│   ├── plugin_system/  # Plugin system (optional feature)
+│   ├── sandbox/        # JS/WASM sandboxes
+│   ├── security/       # Security capabilities (optional feature)
+│   ├── template/       # Template rendering
+│   └── scheduler.rs    # Workflow scheduler & handle API
+├── crates/             # Reusable types & various node plugins (including dynamic library versions)
+├── examples/           # Runnable examples
+├── benches/            # Benchmarks (criterion)
+└── docs/               # Design documents & specifications
+```
