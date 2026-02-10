@@ -362,14 +362,14 @@ mod tests {
     async fn test_wasm_execute() {
         let sandbox = WasmSandbox::new(WasmSandboxConfig::default());
         let wat = r#"(module
-            (memory (export \"memory\") 1)
-            (func (export \"alloc\") (param i32) (result i32)
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32)
                 (local.get 0)
                 (i32.const 4)
                 (i32.add)
             )
-            (func (export \"dealloc\") (param i32) (param i32))
-            (func (export \"main\") (param i32) (result i32)
+            (func (export "dealloc") (param i32) (param i32))
+            (func (export "main") (param i32) (result i32)
                 (i32.const 4)
             )
         )"#;
