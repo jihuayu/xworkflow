@@ -1,0 +1,32 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": { "type": "start", "title": "Start" }
+    },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Return Text",
+        "code": "function main(inputs) { return { text: 'hello' }; }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "text", "value_selector": ["code1", "text"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "end" }
+  ]
+}

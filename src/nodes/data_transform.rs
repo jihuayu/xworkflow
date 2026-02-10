@@ -14,7 +14,7 @@ use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
 use crate::sandbox::js_builtins;
-use crate::template::{render_jinja2, render_template_async};
+use crate::template::{render_jinja2_with_functions, render_template_async};
 
 // ================================
 // Template Transform
@@ -63,7 +63,12 @@ impl NodeExecutor for TemplateTransformExecutor {
         }
 
         if stream_vars.is_empty() {
-            let rendered = render_jinja2(template, &static_vars)
+            #[cfg(feature = "plugin-system")]
+            let tmpl_functions = _context.template_functions.as_ref().map(|f| f.as_ref());
+            #[cfg(not(feature = "plugin-system"))]
+            let tmpl_functions: Option<&std::collections::HashMap<String, ()>> = None;
+
+            let rendered = render_jinja2_with_functions(template, &static_vars, tmpl_functions)
                 .map_err(|e| NodeError::TemplateError(e))?;
 
             let mut outputs = HashMap::new();
@@ -81,6 +86,18 @@ impl NodeExecutor for TemplateTransformExecutor {
         let base_vars = static_vars.clone();
         let (output_stream, writer) = SegmentStream::channel();
 
+        let tmpl_functions = {
+            #[cfg(feature = "plugin-system")]
+            {
+                _context.template_functions.as_ref().map(|f| f.clone())
+            }
+            #[cfg(not(feature = "plugin-system"))]
+            {
+                let _none: Option<std::sync::Arc<std::collections::HashMap<String, ()>>> = None;
+                _none
+            }
+        };
+
         tokio::spawn(async move {
             let mut accumulated: HashMap<String, String> = HashMap::new();
             let mut last_rendered = String::new();
@@ -92,13 +109,14 @@ impl NodeExecutor for TemplateTransformExecutor {
                         Some(StreamEvent::Chunk(seg)) => {
                             let entry = accumulated.entry(name.clone()).or_default();
                             entry.push_str(&seg.to_display_string());
-                            match render_jinja2(&template_str, &{
+                            let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
+                            match render_jinja2_with_functions(&template_str, &{
                                 let mut vars = base_vars.clone();
                                 for (k, v) in &accumulated {
                                     vars.insert(k.clone(), Value::String(v.clone()));
                                 }
                                 vars
-                            }) {
+                            }, funcs_ref) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
                                         rendered[last_rendered.len()..].to_string()
@@ -120,13 +138,14 @@ impl NodeExecutor for TemplateTransformExecutor {
                         }
                         Some(StreamEvent::End(final_seg)) => {
                             accumulated.insert(name.clone(), final_seg.to_display_string());
-                            match render_jinja2(&template_str, &{
+                            let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
+                            match render_jinja2_with_functions(&template_str, &{
                                 let mut vars = base_vars.clone();
                                 for (k, v) in &accumulated {
                                     vars.insert(k.clone(), Value::String(v.clone()));
                                 }
                                 vars
-                            }) {
+                            }, funcs_ref) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
                                         rendered[last_rendered.len()..].to_string()
@@ -670,6 +689,10 @@ impl CodeNodeExecutor {
         Self {
             sandbox_manager: std::sync::Arc::new(manager),
         }
+    }
+
+    pub fn new_with_manager(manager: std::sync::Arc<crate::sandbox::SandboxManager>) -> Self {
+        Self { sandbox_manager: manager }
     }
 }
 

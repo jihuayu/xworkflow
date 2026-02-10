@@ -48,7 +48,6 @@ e2e::e2e_test_cases!(
     case_044_http_no_auth => "044_http_no_auth",
     case_045_js_builtins => "045_js_builtins",
     case_046_code_node_wasm => "046_code_node_wasm",
-    case_047_plugin_node_basic => "047_plugin_node_basic",
     case_048_llm_openai_basic => "048_llm_openai_basic",
     case_049_error_handler_recover => "049_error_handler_recover",
     case_057_llm_stream_basic => "057_llm_stream_basic",
@@ -69,6 +68,16 @@ e2e::e2e_test_cases!(
     case_072_llm_stream_http => "072_llm_stream_http",
     case_073_llm_stream_dual_answer => "073_llm_stream_dual_answer",
     case_074_llm_stream_code_counter => "074_llm_stream_code_counter",
+);
+
+#[cfg(feature = "plugin-system")]
+e2e::e2e_test_cases!(
+    "tests/e2e/cases",
+    case_047_plugin_node_basic => "047_plugin_node_basic",
+    case_075_plugin_host_node_basic => "075_plugin_host_node_basic",
+    case_076_plugin_bootstrap_sandbox => "076_plugin_bootstrap_sandbox",
+    case_077_plugin_llm_provider => "077_plugin_llm_provider",
+    case_078_plugin_hook_modifier => "078_plugin_hook_modifier",
 );
 
 e2e::e2e_debug_test_cases!(

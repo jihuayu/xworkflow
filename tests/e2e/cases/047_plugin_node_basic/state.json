@@ -1,3 +1,13 @@
 {
-  "plugin_dir": "plugins"
+  "plugin_system": {
+    "host_bootstrap_plugins": ["wasm_bootstrap"],
+    "normal_load_sources": [
+      {
+        "loader_type": "wasm",
+        "params": {
+          "dir": "plugins/com.example.echo"
+        }
+      }
+    ]
+  }
 }

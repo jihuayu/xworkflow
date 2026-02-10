@@ -14,7 +14,10 @@ use crate::dsl::schema::{
 use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
 use crate::graph::types::{Graph, NodeState};
 use crate::nodes::executor::NodeExecutorRegistry;
+#[cfg(not(feature = "plugin-system"))]
 use crate::plugin::{PluginHookType, PluginManager};
+#[cfg(feature = "plugin-system")]
+use crate::plugin_system::{HookPayload, HookPoint, PluginRegistry};
 
 /// External command to control workflow execution
 #[derive(Debug, Clone)]
@@ -50,7 +53,10 @@ pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> 
     exceptions_count: i32,
     final_outputs: HashMap<String, Value>,
     context: Arc<RuntimeContext>,
+  #[cfg(not(feature = "plugin-system"))]
   plugin_manager: Option<Arc<PluginManager>>,
+  #[cfg(feature = "plugin-system")]
+  plugin_registry: Option<Arc<PluginRegistry>>,
     debug_gate: G,
     debug_hook: H,
 }
@@ -63,7 +69,10 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
         event_tx: mpsc::Sender<GraphEngineEvent>,
         config: EngineConfig,
         context: Arc<RuntimeContext>,
+      #[cfg(not(feature = "plugin-system"))]
       plugin_manager: Option<Arc<PluginManager>>,
+      #[cfg(feature = "plugin-system")]
+      plugin_registry: Option<Arc<PluginRegistry>>,
     ) -> Self {
         WorkflowDispatcher {
             graph: Arc::new(RwLock::new(graph)),
@@ -74,7 +83,10 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             exceptions_count: 0,
             final_outputs: HashMap::new(),
             context,
+        #[cfg(not(feature = "plugin-system"))]
         plugin_manager,
+        #[cfg(feature = "plugin-system")]
+        plugin_registry,
       debug_gate: NoopGate,
       debug_hook: NoopHook,
         }
@@ -91,7 +103,10 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     event_tx: mpsc::Sender<GraphEngineEvent>,
     config: EngineConfig,
     context: Arc<RuntimeContext>,
+    #[cfg(not(feature = "plugin-system"))]
     plugin_manager: Option<Arc<PluginManager>>,
+    #[cfg(feature = "plugin-system")]
+    plugin_registry: Option<Arc<PluginRegistry>>,
     debug_gate: G,
     debug_hook: H,
   ) -> Self {
@@ -104,7 +119,10 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       exceptions_count: 0,
       final_outputs: HashMap::new(),
       context,
+      #[cfg(not(feature = "plugin-system"))]
       plugin_manager,
+      #[cfg(feature = "plugin-system")]
+      plugin_registry,
       debug_gate,
       debug_hook,
     }
@@ -116,6 +134,47 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
   pub async fn snapshot_pool(&self) -> VariablePool {
     self.variable_pool.read().await.clone()
+  }
+
+  #[cfg(feature = "plugin-system")]
+  async fn execute_hooks(
+    &self,
+    hook_point: HookPoint,
+    data: Value,
+  ) -> WorkflowResult<Vec<Value>> {
+    let mut results = Vec::new();
+    if let Some(reg) = &self.plugin_registry {
+      let mut handlers = reg.hooks(&hook_point);
+      if handlers.is_empty() {
+        return Ok(results);
+      }
+
+      handlers.sort_by_key(|h| h.priority());
+      let pool_snapshot = self.variable_pool.read().await.clone();
+      let payload = HookPayload {
+        hook_point,
+        data,
+        variable_pool: Some(Arc::new(pool_snapshot)),
+        event_tx: Some(self.event_tx.clone()),
+      };
+
+      for handler in handlers {
+        match handler.handle(&payload).await {
+          Ok(Some(value)) => results.push(value),
+          Ok(None) => {}
+          Err(e) => {
+            let _ = self
+              .event_tx
+              .send(GraphEngineEvent::PluginError {
+                plugin_id: handler.name().to_string(),
+                error: e.to_string(),
+              })
+              .await;
+          }
+        }
+      }
+    }
+    Ok(results)
   }
 
   async fn apply_debug_action(&self, action: DebugAction) -> WorkflowResult<DebugActionResult> {
@@ -159,6 +218,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
         // Emit graph started
         let _ = self.event_tx.send(GraphEngineEvent::GraphRunStarted).await;
 
+      #[cfg(not(feature = "plugin-system"))]
       if let Some(pm) = &self.plugin_manager {
         let pool_snapshot = self.variable_pool.read().await.clone();
         let payload = serde_json::json!({
@@ -172,6 +232,14 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
         )
         .await
         .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+      }
+
+      #[cfg(feature = "plugin-system")]
+      {
+        let payload = serde_json::json!({
+          "event": "before_workflow_run",
+        });
+        let _ = self.execute_hooks(HookPoint::BeforeWorkflowRun, payload).await?;
       }
 
         let root_id = {
@@ -265,6 +333,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                 predecessor_node_id: None,
             }).await;
 
+            #[cfg(not(feature = "plugin-system"))]
             if let Some(pm) = &self.plugin_manager {
               let pool_snapshot = self.variable_pool.read().await.clone();
               let payload = serde_json::json!({
@@ -282,6 +351,18 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
               )
               .await
               .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+            }
+
+            #[cfg(feature = "plugin-system")]
+            {
+              let payload = serde_json::json!({
+                "event": "before_node_execute",
+                "node_id": node_id.clone(),
+                "node_type": node_type.clone(),
+                "node_title": node_title.clone(),
+                "config": node_config.clone(),
+              });
+              let _ = self.execute_hooks(HookPoint::BeforeNodeExecute, payload).await?;
             }
 
             // Execute the node
@@ -417,6 +498,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
             match run_result {
                 Ok(result) => {
+                #[cfg(not(feature = "plugin-system"))]
                 if let Some(pm) = &self.plugin_manager {
                   let pool_snapshot = self.variable_pool.read().await.clone();
                   let payload = serde_json::json!({
@@ -438,9 +520,24 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                   .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
                 }
 
+                #[cfg(feature = "plugin-system")]
+                {
+                  let payload = serde_json::json!({
+                    "event": "after_node_execute",
+                    "node_id": node_id.clone(),
+                    "node_type": node_type.clone(),
+                    "node_title": node_title.clone(),
+                    "status": format!("{:?}", result.status),
+                    "outputs": result.outputs.clone(),
+                    "error": result.error.clone(),
+                  });
+                  let _ = self.execute_hooks(HookPoint::AfterNodeExecute, payload).await?;
+                }
+
                     // Store outputs in variable pool
                     let mut outputs_for_write = result.outputs.clone();
                     let stream_outputs = result.stream_outputs.clone();
+                    #[cfg(not(feature = "plugin-system"))]
                     if let Some(pm) = &self.plugin_manager {
                       let pool_snapshot = self.variable_pool.read().await.clone();
                       for (key, value) in outputs_for_write.iter_mut() {
@@ -465,6 +562,24 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                       }
                     }
 
+                    #[cfg(feature = "plugin-system")]
+                    {
+                      for (key, value) in outputs_for_write.iter_mut() {
+                        let payload = serde_json::json!({
+                          "event": "before_variable_write",
+                          "node_id": node_id.clone(),
+                          "selector": [node_id.clone(), key.clone()],
+                          "value": value.clone(),
+                        });
+                        let results = self
+                          .execute_hooks(HookPoint::BeforeVariableWrite, payload)
+                          .await?;
+                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
+                          *value = last;
+                        }
+                      }
+                    }
+
                     let mut assigner_meta: Option<(WriteMode, Vec<String>, Value)> = None;
                     if node_type == "assigner" {
                       let write_mode = result.outputs.get("write_mode")
@@ -478,6 +593,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                         .cloned()
                         .unwrap_or(Value::Null);
 
+                      #[cfg(not(feature = "plugin-system"))]
                       if let Some(pm) = &self.plugin_manager {
                         let pool_snapshot = self.variable_pool.read().await.clone();
                         let payload = serde_json::json!({
@@ -495,6 +611,22 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                           )
                           .await
                           .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
+                          output_val = last;
+                        }
+                      }
+
+                      #[cfg(feature = "plugin-system")]
+                      {
+                        let payload = serde_json::json!({
+                          "event": "before_variable_write",
+                          "node_id": node_id.clone(),
+                          "selector": assigned_sel.clone(),
+                          "value": output_val.clone(),
+                        });
+                        let results = self
+                          .execute_hooks(HookPoint::BeforeVariableWrite, payload)
+                          .await?;
                         if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
                           output_val = last;
                         }
@@ -648,6 +780,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
           }).await;
         }
 
+        #[cfg(not(feature = "plugin-system"))]
         if let Some(pm) = &self.plugin_manager {
           let pool_snapshot = self.variable_pool.read().await.clone();
           let payload = serde_json::json!({
@@ -663,6 +796,16 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
           )
           .await
           .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+        }
+
+        #[cfg(feature = "plugin-system")]
+        {
+          let payload = serde_json::json!({
+            "event": "after_workflow_run",
+            "outputs": self.final_outputs.clone(),
+            "exceptions_count": self.exceptions_count,
+          });
+          let _ = self.execute_hooks(HookPoint::AfterWorkflowRun, payload).await?;
         }
 
         Ok(self.final_outputs.clone())

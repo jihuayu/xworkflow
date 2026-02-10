@@ -36,6 +36,7 @@ pub struct WasmConfigField {
     pub env_var: Option<String>,
 }
 
+#[allow(dead_code)]
 struct WasmProviderState {
     config: HashMap<String, String>,
 }

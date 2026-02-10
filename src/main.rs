@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::scheduler::{ExecutionStatus, WorkflowRunner};
+use xworkflow::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner};
 
 #[tokio::main]
 async fn main() {
@@ -79,7 +79,7 @@ edges:
     let mut sys = HashMap::new();
     sys.insert("query".to_string(), serde_json::Value::String("Hello, Dify!".to_string()));
 
-    let handle = WorkflowRunner::builder(schema)
+    let handle: WorkflowHandle = WorkflowRunner::builder(schema)
       .user_inputs(inputs)
       .system_vars(sys)
       .run()

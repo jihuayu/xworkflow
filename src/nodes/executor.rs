@@ -7,6 +7,7 @@ use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
 use crate::llm::LlmProviderRegistry;
+#[cfg(not(feature = "plugin-system"))]
 use crate::plugin::{PluginManager, PluginNodeExecutor};
 use crate::llm::LlmNodeExecutor;
 
@@ -59,6 +60,7 @@ impl NodeExecutorRegistry {
         registry
     }
 
+    #[cfg(not(feature = "plugin-system"))]
     pub fn new_with_plugins(plugin_manager: std::sync::Arc<PluginManager>) -> Self {
         let mut registry = Self::new();
         for (node_type, _) in plugin_manager.get_plugin_node_types() {
@@ -71,6 +73,16 @@ impl NodeExecutorRegistry {
             );
         }
         registry
+    }
+
+    #[cfg(feature = "plugin-system")]
+    pub fn apply_plugin_executors(
+        &mut self,
+        executors: HashMap<String, Box<dyn NodeExecutor>>,
+    ) {
+        for (node_type, executor) in executors {
+            self.register(&node_type, executor);
+        }
     }
 
     pub fn register(&mut self, node_type: &str, executor: Box<dyn NodeExecutor>) {

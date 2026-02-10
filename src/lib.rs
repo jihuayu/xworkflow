@@ -9,6 +9,8 @@ pub mod template;
 pub mod scheduler;
 pub mod plugin;
 pub mod llm;
+#[cfg(feature = "plugin-system")]
+pub mod plugin_system;
 
 pub use crate::core::{
 	GraphEngineEvent,
@@ -39,3 +41,17 @@ pub use crate::graph::{build_graph, Graph};
 pub use crate::nodes::NodeExecutorRegistry;
 pub use crate::core::dispatcher::{Command, EngineConfig};
 pub use crate::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};
+#[cfg(feature = "plugin-system")]
+pub use crate::plugin_system::{
+	Plugin,
+	PluginCategory,
+	PluginContext,
+	PluginError,
+	PluginLoadSource,
+	PluginLoader,
+	PluginMetadata,
+	PluginPhase,
+	PluginRegistry,
+	PluginSource,
+	PluginSystemConfig,
+};

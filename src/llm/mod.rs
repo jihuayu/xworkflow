@@ -42,6 +42,14 @@ impl LlmProviderRegistry {
         self.providers.insert(provider.id().to_string(), provider);
     }
 
+    pub fn clone_registry(&self) -> LlmProviderRegistry {
+        let mut reg = LlmProviderRegistry::new();
+        for provider in self.providers.values() {
+            reg.register(provider.clone());
+        }
+        reg
+    }
+
     pub fn get(&self, provider_id: &str) -> Option<Arc<dyn LlmProvider>> {
         self.providers.get(provider_id).cloned()
     }
@@ -74,6 +82,13 @@ impl LlmProviderRegistry {
             })));
         }
         reg
+    }
+
+    #[cfg(feature = "plugin-system")]
+    pub fn apply_plugin_providers(&mut self, providers: &[Arc<dyn LlmProvider>]) {
+        for provider in providers {
+            self.register(provider.clone());
+        }
     }
 }
 

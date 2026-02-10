@@ -9,7 +9,6 @@ use std::sync::Arc;
 use xworkflow::core::debug::{DebugConfig, DebugEvent, PauseLocation, PauseReason};
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::{
-    plugin::{AllowedCapabilities, PluginManager, PluginManagerConfig},
     EngineConfig,
     ExecutionStatus,
     FakeIdGenerator,
@@ -17,7 +16,51 @@ use xworkflow::{
     RuntimeContext,
     WorkflowRunner,
 };
+#[cfg(not(feature = "plugin-system"))]
+use xworkflow::plugin::{AllowedCapabilities, PluginManager, PluginManagerConfig};
+#[cfg(feature = "plugin-system")]
+use xworkflow::plugin_system::{
+    HookHandler,
+    HookPayload,
+    HookPoint,
+    Plugin,
+    PluginCategory,
+    PluginContext,
+    PluginError,
+    PluginLoadSource,
+    PluginMetadata,
+    PluginSource,
+    PluginSystemConfig,
+};
+#[cfg(feature = "plugin-system")]
+use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
+#[cfg(feature = "plugin-system")]
+use xworkflow::nodes::executor::NodeExecutor;
+#[cfg(feature = "plugin-system")]
+use xworkflow::dsl::schema::{LlmUsage, NodeRunResult, WorkflowNodeExecutionStatus};
+#[cfg(feature = "plugin-system")]
+use xworkflow::error::NodeError;
 use xworkflow::llm::{LlmProviderRegistry, OpenAiConfig, OpenAiProvider};
+#[cfg(feature = "plugin-system")]
+use xworkflow::llm::{
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    LlmProvider,
+    ModelInfo,
+    ProviderInfo,
+    StreamChunk,
+};
+#[cfg(feature = "plugin-system")]
+use xworkflow::sandbox::{
+    CodeLanguage,
+    CodeSandbox,
+    HealthStatus,
+    SandboxError,
+    SandboxRequest,
+    SandboxResult,
+    SandboxStats,
+    SandboxType,
+};
 
 #[derive(Debug, Deserialize, Default)]
 struct StateFile {
@@ -33,12 +76,39 @@ struct StateFile {
     fake_time: Option<FakeTimeConfig>,
     #[serde(default)]
     fake_id: Option<FakeIdConfig>,
+    #[allow(dead_code)]
     #[serde(default)]
     plugin_dir: Option<String>,
+    #[cfg(feature = "plugin-system")]
+    #[serde(default)]
+    plugin_system: Option<PluginSystemState>,
     #[serde(default)]
     llm_providers: Option<LlmProvidersConfig>,
     #[serde(default)]
     mock_server: Option<Vec<MockEndpoint>>,
+}
+
+#[cfg(feature = "plugin-system")]
+#[derive(Debug, Deserialize, Default)]
+struct PluginSystemState {
+    #[serde(default)]
+    host_bootstrap_plugins: Vec<String>,
+    #[serde(default)]
+    host_normal_plugins: Vec<String>,
+    #[serde(default)]
+    bootstrap_dll_paths: Vec<String>,
+    #[serde(default)]
+    normal_dll_paths: Vec<String>,
+    #[serde(default)]
+    normal_load_sources: Vec<PluginLoadSourceState>,
+}
+
+#[cfg(feature = "plugin-system")]
+#[derive(Debug, Deserialize, Default)]
+struct PluginLoadSourceState {
+    loader_type: String,
+    #[serde(default)]
+    params: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -94,6 +164,376 @@ struct MockEndpoint {
 
 fn default_status() -> usize {
     200
+}
+
+#[cfg(feature = "plugin-system")]
+fn build_plugin_system_config(case_dir: &Path, state: &PluginSystemState) -> PluginSystemConfig {
+    let mut config = PluginSystemConfig::default();
+
+    config.bootstrap_dll_paths = state
+        .bootstrap_dll_paths
+        .iter()
+        .map(|path| resolve_plugin_path(case_dir, path))
+        .collect();
+
+    config.normal_dll_paths = state
+        .normal_dll_paths
+        .iter()
+        .map(|path| resolve_plugin_path(case_dir, path))
+        .collect();
+
+    config.normal_load_sources = normalize_load_sources(case_dir, &state.normal_load_sources);
+
+    config
+}
+
+#[cfg(feature = "plugin-system")]
+fn resolve_plugin_path(case_dir: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        case_dir.join(path)
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+fn normalize_load_sources(
+    case_dir: &Path,
+    sources: &[PluginLoadSourceState],
+) -> Vec<PluginLoadSource> {
+    sources
+        .iter()
+        .map(|source| {
+            let mut params = source.params.clone();
+            for key in ["path", "dir"] {
+                if let Some(value) = params.get(key).cloned() {
+                    let resolved = resolve_plugin_path(case_dir, &value);
+                    params.insert(key.to_string(), resolved.to_string_lossy().into_owned());
+                }
+            }
+            PluginLoadSource {
+                loader_type: source.loader_type.clone(),
+                params,
+            }
+        })
+        .collect()
+}
+
+#[cfg(feature = "plugin-system")]
+fn build_bootstrap_plugin(name: &str) -> Box<dyn Plugin> {
+    match name {
+        "wasm_bootstrap" => Box::new(WasmBootstrapPlugin::new(WasmPluginConfig::default())),
+        "test_sandbox_bootstrap" => Box::new(TestSandboxBootstrapPlugin::new()),
+        other => panic!("Unknown bootstrap plugin: {}", other),
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+fn build_normal_plugin(name: &str) -> Box<dyn Plugin> {
+    match name {
+        "test_host_node" => Box::new(TestNodePlugin::new()),
+        "test_hook_modifier" => Box::new(TestHookPlugin::new()),
+        "test_llm_provider" => Box::new(TestLlmPlugin::new()),
+        other => panic!("Unknown normal plugin: {}", other),
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+fn base_metadata(id: &str, name: &str, category: PluginCategory) -> PluginMetadata {
+    PluginMetadata {
+        id: id.to_string(),
+        name: name.to_string(),
+        version: "0.1.0".to_string(),
+        category,
+        description: format!("e2e plugin {}", name),
+        source: PluginSource::Host,
+        capabilities: None,
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestNodePlugin {
+    metadata: PluginMetadata,
+}
+
+#[cfg(feature = "plugin-system")]
+impl TestNodePlugin {
+    fn new() -> Self {
+        Self {
+            metadata: base_metadata("test.host.node", "Test Host Node", PluginCategory::Normal),
+        }
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl Plugin for TestNodePlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        &self.metadata
+    }
+
+    async fn register(&self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_node_executor("plugin.test.echo", Box::new(TestEchoExecutor))?;
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestEchoExecutor;
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl NodeExecutor for TestEchoExecutor {
+    async fn execute(
+        &self,
+        _node_id: &str,
+        config: &Value,
+        _variable_pool: &xworkflow::core::variable_pool::VariablePool,
+        _context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let message = config
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ok");
+        let mut outputs = HashMap::new();
+        outputs.insert("result".to_string(), Value::String(message.to_string()));
+        Ok(NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            outputs,
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestHookPlugin {
+    metadata: PluginMetadata,
+}
+
+#[cfg(feature = "plugin-system")]
+impl TestHookPlugin {
+    fn new() -> Self {
+        Self {
+            metadata: base_metadata(
+                "test.hook.modifier",
+                "Test Hook Modifier",
+                PluginCategory::Normal,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl Plugin for TestHookPlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        &self.metadata
+    }
+
+    async fn register(&self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_hook(HookPoint::BeforeVariableWrite, Arc::new(TestModifyHook))?;
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestModifyHook;
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl HookHandler for TestModifyHook {
+    async fn handle(&self, payload: &HookPayload) -> Result<Option<Value>, PluginError> {
+        let value = payload.data.get("value").cloned().unwrap_or(Value::Null);
+        if let Some(text) = value.as_str() {
+            return Ok(Some(Value::String(format!("{}-hooked", text))));
+        }
+        Ok(None)
+    }
+
+    fn name(&self) -> &str {
+        "test_modify_hook"
+    }
+
+    fn priority(&self) -> i32 {
+        10
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestLlmPlugin {
+    metadata: PluginMetadata,
+}
+
+#[cfg(feature = "plugin-system")]
+impl TestLlmPlugin {
+    fn new() -> Self {
+        Self {
+            metadata: base_metadata("test.llm.provider", "Test LLM Provider", PluginCategory::Normal),
+        }
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl Plugin for TestLlmPlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        &self.metadata
+    }
+
+    async fn register(&self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_llm_provider(Arc::new(TestLlmProvider))?;
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestLlmProvider;
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl LlmProvider for TestLlmProvider {
+    fn id(&self) -> &str {
+        "test"
+    }
+
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            id: "test".to_string(),
+            name: "Test Provider".to_string(),
+            models: vec![ModelInfo {
+                id: "test-model".to_string(),
+                name: "Test Model".to_string(),
+                max_tokens: Some(1024),
+            }],
+        }
+    }
+
+    async fn chat_completion(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, xworkflow::llm::LlmError> {
+        let model = request.model;
+        let content = format!("plugin:{}", &model);
+        Ok(ChatCompletionResponse {
+            content,
+            usage: LlmUsage::default(),
+            model,
+            finish_reason: Some("stop".to_string()),
+        })
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        request: ChatCompletionRequest,
+        chunk_tx: tokio::sync::mpsc::Sender<StreamChunk>,
+    ) -> Result<ChatCompletionResponse, xworkflow::llm::LlmError> {
+        let model = request.model;
+        let content = format!("plugin:{}", &model);
+        let _ = chunk_tx
+            .send(StreamChunk {
+                delta: content.clone(),
+                finish_reason: Some("stop".to_string()),
+                usage: None,
+            })
+            .await;
+        Ok(ChatCompletionResponse {
+            content,
+            usage: LlmUsage::default(),
+            model,
+            finish_reason: Some("stop".to_string()),
+        })
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestSandboxBootstrapPlugin {
+    metadata: PluginMetadata,
+}
+
+#[cfg(feature = "plugin-system")]
+impl TestSandboxBootstrapPlugin {
+    fn new() -> Self {
+        Self {
+            metadata: base_metadata(
+                "test.sandbox.bootstrap",
+                "Test Sandbox Bootstrap",
+                PluginCategory::Bootstrap,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl Plugin for TestSandboxBootstrapPlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        &self.metadata
+    }
+
+    async fn register(&self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_sandbox(CodeLanguage::Python, Arc::new(TestPythonSandbox))?;
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(feature = "plugin-system")]
+struct TestPythonSandbox;
+
+#[cfg(feature = "plugin-system")]
+#[async_trait::async_trait]
+impl CodeSandbox for TestPythonSandbox {
+    fn sandbox_type(&self) -> SandboxType {
+        SandboxType::Python
+    }
+
+    fn supported_languages(&self) -> Vec<CodeLanguage> {
+        vec![CodeLanguage::Python]
+    }
+
+    async fn execute(&self, request: SandboxRequest) -> Result<SandboxResult, SandboxError> {
+        let value = request
+            .inputs
+            .get("value")
+            .and_then(|v| v.as_i64())
+            .map(|v| v + 1)
+            .map(|v| Value::Number(v.into()))
+            .unwrap_or_else(|| Value::String("sandbox".to_string()));
+        let output = serde_json::json!({ "result": value });
+        Ok(SandboxResult {
+            success: true,
+            output,
+            stdout: String::new(),
+            stderr: String::new(),
+            execution_time: std::time::Duration::from_millis(1),
+            memory_used: 0,
+            error: None,
+        })
+    }
+
+    async fn health_check(&self) -> Result<HealthStatus, SandboxError> {
+        Ok(HealthStatus::Healthy)
+    }
+
+    async fn get_stats(&self) -> Result<SandboxStats, SandboxError> {
+        Ok(SandboxStats::default())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +603,19 @@ pub async fn run_case(case_dir: &Path) {
         builder = builder.llm_providers(Arc::new(registry));
     }
 
+    #[cfg(feature = "plugin-system")]
+    if let Some(plugin_system) = &state.plugin_system {
+        let config = build_plugin_system_config(case_dir, plugin_system);
+        builder = builder.plugin_config(config);
+        for plugin_name in &plugin_system.host_bootstrap_plugins {
+            builder = builder.bootstrap_plugin(build_bootstrap_plugin(plugin_name));
+        }
+        for plugin_name in &plugin_system.host_normal_plugins {
+            builder = builder.plugin(build_normal_plugin(plugin_name));
+        }
+    }
+
+    #[cfg(not(feature = "plugin-system"))]
     if let Some(plugin_dir) = state.plugin_dir {
         let plugin_path = if Path::new(&plugin_dir).is_absolute() {
             PathBuf::from(plugin_dir)
@@ -414,6 +867,19 @@ pub async fn run_debug_case(case_dir: &Path) {
         builder = builder.llm_providers(Arc::new(registry));
     }
 
+    #[cfg(feature = "plugin-system")]
+    if let Some(plugin_system) = &state.plugin_system {
+        let config = build_plugin_system_config(case_dir, plugin_system);
+        builder = builder.plugin_config(config);
+        for plugin_name in &plugin_system.host_bootstrap_plugins {
+            builder = builder.bootstrap_plugin(build_bootstrap_plugin(plugin_name));
+        }
+        for plugin_name in &plugin_system.host_normal_plugins {
+            builder = builder.plugin(build_normal_plugin(plugin_name));
+        }
+    }
+
+    #[cfg(not(feature = "plugin-system"))]
     if let Some(plugin_dir) = state.plugin_dir {
         let plugin_path = if Path::new(&plugin_dir).is_absolute() {
             PathBuf::from(plugin_dir)

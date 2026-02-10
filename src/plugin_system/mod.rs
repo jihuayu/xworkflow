@@ -1,0 +1,20 @@
+pub mod config;
+pub mod context;
+pub mod error;
+pub mod extensions;
+pub mod hooks;
+pub mod loader;
+pub mod registry;
+pub mod traits;
+pub mod macros;
+pub mod loaders;
+pub mod builtins;
+
+pub use config::PluginSystemConfig;
+pub use context::PluginContext;
+pub use error::PluginError;
+pub use extensions::{DslValidator, TemplateFunction};
+pub use hooks::{HookHandler, HookPayload, HookPoint};
+pub use loader::{PluginLoadSource, PluginLoader};
+pub use registry::{PluginPhase, PluginRegistry};
+pub use traits::{Plugin, PluginCategory, PluginMetadata, PluginSource, PluginCapabilities};

@@ -34,12 +34,40 @@ pub async fn render_template_async(template: &str, pool: &VariablePool) -> Strin
     result
 }
 
-/// Render a Jinja2 template using minijinja with provided variables
-pub fn render_jinja2(
+#[cfg(feature = "plugin-system")]
+type TemplateFunctionMap = std::collections::HashMap<
+    String,
+    std::sync::Arc<dyn crate::plugin_system::TemplateFunction>,
+>;
+
+#[cfg(not(feature = "plugin-system"))]
+type TemplateFunctionMap = std::collections::HashMap<String, ()>;
+
+/// Render a Jinja2 template using minijinja with provided variables and optional functions
+pub fn render_jinja2_with_functions(
     template: &str,
     variables: &std::collections::HashMap<String, serde_json::Value>,
+    _functions: Option<&TemplateFunctionMap>,
 ) -> Result<String, String> {
     let mut env = minijinja::Environment::new();
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(funcs) = _functions {
+        for (name, func) in funcs {
+            let func = func.clone();
+            env.add_function(name.as_str(), move |args: Vec<minijinja::Value>| {
+                let json_args = args
+                    .iter()
+                    .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null))
+                    .collect::<Vec<_>>();
+                let result = func.call(&json_args).map_err(|e| {
+                    minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, e)
+                })?;
+                Ok(minijinja::Value::from_serialize(result))
+            });
+        }
+    }
+
     env.add_template("tpl", template)
         .map_err(|e| format!("Template parse error: {}", e))?;
     let tmpl = env
@@ -48,6 +76,14 @@ pub fn render_jinja2(
     let ctx = minijinja::Value::from_serialize(variables);
     tmpl.render(ctx)
         .map_err(|e| format!("Template render error: {}", e))
+}
+
+/// Render a Jinja2 template using minijinja with provided variables
+pub fn render_jinja2(
+    template: &str,
+    variables: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<String, String> {
+    render_jinja2_with_functions(template, variables, None)
 }
 
 #[cfg(test)]

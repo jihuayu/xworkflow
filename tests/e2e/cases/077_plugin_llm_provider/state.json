@@ -1,0 +1,5 @@
+{
+  "plugin_system": {
+    "host_normal_plugins": ["test_llm_provider"]
+  }
+}

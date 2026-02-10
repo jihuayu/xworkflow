@@ -14,8 +14,59 @@ use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::nodes::subgraph::SubGraphExecutor;
+#[cfg(not(feature = "plugin-system"))]
 use crate::plugin::PluginManager;
 use crate::llm::LlmProviderRegistry;
+#[cfg(feature = "plugin-system")]
+use crate::dsl::validation::DiagnosticLevel;
+#[cfg(feature = "plugin-system")]
+use crate::nodes::data_transform::CodeNodeExecutor;
+#[cfg(feature = "plugin-system")]
+use crate::sandbox::{SandboxManager, SandboxManagerConfig};
+#[cfg(feature = "plugin-system")]
+use crate::plugin_system::{
+  Plugin,
+  PluginCategory,
+  HookPayload,
+  HookPoint,
+  PluginLoadSource,
+  PluginRegistry,
+  PluginSystemConfig,
+};
+#[cfg(feature = "plugin-system")]
+use crate::plugin_system::loaders::{DllPluginLoader, HostPluginLoader};
+
+#[cfg(feature = "plugin-system")]
+async fn execute_registry_hooks(
+  registry: &PluginRegistry,
+  hook_point: HookPoint,
+  data: Value,
+) -> Result<(), WorkflowError> {
+  let mut handlers = registry.hooks(&hook_point);
+  if handlers.is_empty() {
+    return Ok(());
+  }
+
+  handlers.sort_by_key(|h| h.priority());
+  let payload = HookPayload {
+    hook_point,
+    data,
+    variable_pool: None,
+    event_tx: None,
+  };
+
+  for handler in handlers {
+    if let Err(err) = handler.handle(&payload).await {
+      tracing::warn!(
+        plugin_id = %handler.name(),
+        error = %err,
+        "plugin hook failed"
+      );
+    }
+  }
+
+  Ok(())
+}
 
 /// Execution status of a workflow
 #[derive(Debug, Clone)]
@@ -67,7 +118,16 @@ pub struct WorkflowRunner {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
+  #[cfg(not(feature = "plugin-system"))]
   plugin_manager: Option<Arc<PluginManager>>,
+  #[cfg(feature = "plugin-system")]
+  plugin_system_config: Option<PluginSystemConfig>,
+  #[cfg(feature = "plugin-system")]
+  host_bootstrap_plugins: Vec<Box<dyn Plugin>>,
+  #[cfg(feature = "plugin-system")]
+  host_normal_plugins: Vec<Box<dyn Plugin>>,
+  #[cfg(feature = "plugin-system")]
+  plugin_registry: Option<PluginRegistry>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
 }
 
@@ -81,7 +141,16 @@ impl WorkflowRunner {
       conversation_vars: HashMap::new(),
       config: EngineConfig::default(),
       context: RuntimeContext::default(),
+      #[cfg(not(feature = "plugin-system"))]
       plugin_manager: None,
+      #[cfg(feature = "plugin-system")]
+      plugin_system_config: None,
+      #[cfg(feature = "plugin-system")]
+      host_bootstrap_plugins: Vec::new(),
+      #[cfg(feature = "plugin-system")]
+      host_normal_plugins: Vec::new(),
+      #[cfg(feature = "plugin-system")]
+      plugin_registry: None,
       llm_provider_registry: None,
       debug_config: None,
     }
@@ -153,7 +222,16 @@ pub struct WorkflowRunnerBuilder {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
+  #[cfg(not(feature = "plugin-system"))]
   plugin_manager: Option<Arc<PluginManager>>,
+  #[cfg(feature = "plugin-system")]
+  plugin_system_config: Option<PluginSystemConfig>,
+  #[cfg(feature = "plugin-system")]
+  host_bootstrap_plugins: Vec<Box<dyn Plugin>>,
+  #[cfg(feature = "plugin-system")]
+  host_normal_plugins: Vec<Box<dyn Plugin>>,
+  #[cfg(feature = "plugin-system")]
+  plugin_registry: Option<PluginRegistry>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
   debug_config: Option<DebugConfig>,
 }
@@ -189,8 +267,29 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  #[cfg(not(feature = "plugin-system"))]
   pub fn plugin_manager(mut self, plugin_manager: Arc<PluginManager>) -> Self {
     self.plugin_manager = Some(plugin_manager);
+    self
+  }
+
+  #[cfg(feature = "plugin-system")]
+  pub fn plugin_config(mut self, config: PluginSystemConfig) -> Self {
+    self.plugin_system_config = Some(config);
+    self
+  }
+
+  #[cfg(feature = "plugin-system")]
+  pub fn bootstrap_plugin(mut self, plugin: Box<dyn Plugin>) -> Self {
+    assert_eq!(plugin.metadata().category, PluginCategory::Bootstrap);
+    self.host_bootstrap_plugins.push(plugin);
+    self
+  }
+
+  #[cfg(feature = "plugin-system")]
+  pub fn plugin(mut self, plugin: Box<dyn Plugin>) -> Self {
+    assert_eq!(plugin.metadata().category, PluginCategory::Normal);
+    self.host_normal_plugins.push(plugin);
     self
   }
 
@@ -204,32 +303,141 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  #[cfg(feature = "plugin-system")]
+  async fn init_plugins(&mut self) -> Result<(), crate::plugin_system::PluginError> {
+    let mut registry = PluginRegistry::new();
+    registry.register_loader(Arc::new(DllPluginLoader::new()));
+    registry.register_loader(Arc::new(HostPluginLoader));
+
+    let bootstrap_sources = self.collect_bootstrap_sources();
+    let bootstrap_plugins = std::mem::take(&mut self.host_bootstrap_plugins);
+    registry
+      .run_bootstrap_phase(bootstrap_sources, bootstrap_plugins)
+      .await?;
+
+    let normal_sources = self.collect_normal_sources();
+    let normal_plugins = std::mem::take(&mut self.host_normal_plugins);
+    registry
+      .run_normal_phase(normal_sources, normal_plugins)
+      .await?;
+
+    self.plugin_registry = Some(registry);
+    Ok(())
+  }
+
+  #[cfg(feature = "plugin-system")]
+  fn collect_bootstrap_sources(&self) -> Vec<PluginLoadSource> {
+    let mut sources = Vec::new();
+    if let Some(config) = &self.plugin_system_config {
+      for path in &config.bootstrap_dll_paths {
+        sources.push(PluginLoadSource {
+          loader_type: "dll".into(),
+          params: [("path".into(), path.to_string_lossy().into_owned())]
+            .into_iter()
+            .collect(),
+        });
+      }
+    }
+    sources
+  }
+
+  #[cfg(feature = "plugin-system")]
+  fn collect_normal_sources(&self) -> Vec<PluginLoadSource> {
+    let mut sources = Vec::new();
+    if let Some(config) = &self.plugin_system_config {
+      for path in &config.normal_dll_paths {
+        sources.push(PluginLoadSource {
+          loader_type: "dll".into(),
+          params: [("path".into(), path.to_string_lossy().into_owned())]
+            .into_iter()
+            .collect(),
+        });
+      }
+      sources.extend(config.normal_load_sources.clone());
+    }
+    sources
+  }
+
   pub fn validate(&self) -> ValidationReport {
     validate_schema(&self.schema)
   }
 
+  #[allow(unused_mut)]
   pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
-    let report = validate_schema(&self.schema);
+    let mut builder = self;
+    let mut report = validate_schema(&builder.schema);
     if !report.is_valid {
       return Err(WorkflowError::ValidationFailed(report));
     }
-    let graph = build_graph(&self.schema)?;
+
+    #[cfg(feature = "plugin-system")]
+    {
+      let should_init = builder.plugin_system_config.is_some()
+        || !builder.host_bootstrap_plugins.is_empty()
+        || !builder.host_normal_plugins.is_empty();
+      if should_init {
+        builder
+          .init_plugins()
+          .await
+          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+        if let Some(reg) = &builder.plugin_registry {
+          let plugin_ids = reg
+            .plugin_metadata()
+            .into_iter()
+            .map(|meta| meta.id)
+            .collect::<Vec<_>>();
+          let payload = serde_json::json!({
+            "event": "after_plugin_loaded",
+            "plugins": plugin_ids,
+          });
+          execute_registry_hooks(reg, HookPoint::AfterPluginLoaded, payload).await?;
+        }
+        if let Some(reg) = &builder.plugin_registry {
+          let mut extra = Vec::new();
+          for validator in reg.dsl_validators() {
+            extra.extend(validator.validate(&builder.schema));
+          }
+          if !extra.is_empty() {
+            report.diagnostics.extend(extra);
+            report.is_valid = report
+              .diagnostics
+              .iter()
+              .all(|d| d.level != DiagnosticLevel::Error);
+          }
+        }
+      }
+    }
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = &builder.plugin_registry {
+      let payload = serde_json::json!({
+        "event": "after_dsl_validation",
+        "report": &report,
+      });
+      execute_registry_hooks(reg, HookPoint::AfterDslValidation, payload).await?;
+    }
+
+    if !report.is_valid {
+      return Err(WorkflowError::ValidationFailed(report));
+    }
+
+    let graph = build_graph(&builder.schema)?;
 
     // Build variable pool
     let mut pool = VariablePool::new();
 
     // Set system variables
-    for (k, v) in &self.system_vars {
+    for (k, v) in &builder.system_vars {
       pool.set(&["sys".to_string(), k.clone()], Segment::from_value(v));
     }
 
     // Set environment variables
-    for (k, v) in &self.environment_vars {
+    for (k, v) in &builder.environment_vars {
       pool.set(&["env".to_string(), k.clone()], Segment::from_value(v));
     }
 
     // Set conversation variables
-    for (k, v) in &self.conversation_vars {
+    for (k, v) in &builder.conversation_vars {
       pool.set(
         &["conversation".to_string(), k.clone()],
         Segment::from_value(v),
@@ -238,24 +446,71 @@ impl WorkflowRunnerBuilder {
 
     // Set user inputs mapped to start node
     let start_node_id = graph.root_node_id.clone();
-    for (k, v) in &self.user_inputs {
+    for (k, v) in &builder.user_inputs {
       pool.set(
         &[start_node_id.clone(), k.clone()],
         Segment::from_value(v),
       );
     }
 
-    let mut registry = if let Some(pm) = &self.plugin_manager {
+    #[cfg(not(feature = "plugin-system"))]
+    let mut registry = if let Some(pm) = &builder.plugin_manager {
       NodeExecutorRegistry::new_with_plugins(pm.clone())
     } else {
       NodeExecutorRegistry::new()
     };
-    if let Some(llm_reg) = &self.llm_provider_registry {
-      registry.set_llm_provider_registry(llm_reg.clone());
+
+    #[cfg(feature = "plugin-system")]
+    let mut registry = NodeExecutorRegistry::new();
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = builder.plugin_registry.as_mut() {
+      registry.apply_plugin_executors(reg.take_node_executors());
     }
+
+    let mut llm_registry = if let Some(llm_reg) = &builder.llm_provider_registry {
+      llm_reg.clone_registry()
+    } else {
+      LlmProviderRegistry::new()
+    };
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = &builder.plugin_registry {
+      llm_registry.apply_plugin_providers(reg.llm_providers());
+    }
+
+    let llm_registry = Arc::new(llm_registry);
+    registry.set_llm_provider_registry(llm_registry);
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = &builder.plugin_registry {
+      let mut sandbox_manager = SandboxManager::new(SandboxManagerConfig::default());
+      sandbox_manager.apply_plugin_sandboxes(reg.sandboxes());
+      registry.register(
+        "code",
+        Box::new(CodeNodeExecutor::new_with_manager(Arc::new(sandbox_manager))),
+      );
+    }
+
     let (tx, mut rx) = mpsc::channel(256);
-    let config = self.config;
-    let context = Arc::new(self.context.with_event_tx(tx.clone()));
+    let config = builder.config;
+
+    #[cfg(feature = "plugin-system")]
+    {
+      if let Some(reg) = &builder.plugin_registry {
+        if let Some(tp) = reg.custom_time_provider() {
+          builder.context.time_provider = tp;
+        }
+        if let Some(id_gen) = reg.custom_id_generator() {
+          builder.context.id_generator = id_gen;
+        }
+        if !reg.template_functions().is_empty() {
+          builder.context.template_functions = Some(Arc::new(reg.template_functions().clone()));
+        }
+      }
+    }
+
+    let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
     let status = Arc::new(Mutex::new(ExecutionStatus::Running));
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -271,8 +526,11 @@ impl WorkflowRunnerBuilder {
 
     // Spawn workflow execution
     let status_exec = status.clone();
-    let plugin_manager = self.plugin_manager.clone();
-    let schema = self.schema.clone();
+    #[cfg(not(feature = "plugin-system"))]
+    let plugin_manager = builder.plugin_manager.clone();
+    #[cfg(feature = "plugin-system")]
+    let plugin_registry = builder.plugin_registry.map(Arc::new);
+    let schema = builder.schema.clone();
     tokio::spawn(async move {
       let mut dispatcher = WorkflowDispatcher::new(
         graph,
@@ -281,7 +539,10 @@ impl WorkflowRunnerBuilder {
         tx.clone(),
         config,
         context.clone(),
+        #[cfg(not(feature = "plugin-system"))]
         plugin_manager,
+        #[cfg(feature = "plugin-system")]
+        plugin_registry,
       );
       match dispatcher.run().await {
         Ok(outputs) => {
@@ -352,25 +613,79 @@ impl WorkflowRunnerBuilder {
     Ok(WorkflowHandle { status, events })
   }
 
+  #[allow(unused_mut)]
   pub async fn run_debug(self) -> Result<(WorkflowHandle, DebugHandle), WorkflowError> {
-    let debug_config = self.debug_config.clone().unwrap_or_default();
-    let report = validate_schema(&self.schema);
+    let mut builder = self;
+    let debug_config = builder.debug_config.clone().unwrap_or_default();
+    let mut report = validate_schema(&builder.schema);
     if !report.is_valid {
       return Err(WorkflowError::ValidationFailed(report));
     }
-    let graph = build_graph(&self.schema)?;
+
+    #[cfg(feature = "plugin-system")]
+    {
+      let should_init = builder.plugin_system_config.is_some()
+        || !builder.host_bootstrap_plugins.is_empty()
+        || !builder.host_normal_plugins.is_empty();
+      if should_init {
+        builder
+          .init_plugins()
+          .await
+          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
+        if let Some(reg) = &builder.plugin_registry {
+          let plugin_ids = reg
+            .plugin_metadata()
+            .into_iter()
+            .map(|meta| meta.id)
+            .collect::<Vec<_>>();
+          let payload = serde_json::json!({
+            "event": "after_plugin_loaded",
+            "plugins": plugin_ids,
+          });
+          execute_registry_hooks(reg, HookPoint::AfterPluginLoaded, payload).await?;
+        }
+        if let Some(reg) = &builder.plugin_registry {
+          let mut extra = Vec::new();
+          for validator in reg.dsl_validators() {
+            extra.extend(validator.validate(&builder.schema));
+          }
+          if !extra.is_empty() {
+            report.diagnostics.extend(extra);
+            report.is_valid = report
+              .diagnostics
+              .iter()
+              .all(|d| d.level != DiagnosticLevel::Error);
+          }
+        }
+      }
+    }
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = &builder.plugin_registry {
+      let payload = serde_json::json!({
+        "event": "after_dsl_validation",
+        "report": &report,
+      });
+      execute_registry_hooks(reg, HookPoint::AfterDslValidation, payload).await?;
+    }
+
+    if !report.is_valid {
+      return Err(WorkflowError::ValidationFailed(report));
+    }
+
+    let graph = build_graph(&builder.schema)?;
 
     let mut pool = VariablePool::new();
 
-    for (k, v) in &self.system_vars {
+    for (k, v) in &builder.system_vars {
       pool.set(&["sys".to_string(), k.clone()], Segment::from_value(v));
     }
 
-    for (k, v) in &self.environment_vars {
+    for (k, v) in &builder.environment_vars {
       pool.set(&["env".to_string(), k.clone()], Segment::from_value(v));
     }
 
-    for (k, v) in &self.conversation_vars {
+    for (k, v) in &builder.conversation_vars {
       pool.set(
         &["conversation".to_string(), k.clone()],
         Segment::from_value(v),
@@ -378,20 +693,50 @@ impl WorkflowRunnerBuilder {
     }
 
     let start_node_id = graph.root_node_id.clone();
-    for (k, v) in &self.user_inputs {
+    for (k, v) in &builder.user_inputs {
       pool.set(
         &[start_node_id.clone(), k.clone()],
         Segment::from_value(v),
       );
     }
 
-    let mut registry = if let Some(pm) = &self.plugin_manager {
+    #[cfg(not(feature = "plugin-system"))]
+    let mut registry = if let Some(pm) = &builder.plugin_manager {
       NodeExecutorRegistry::new_with_plugins(pm.clone())
     } else {
       NodeExecutorRegistry::new()
     };
-    if let Some(llm_reg) = &self.llm_provider_registry {
-      registry.set_llm_provider_registry(llm_reg.clone());
+
+    #[cfg(feature = "plugin-system")]
+    let mut registry = NodeExecutorRegistry::new();
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = builder.plugin_registry.as_mut() {
+      registry.apply_plugin_executors(reg.take_node_executors());
+    }
+
+    let mut llm_registry = if let Some(llm_reg) = &builder.llm_provider_registry {
+      llm_reg.clone_registry()
+    } else {
+      LlmProviderRegistry::new()
+    };
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = &builder.plugin_registry {
+      llm_registry.apply_plugin_providers(reg.llm_providers());
+    }
+
+    let llm_registry = Arc::new(llm_registry);
+    registry.set_llm_provider_registry(llm_registry);
+
+    #[cfg(feature = "plugin-system")]
+    if let Some(reg) = &builder.plugin_registry {
+      let mut sandbox_manager = SandboxManager::new(SandboxManagerConfig::default());
+      sandbox_manager.apply_plugin_sandboxes(reg.sandboxes());
+      registry.register(
+        "code",
+        Box::new(CodeNodeExecutor::new_with_manager(Arc::new(sandbox_manager))),
+      );
     }
 
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
@@ -419,8 +764,24 @@ impl WorkflowRunnerBuilder {
     };
 
     let (tx, mut rx) = mpsc::channel(256);
-    let config = self.config;
-    let context = Arc::new(self.context.with_event_tx(tx.clone()));
+    let config = builder.config;
+
+    #[cfg(feature = "plugin-system")]
+    {
+      if let Some(reg) = &builder.plugin_registry {
+        if let Some(tp) = reg.custom_time_provider() {
+          builder.context.time_provider = tp;
+        }
+        if let Some(id_gen) = reg.custom_id_generator() {
+          builder.context.id_generator = id_gen;
+        }
+        if !reg.template_functions().is_empty() {
+          builder.context.template_functions = Some(Arc::new(reg.template_functions().clone()));
+        }
+      }
+    }
+
+    let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
     let status = Arc::new(Mutex::new(ExecutionStatus::Running));
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -433,8 +794,11 @@ impl WorkflowRunnerBuilder {
     });
 
     let status_exec = status.clone();
-    let plugin_manager = self.plugin_manager.clone();
-    let schema = self.schema.clone();
+    #[cfg(not(feature = "plugin-system"))]
+    let plugin_manager = builder.plugin_manager.clone();
+    #[cfg(feature = "plugin-system")]
+    let plugin_registry = builder.plugin_registry.map(Arc::new);
+    let schema = builder.schema.clone();
     let mut hook = hook;
     hook.graph_event_tx = Some(tx.clone());
 
@@ -446,7 +810,10 @@ impl WorkflowRunnerBuilder {
         tx.clone(),
         config,
         context.clone(),
+        #[cfg(not(feature = "plugin-system"))]
         plugin_manager,
+        #[cfg(feature = "plugin-system")]
+        plugin_registry,
         gate,
         hook,
       );

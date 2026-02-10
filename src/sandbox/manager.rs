@@ -69,6 +69,16 @@ impl SandboxManager {
         self.sandboxes.insert(language, sandbox);
     }
 
+    #[cfg(feature = "plugin-system")]
+    pub fn apply_plugin_sandboxes(
+        &mut self,
+        sandboxes: &[(CodeLanguage, Arc<dyn CodeSandbox>)],
+    ) {
+        for (language, sandbox) in sandboxes {
+            self.register_sandbox(*language, sandbox.clone());
+        }
+    }
+
     /// Execute code (automatically select the appropriate sandbox)
     pub async fn execute(
         &self,

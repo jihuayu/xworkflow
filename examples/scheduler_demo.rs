@@ -2,7 +2,7 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::scheduler::{ExecutionStatus, WorkflowRunner};
+use xworkflow::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner};
 
 #[tokio::main]
 async fn main() {
@@ -45,7 +45,7 @@ edges:
     let mut sys = HashMap::new();
     sys.insert("query".into(), json!("Hello from scheduler!"));
 
-    let handle = WorkflowRunner::builder(schema)
+    let handle: WorkflowHandle = WorkflowRunner::builder(schema)
       .user_inputs(inputs)
       .system_vars(sys)
       .run()
@@ -111,7 +111,7 @@ edges:
     let mut inputs2 = HashMap::new();
     inputs2.insert("n".into(), json!(10));
 
-    let handle2 = WorkflowRunner::builder(schema2)
+    let handle2: WorkflowHandle = WorkflowRunner::builder(schema2)
       .user_inputs(inputs2)
       .run()
       .await

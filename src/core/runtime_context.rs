@@ -11,6 +11,8 @@ pub struct RuntimeContext {
     pub time_provider: Arc<dyn TimeProvider>,
     pub id_generator: Arc<dyn IdGenerator>,
     pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
+    #[cfg(feature = "plugin-system")]
+    pub template_functions: Option<Arc<std::collections::HashMap<String, Arc<dyn crate::plugin_system::TemplateFunction>>>>,
 }
 
 impl Default for RuntimeContext {
@@ -19,6 +21,8 @@ impl Default for RuntimeContext {
             time_provider: Arc::new(RealTimeProvider::default()),
             id_generator: Arc::new(RealIdGenerator::default()),
             event_tx: None,
+            #[cfg(feature = "plugin-system")]
+            template_functions: None,
         }
     }
 }

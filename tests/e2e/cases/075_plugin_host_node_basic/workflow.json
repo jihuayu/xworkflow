@@ -1,0 +1,31 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": { "type": "start", "title": "Start" }
+    },
+    {
+      "id": "custom1",
+      "data": {
+        "type": "plugin.test.echo",
+        "title": "Custom Node",
+        "message": "hello"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["custom1", "result"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "custom1" },
+    { "source": "custom1", "target": "end" }
+  ]
+}
