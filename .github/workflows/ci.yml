@@ -63,14 +63,24 @@ jobs:
         run: |
           echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if grep -q "change:" bench_output.txt; then
+          if grep -q "change:.*< " bench_output.txt; then
             echo "### Performance Changes (vs baseline)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -B 2 -A 1 "change:" bench_output.txt >> $GITHUB_STEP_SUMMARY
+            grep -B 2 -A 1 "change:.*< " bench_output.txt | grep -v "^--$" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
+          elif grep -q "change:" bench_output.txt; then
+            echo "> All changes within noise threshold (not statistically significant)." >> $GITHUB_STEP_SUMMARY
           else
             echo "> No baseline found. This run establishes the initial baseline." >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if grep -q "^Found.*outlier" bench_output.txt; then
+            echo "### Outliers" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            awk '/time:/ {bench=$0} /^Found.*outlier/ {print bench; found=1} found && /^Found|^  / {print} found && !/^Found/ && !/^  / {found=0; print ""}' bench_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Full Output" >> $GITHUB_STEP_SUMMARY
