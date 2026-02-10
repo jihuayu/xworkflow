@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
@@ -19,6 +20,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-build
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Run tests
         run: cargo test --no-fail-fast --workspace
@@ -32,6 +36,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-build
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Restore benchmark baseline
         uses: actions/cache/restore@v4
@@ -60,7 +67,7 @@ jobs:
             echo "### Performance Changes (vs baseline)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -B 2 "change:" bench_output.txt >> $GITHUB_STEP_SUMMARY
+            grep -B 2 -A 1 "change:" bench_output.txt >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "> No baseline found. This run establishes the initial baseline." >> $GITHUB_STEP_SUMMARY
