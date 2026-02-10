@@ -2,6 +2,7 @@
 name = "xworkflow"
 version = "0.1.0"
 edition = "2021"
+autobenches = false
 
 [lib]
 name = "xworkflow"
@@ -108,49 +109,17 @@ members = [
 ]
 
 [[bench]]
-name = "bench_micro_variable_pool"
+name = "bench_dispatch"
 harness = false
 
 [[bench]]
-name = "bench_micro_template"
+name = "bench_scalability"
 harness = false
 
 [[bench]]
-name = "bench_micro_condition"
+name = "bench_components"
 harness = false
 
 [[bench]]
-name = "bench_micro_dsl"
-harness = false
-
-[[bench]]
-name = "bench_micro_segment"
-harness = false
-
-[[bench]]
-name = "bench_meso_dispatcher"
-harness = false
-
-[[bench]]
-name = "bench_meso_sandbox_js"
-harness = false
-
-[[bench]]
-name = "bench_meso_sandbox_wasm"
-harness = false
-
-[[bench]]
-name = "bench_meso_node_executors"
-harness = false
-
-[[bench]]
-name = "bench_macro_topology"
-harness = false
-
-[[bench]]
-name = "bench_macro_scalability"
-harness = false
-
-[[bench]]
-name = "bench_macro_iteration"
+name = "bench_data_ops"
 harness = false

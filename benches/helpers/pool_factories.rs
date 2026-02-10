@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use xworkflow::core::variable_pool::{Segment, VariablePool};

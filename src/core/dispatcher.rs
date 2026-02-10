@@ -144,6 +144,38 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
         }
     }
 
+  pub fn new_with_registry(
+        graph: Graph,
+        variable_pool: VariablePool,
+        registry: Arc<NodeExecutorRegistry>,
+      event_emitter: EventEmitter,
+        config: EngineConfig,
+        context: Arc<RuntimeContext>,
+      #[cfg(not(feature = "plugin-system"))]
+      plugin_manager: Option<Arc<PluginManager>>,
+      #[cfg(feature = "plugin-system")]
+      plugin_registry: Option<Arc<PluginRegistry>>,
+    ) -> Self {
+        WorkflowDispatcher {
+            graph: Arc::new(RwLock::new(graph)),
+            variable_pool: Arc::new(RwLock::new(variable_pool)),
+            registry,
+            event_emitter,
+            config,
+            exceptions_count: 0,
+            final_outputs: HashMap::new(),
+            context,
+          #[cfg(feature = "plugin-system")]
+            pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
+        #[cfg(not(feature = "plugin-system"))]
+        plugin_manager,
+        #[cfg(feature = "plugin-system")]
+        plugin_registry,
+      debug_gate: NoopGate,
+      debug_hook: NoopHook,
+        }
+    }
+
   }
 
 

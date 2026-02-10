@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::fmt::Write;
 
 pub fn build_linear_workflow(node_count: usize, node_type: &str) -> String {
