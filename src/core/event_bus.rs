@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::dsl::schema::NodeRunResult;
+use crate::core::variable_pool::Selector;
 
 /// Reason for pause
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +66,7 @@ pub enum GraphEngineEvent {
         node_id: String,
         node_type: String,
         chunk: String,
-        selector: Vec<String>,
+        selector: Selector,
         is_final: bool,
     },
     NodeRunRetry {
@@ -201,7 +202,7 @@ impl GraphEngineEvent {
             }),
             GraphEngineEvent::NodeRunSucceeded { id, node_id, node_type, node_run_result } => serde_json::json!({
                 "type": "node_run_succeeded",
-                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs }
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs.ready() }
             }),
             GraphEngineEvent::NodeRunFailed { id, node_id, node_type, node_run_result, error } => serde_json::json!({
                 "type": "node_run_failed",
@@ -210,8 +211,8 @@ impl GraphEngineEvent {
                     "node_id": node_id,
                     "node_type": node_type,
                     "error": error,
-                    "error_type": node_run_result.error_type,
-                    "error_detail": node_run_result.error_detail,
+                    "error_type": node_run_result.error.as_ref().and_then(|e| e.error_type.clone()),
+                    "error_detail": node_run_result.error.as_ref().and_then(|e| e.detail.clone()),
                 }
             }),
             GraphEngineEvent::NodeRunException { id, node_id, node_type, node_run_result, error } => serde_json::json!({
@@ -221,8 +222,8 @@ impl GraphEngineEvent {
                     "node_id": node_id,
                     "node_type": node_type,
                     "error": error,
-                    "error_type": node_run_result.error_type,
-                    "error_detail": node_run_result.error_detail,
+                    "error_type": node_run_result.error.as_ref().and_then(|e| e.error_type.clone()),
+                    "error_detail": node_run_result.error.as_ref().and_then(|e| e.detail.clone()),
                 }
             }),
             GraphEngineEvent::NodeRunStreamChunk { id, node_id, node_type, chunk, selector, is_final } => serde_json::json!({

@@ -4,8 +4,10 @@ use std::collections::HashMap;
 
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, SegmentStream, StreamEvent, StreamStatus, VariablePool};
+use crate::core::variable_pool::Selector;
 use crate::dsl::schema::{
-    Case, NodeRunResult, OutputVariable, StartVariable, WorkflowNodeExecutionStatus,
+    Case, EdgeHandle, NodeOutputs, NodeRunResult, OutputVariable, StartVariable,
+    WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
 use crate::evaluator::evaluate_cases;
@@ -13,6 +15,8 @@ use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
 // render_template_async no longer used in this module
 use regex::Regex;
+#[cfg(feature = "security")]
+use crate::security::SecurityLevel;
 
 // ================================
 // Start Node
@@ -35,7 +39,7 @@ impl NodeExecutor for StartNodeExecutor {
         if let Some(vars_val) = config.get("variables") {
             if let Ok(vars) = serde_json::from_value::<Vec<StartVariable>>(vars_val.clone()) {
                 for var in &vars {
-                    let sel = vec![node_id.to_string(), var.variable.clone()];
+                    let sel = Selector::new(node_id, var.variable.clone());
                     let val = variable_pool.get(&sel);
                     outputs.insert(var.variable.clone(), val.to_value());
                 }
@@ -43,15 +47,15 @@ impl NodeExecutor for StartNodeExecutor {
         }
 
         // System variables
-        let sys_query = variable_pool.get(&["sys".to_string(), "query".to_string()]);
+        let sys_query = variable_pool.get(&Selector::new("sys", "query"));
         outputs.insert("sys.query".to_string(), sys_query.to_value());
-        let sys_files = variable_pool.get(&["sys".to_string(), "files".to_string()]);
+        let sys_files = variable_pool.get(&Selector::new("sys", "files"));
         outputs.insert("sys.files".to_string(), sys_files.to_value());
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -104,8 +108,8 @@ impl NodeExecutor for EndNodeExecutor {
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
             inputs,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -141,8 +145,10 @@ impl NodeExecutor for AnswerNodeExecutor {
             if !seen.insert(selector_str.to_string()) {
                 continue;
             }
-            let parts: Vec<String> = selector_str.split('.').map(|s| s.to_string()).collect();
-            let seg = variable_pool.get(&parts);
+            let Some(selector) = Selector::parse_str(selector_str) else {
+                continue;
+            };
+            let seg = variable_pool.get(&selector);
             match seg {
                 Segment::Stream(stream) => {
                     if stream.status_async().await == StreamStatus::Running {
@@ -165,8 +171,8 @@ impl NodeExecutor for AnswerNodeExecutor {
             outputs.insert("answer".to_string(), Value::String(rendered));
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
-                outputs,
-                edge_source_handle: "source".to_string(),
+                outputs: NodeOutputs::Sync(outputs),
+                edge_source_handle: EdgeHandle::Default,
                 ..Default::default()
             });
         }
@@ -231,8 +237,11 @@ impl NodeExecutor for AnswerNodeExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            stream_outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Stream {
+                ready: HashMap::new(),
+                streams: stream_outputs,
+            },
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -253,6 +262,8 @@ fn render_answer_with_map(template: &str, values: &HashMap<String, String>) -> S
 
 pub struct IfElseNodeExecutor;
 
+const ELSE_BRANCH_HANDLE: &str = "false";
+
 #[async_trait]
 impl NodeExecutor for IfElseNodeExecutor {
     async fn execute(
@@ -260,7 +271,7 @@ impl NodeExecutor for IfElseNodeExecutor {
         _node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
-        _context: &RuntimeContext,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         // Parse cases from config
         let cases: Vec<Case> = config
@@ -268,15 +279,48 @@ impl NodeExecutor for IfElseNodeExecutor {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let selected = evaluate_cases(&cases, variable_pool).await;
+        #[cfg(not(feature = "security"))]
+        let _ = context;
 
+        let selected = match evaluate_cases(&cases, variable_pool).await {
+            Ok(selected) => selected,
+            Err(mismatch) => {
+                let message = format!(
+                    "Condition type mismatch: expected {}, got {} for {:?}",
+                    mismatch.expected_type, mismatch.actual_type, mismatch.operator
+                );
+
+                #[cfg(feature = "security")]
+                let is_strict = context
+                    .security_policy()
+                    .map(|policy| policy.level == SecurityLevel::Strict)
+                    .or_else(|| {
+                        context
+                            .resource_group()
+                            .map(|group| group.security_level == SecurityLevel::Strict)
+                    })
+                    .unwrap_or(false);
+
+                #[cfg(not(feature = "security"))]
+                let is_strict = false;
+
+                if is_strict {
+                    return Err(NodeError::TypeError(message));
+                }
+
+                tracing::warn!("{}; falling back to else branch", message);
+                None
+            }
+        };
+
+        let selected_case = selected.unwrap_or_else(|| ELSE_BRANCH_HANDLE.to_string());
         let mut outputs = HashMap::new();
-        outputs.insert("selected_case".to_string(), Value::String(selected.clone()));
+        outputs.insert("selected_case".to_string(), Value::String(selected_case.clone()));
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: selected,
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Branch(selected_case),
             ..Default::default()
         })
     }
@@ -291,11 +335,11 @@ mod tests {
     async fn test_start_node() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["start1".to_string(), "query".to_string()],
+            &crate::core::variable_pool::Selector::new("start1", "query"),
             Segment::String("hello".into()),
         );
         pool.set(
-            &["sys".to_string(), "query".to_string()],
+            &crate::core::variable_pool::Selector::new("sys", "query"),
             Segment::String("sys_query".into()),
         );
 
@@ -306,15 +350,21 @@ mod tests {
         let executor = StartNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("start1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("query"), Some(&Value::String("hello".into())));
-        assert_eq!(result.outputs.get("sys.query"), Some(&Value::String("sys_query".into())));
+        assert_eq!(
+            result.outputs.ready().get("query"),
+            Some(&Value::String("hello".into()))
+        );
+        assert_eq!(
+            result.outputs.ready().get("sys.query"),
+            Some(&Value::String("sys_query".into()))
+        );
     }
 
     #[tokio::test]
     async fn test_end_node() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["node_llm".to_string(), "text".to_string()],
+            &crate::core::variable_pool::Selector::new("node_llm", "text"),
             Segment::String("result text".into()),
         );
 
@@ -325,14 +375,17 @@ mod tests {
         let executor = EndNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("end1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("result"), Some(&Value::String("result text".into())));
+        assert_eq!(
+            result.outputs.ready().get("result"),
+            Some(&Value::String("result text".into()))
+        );
     }
 
     #[tokio::test]
     async fn test_answer_node() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["n1".to_string(), "name".to_string()],
+            &crate::core::variable_pool::Selector::new("n1", "name"),
             Segment::String("Alice".into()),
         );
 
@@ -343,7 +396,10 @@ mod tests {
         let executor = AnswerNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("ans1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("answer"), Some(&Value::String("Hello Alice!".into())));
+        assert_eq!(
+            result.outputs.ready().get("answer"),
+            Some(&Value::String("Hello Alice!".into()))
+        );
     }
 
     #[tokio::test]
@@ -351,7 +407,7 @@ mod tests {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut pool = VariablePool::new();
         pool.set(
-            &["n1".to_string(), "name".to_string()],
+            &crate::core::variable_pool::Selector::new("n1", "name"),
             Segment::Stream(stream),
         );
 
@@ -367,7 +423,11 @@ mod tests {
         let executor = AnswerNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("ans_stream", &config, &pool, &context).await.unwrap();
-        let stream = result.stream_outputs.get("answer").cloned().expect("missing answer stream");
+        let stream = result
+            .outputs
+            .streams()
+            .and_then(|streams| streams.get("answer").cloned())
+            .expect("missing answer stream");
         let final_seg = stream.collect().await.unwrap_or(Segment::None);
         assert_eq!(final_seg.to_display_string(), "Hello Bob!");
     }
@@ -376,7 +436,7 @@ mod tests {
     async fn test_ifelse_true_branch() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["n".to_string(), "x".to_string()],
+            &crate::core::variable_pool::Selector::new("n", "x"),
             Segment::Integer(10),
         );
 
@@ -395,14 +455,17 @@ mod tests {
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.edge_source_handle, "case1");
+        assert_eq!(
+            result.edge_source_handle,
+            EdgeHandle::Branch("case1".to_string())
+        );
     }
 
     #[tokio::test]
     async fn test_ifelse_else_branch() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["n".to_string(), "x".to_string()],
+            &crate::core::variable_pool::Selector::new("n", "x"),
             Segment::Integer(3),
         );
 
@@ -421,14 +484,17 @@ mod tests {
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.edge_source_handle, "false");
+        assert_eq!(
+            result.edge_source_handle,
+            EdgeHandle::Branch("false".to_string())
+        );
     }
 
     #[tokio::test]
     async fn test_ifelse_multi_case() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["n".to_string(), "x".to_string()],
+            &crate::core::variable_pool::Selector::new("n", "x"),
             Segment::Integer(15),
         );
 
@@ -458,6 +524,9 @@ mod tests {
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.edge_source_handle, "case2");
+        assert_eq!(
+            result.edge_source_handle,
+            EdgeHandle::Branch("case2".to_string())
+        );
     }
 }

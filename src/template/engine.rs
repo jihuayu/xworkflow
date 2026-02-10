@@ -1,4 +1,4 @@
-use crate::core::variable_pool::VariablePool;
+use crate::core::variable_pool::{Selector, VariablePool};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -15,32 +15,112 @@ static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Render a template string with `{{#node_id.var_name#}}` variable references.
 /// This is the Dify Answer node template syntax.
 pub fn render_template(template: &str, pool: &VariablePool) -> String {
-    TEMPLATE_RE.replace_all(template, |caps: &regex::Captures| {
-        let selector_str = &caps[1]; // e.g. "node_abc.text"
-        let parts: Vec<String> = selector_str.split('.').map(|s| s.to_string()).collect();
-        let val = pool.get(&parts);
-        val.to_display_string()
-    })
-    .into_owned()
+    render_template_with_config(template, pool, false).unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+pub struct TemplateRenderError {
+    pub selector: String,
+}
+
+impl std::fmt::Display for TemplateRenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "missing template variable: {}", self.selector)
+    }
+}
+
+impl std::error::Error for TemplateRenderError {}
+
+pub fn render_template_with_config(
+    template: &str,
+    pool: &VariablePool,
+    strict: bool,
+) -> Result<String, TemplateRenderError> {
+    let mut missing: Vec<String> = Vec::new();
+    let rendered = TEMPLATE_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let selector_str = &caps[1]; // e.g. "node_abc.text"
+            if let Some(selector) = Selector::parse_str(selector_str) {
+                if strict && !pool.has(&selector) {
+                    missing.push(selector_str.to_string());
+                    return String::new();
+                }
+                if !strict && !pool.has(&selector) {
+                    missing.push(selector_str.to_string());
+                }
+                let val = pool.get(&selector);
+                val.to_display_string()
+            } else {
+                missing.push(selector_str.to_string());
+                String::new()
+            }
+        })
+        .into_owned();
+
+    if !missing.is_empty() {
+        if strict {
+            return Err(TemplateRenderError {
+                selector: missing[0].clone(),
+            });
+        }
+        tracing::warn!(
+            missing = ?missing,
+            "template variable(s) missing"
+        );
+    }
+    Ok(rendered)
 }
 
 /// Async render template with stream resolution.
 pub async fn render_template_async(template: &str, pool: &VariablePool) -> String {
+    render_template_async_with_config(template, pool, false)
+        .await
+        .unwrap_or_default()
+}
+
+pub async fn render_template_async_with_config(
+    template: &str,
+    pool: &VariablePool,
+    strict: bool,
+) -> Result<String, TemplateRenderError> {
     let mut result = String::new();
     let mut last_index = 0;
+    let mut missing: Vec<String> = Vec::new();
 
     for caps in TEMPLATE_RE.captures_iter(template) {
         let mat = caps.get(0).unwrap();
         result.push_str(&template[last_index..mat.start()]);
         let selector_str = &caps[1];
-        let parts: Vec<String> = selector_str.split('.').map(|s| s.to_string()).collect();
-        let val = pool.get_resolved(&parts).await;
-        result.push_str(&val.to_display_string());
+        if let Some(selector) = Selector::parse_str(selector_str) {
+            if !pool.has(&selector) {
+                missing.push(selector_str.to_string());
+                if strict {
+                    return Err(TemplateRenderError {
+                        selector: selector_str.to_string(),
+                    });
+                }
+            }
+            let val = pool.get_resolved(&selector).await;
+            result.push_str(&val.to_display_string());
+        } else {
+            missing.push(selector_str.to_string());
+            if strict {
+                return Err(TemplateRenderError {
+                    selector: selector_str.to_string(),
+                });
+            }
+        }
         last_index = mat.end();
     }
 
     result.push_str(&template[last_index..]);
-    result
+    if !missing.is_empty() {
+        tracing::warn!(
+            missing = ?missing,
+            "template variable(s) missing"
+        );
+    }
+    Ok(result)
 }
 
 type TemplateFunctionMap = HashMap<String, Arc<dyn TemplateFunction>>;
@@ -184,13 +264,13 @@ pub fn render_jinja2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::variable_pool::Segment;
+    use crate::core::variable_pool::{Segment, Selector};
 
     #[test]
     fn test_render_template_basic() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["node1".to_string(), "name".to_string()],
+            &Selector::new("node1", "name"),
             Segment::String("Alice".to_string()),
         );
         let result = render_template("Hello {{#node1.name#}}!", &pool);
@@ -201,11 +281,11 @@ mod tests {
     fn test_render_template_multiple() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["n1".to_string(), "a".to_string()],
+            &Selector::new("n1", "a"),
             Segment::String("X".to_string()),
         );
         pool.set(
-            &["n2".to_string(), "b".to_string()],
+            &Selector::new("n2", "b"),
             Segment::Integer(42),
         );
         let result = render_template("{{#n1.a#}} and {{#n2.b#}}", &pool);
@@ -223,7 +303,7 @@ mod tests {
     fn test_render_template_sys() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["sys".to_string(), "query".to_string()],
+            &Selector::new("sys", "query"),
             Segment::String("test".to_string()),
         );
         let result = render_template("Q: {{#sys.query#}}", &pool);
@@ -235,7 +315,7 @@ mod tests {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut pool = VariablePool::new();
         pool.set(
-            &["n1".to_string(), "text".to_string()],
+            &Selector::new("n1", "text"),
             Segment::Stream(stream),
         );
 

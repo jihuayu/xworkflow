@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::core::event_bus::GraphEngineEvent;
 use crate::nodes::executor::NodeExecutorRegistry;
+use crate::core::sub_graph_runner::SubGraphRunner;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Runtime context providing time and ID generation
@@ -11,20 +12,28 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub struct RuntimeContext {
     pub time_provider: Arc<dyn TimeProvider>,
     pub id_generator: Arc<dyn IdGenerator>,
+    pub extensions: RuntimeExtensions,
+}
+
+#[derive(Clone, Default)]
+pub struct RuntimeExtensions {
     pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
-    pub sub_graph_runner: Option<Arc<dyn crate::core::sub_graph_runner::SubGraphRunner>>,
+    pub sub_graph_runner: Option<Arc<dyn SubGraphRunner>>,
     pub node_executor_registry: Option<Arc<NodeExecutorRegistry>>,
+    pub strict_template: bool,
     #[cfg(feature = "plugin-system")]
     pub template_functions: Option<Arc<std::collections::HashMap<String, Arc<dyn crate::plugin_system::TemplateFunction>>>>,
     #[cfg(feature = "security")]
+    pub security: Option<SecurityContext>,
+}
+
+#[cfg(feature = "security")]
+#[derive(Clone)]
+pub struct SecurityContext {
     pub resource_group: Option<crate::security::ResourceGroup>,
-    #[cfg(feature = "security")]
     pub security_policy: Option<crate::security::SecurityPolicy>,
-    #[cfg(feature = "security")]
     pub resource_governor: Option<Arc<dyn crate::security::ResourceGovernor>>,
-    #[cfg(feature = "security")]
     pub credential_provider: Option<Arc<dyn crate::security::CredentialProvider>>,
-    #[cfg(feature = "security")]
     pub audit_logger: Option<Arc<dyn crate::security::AuditLogger>>,
 }
 
@@ -33,28 +42,14 @@ impl Default for RuntimeContext {
         Self {
             time_provider: Arc::new(RealTimeProvider::default()),
             id_generator: Arc::new(RealIdGenerator::default()),
-            event_tx: None,
-            sub_graph_runner: None,
-            node_executor_registry: None,
-            #[cfg(feature = "plugin-system")]
-            template_functions: None,
-            #[cfg(feature = "security")]
-            resource_group: None,
-            #[cfg(feature = "security")]
-            security_policy: None,
-            #[cfg(feature = "security")]
-            resource_governor: None,
-            #[cfg(feature = "security")]
-            credential_provider: None,
-            #[cfg(feature = "security")]
-            audit_logger: None,
+            extensions: RuntimeExtensions::default(),
         }
     }
 }
 
 impl RuntimeContext {
     pub fn with_event_tx(mut self, event_tx: mpsc::Sender<GraphEngineEvent>) -> Self {
-        self.event_tx = Some(event_tx);
+        self.extensions.event_tx = Some(event_tx);
         self
     }
 
@@ -62,8 +57,81 @@ impl RuntimeContext {
         mut self,
         registry: Arc<NodeExecutorRegistry>,
     ) -> Self {
-        self.node_executor_registry = Some(registry);
+        self.extensions.node_executor_registry = Some(registry);
         self
+    }
+
+    pub fn event_tx(&self) -> Option<&mpsc::Sender<GraphEngineEvent>> {
+        self.extensions.event_tx.as_ref()
+    }
+
+    pub fn sub_graph_runner(&self) -> Option<&Arc<dyn SubGraphRunner>> {
+        self.extensions.sub_graph_runner.as_ref()
+    }
+
+    pub fn node_executor_registry(&self) -> Option<&Arc<NodeExecutorRegistry>> {
+        self.extensions.node_executor_registry.as_ref()
+    }
+
+    pub fn strict_template(&self) -> bool {
+        self.extensions.strict_template
+    }
+
+    #[cfg(feature = "plugin-system")]
+    pub fn template_functions(
+        &self,
+    ) -> Option<&Arc<std::collections::HashMap<String, Arc<dyn crate::plugin_system::TemplateFunction>>>> {
+        self.extensions.template_functions.as_ref()
+    }
+
+    #[cfg(feature = "security")]
+    pub fn security(&self) -> Option<&SecurityContext> {
+        self.extensions.security.as_ref()
+    }
+
+    #[cfg(feature = "security")]
+    pub fn security_mut(&mut self) -> Option<&mut SecurityContext> {
+        self.extensions.security.as_mut()
+    }
+
+    #[cfg(feature = "security")]
+    pub fn resource_group(&self) -> Option<&crate::security::ResourceGroup> {
+        self.extensions
+            .security
+            .as_ref()
+            .and_then(|s| s.resource_group.as_ref())
+    }
+
+    #[cfg(feature = "security")]
+    pub fn security_policy(&self) -> Option<&crate::security::SecurityPolicy> {
+        self.extensions
+            .security
+            .as_ref()
+            .and_then(|s| s.security_policy.as_ref())
+    }
+
+    #[cfg(feature = "security")]
+    pub fn resource_governor(&self) -> Option<&Arc<dyn crate::security::ResourceGovernor>> {
+        self.extensions
+            .security
+            .as_ref()
+            .and_then(|s| s.resource_governor.as_ref())
+    }
+
+    #[cfg(feature = "security")]
+    pub fn credential_provider(&self) -> Option<&Arc<dyn crate::security::CredentialProvider>> {
+        self.extensions
+            .security
+            .as_ref()
+            .and_then(|s| s.credential_provider.as_ref())
+    }
+
+    #[cfg(feature = "security")]
+    pub fn audit_logger(&self) -> Option<&Arc<dyn crate::security::AuditLogger>> {
+        self.extensions
+            .security
+            .as_ref()
+            .and_then(|s| s.audit_logger.as_ref())
     }
 }
 

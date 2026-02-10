@@ -271,21 +271,27 @@ fn validate_selector_limits(
 
 #[cfg(feature = "security")]
 fn apply_selector_limits(
-    selector: &[String],
+    selector: &crate::core::variable_pool::Selector,
     node_id: &str,
     field_path: &str,
     cfg: &SelectorValidation,
     allow_all: bool,
     diags: &mut Vec<types::Diagnostic>,
 ) {
-    if selector.len() > cfg.max_depth {
+    let depth = if selector.node_id() == crate::core::variable_pool::SCOPE_NODE_ID {
+        1
+    } else {
+        2
+    };
+
+    if depth > cfg.max_depth {
         diags.push(types::Diagnostic {
             level: types::DiagnosticLevel::Error,
             code: "E420".to_string(),
             message: format!(
                 "Selector depth exceeds max {}: {}",
                 cfg.max_depth,
-                selector.len()
+                depth
             ),
             node_id: Some(node_id.to_string()),
             edge_id: None,
@@ -293,7 +299,11 @@ fn apply_selector_limits(
         });
     }
 
-    let length = selector.join(".").len();
+    let length = if selector.node_id() == crate::core::variable_pool::SCOPE_NODE_ID {
+        selector.variable_name().len()
+    } else {
+        selector.node_id().len() + 1 + selector.variable_name().len()
+    };
     if length > cfg.max_length {
         diags.push(types::Diagnostic {
             level: types::DiagnosticLevel::Error,
@@ -310,7 +320,11 @@ fn apply_selector_limits(
     }
 
     if !cfg.allowed_prefixes.is_empty() && !allow_all {
-        let root = selector.first().map(|s| s.as_str()).unwrap_or("");
+        let root = if selector.node_id() == crate::core::variable_pool::SCOPE_NODE_ID {
+            selector.variable_name()
+        } else {
+            selector.node_id()
+        };
         if !cfg.allowed_prefixes.iter().any(|p| p == root) {
             diags.push(types::Diagnostic {
                 level: types::DiagnosticLevel::Error,

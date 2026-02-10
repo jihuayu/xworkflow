@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
-use crate::graph::types::{Graph, GraphEdge, GraphNode, NodeState};
+use crate::graph::types::{EdgeTraversalState, Graph, GraphEdge, GraphNode};
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::nodes::subgraph::{SubGraphDefinition, SubGraphError, SubGraphNode};
 use crate::nodes::utils::selector_from_str;
@@ -50,15 +50,14 @@ async fn execute_sub_graph_default(
 
     let graph = build_sub_graph(sub_graph)?;
     let registry = context
-        .node_executor_registry
-        .clone()
+        .node_executor_registry()
+        .cloned()
         .unwrap_or_else(|| Arc::new(NodeExecutorRegistry::new()));
     let (tx, _rx) = mpsc::channel(16);
     let active = Arc::new(AtomicBool::new(false));
     let emitter = EventEmitter::new(tx.clone(), active);
     let sub_context = context.clone().with_event_tx(tx.clone());
 
-    #[cfg(not(feature = "plugin-system"))]
     let mut dispatcher = WorkflowDispatcher::new_with_registry(
         graph,
         scoped_pool,
@@ -66,17 +65,7 @@ async fn execute_sub_graph_default(
         emitter,
         EngineConfig::default(),
         Arc::new(sub_context),
-        None,
-    );
-
-    #[cfg(feature = "plugin-system")]
-    let mut dispatcher = WorkflowDispatcher::new_with_registry(
-        graph,
-        scoped_pool,
-        registry,
-        emitter,
-        EngineConfig::default(),
-        Arc::new(sub_context),
+        #[cfg(feature = "plugin-system")]
         None,
     );
 
@@ -102,12 +91,6 @@ fn inject_scope_vars(
             )));
         };
 
-        if selector.len() < 2 {
-            return Err(SubGraphError::ScopeError(format!(
-                "Invalid scope selector: {}",
-                key
-            )));
-        }
         pool.set(&selector, Segment::from_value(&value));
     }
 
@@ -164,7 +147,7 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
             title: n.title.clone().unwrap_or_else(|| format!("node_{}", idx)),
             config: Value::Object(config),
             version: "1".to_string(),
-            state: NodeState::Unknown,
+            state: EdgeTraversalState::Pending,
         };
 
         if node_type == "start" {
@@ -207,7 +190,7 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
             source_node_id: e.source.clone(),
             target_node_id: e.target.clone(),
             source_handle: e.source_handle.clone(),
-            state: NodeState::Unknown,
+            state: EdgeTraversalState::Pending,
         };
 
         in_edges.entry(e.target.clone()).or_default().push(edge_id.clone());

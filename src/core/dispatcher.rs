@@ -13,14 +13,12 @@ use crate::dsl::schema::{
   RetryConfig, WorkflowNodeExecutionStatus, WriteMode,
 };
 use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
-use crate::graph::types::{Graph, NodeState};
+use crate::graph::types::{EdgeTraversalState, Graph};
 use crate::nodes::executor::NodeExecutorRegistry;
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 #[cfg(feature = "security")]
 use crate::security::governor::QuotaError;
-#[cfg(not(feature = "plugin-system"))]
-use crate::plugin::{PluginHookType, PluginManager};
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::{HookPayload, HookPoint, PluginRegistry};
 
@@ -80,6 +78,8 @@ pub enum Command {
 pub struct EngineConfig {
     pub max_steps: i32,
     pub max_execution_time_secs: u64,
+    #[serde(default)]
+    pub strict_template: bool,
 }
 
 impl Default for EngineConfig {
@@ -87,6 +87,7 @@ impl Default for EngineConfig {
         EngineConfig {
             max_steps: 500,
             max_execution_time_secs: 600,
+      strict_template: false,
         }
     }
 }
@@ -103,8 +104,6 @@ pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> 
     context: Arc<RuntimeContext>,
   #[cfg(feature = "plugin-system")]
     pool_snapshot_cache: RwLock<PoolSnapshotCache>,
-  #[cfg(not(feature = "plugin-system"))]
-  plugin_manager: Option<Arc<PluginManager>>,
   #[cfg(feature = "plugin-system")]
   plugin_registry: Option<Arc<PluginRegistry>>,
     debug_gate: G,
@@ -119,8 +118,6 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       event_emitter: EventEmitter,
         config: EngineConfig,
         context: Arc<RuntimeContext>,
-      #[cfg(not(feature = "plugin-system"))]
-      plugin_manager: Option<Arc<PluginManager>>,
       #[cfg(feature = "plugin-system")]
       plugin_registry: Option<Arc<PluginRegistry>>,
     ) -> Self {
@@ -135,8 +132,6 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             context,
           #[cfg(feature = "plugin-system")]
             pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
-        #[cfg(not(feature = "plugin-system"))]
-        plugin_manager,
         #[cfg(feature = "plugin-system")]
         plugin_registry,
       debug_gate: NoopGate,
@@ -151,8 +146,6 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       event_emitter: EventEmitter,
         config: EngineConfig,
         context: Arc<RuntimeContext>,
-      #[cfg(not(feature = "plugin-system"))]
-      plugin_manager: Option<Arc<PluginManager>>,
       #[cfg(feature = "plugin-system")]
       plugin_registry: Option<Arc<PluginRegistry>>,
     ) -> Self {
@@ -167,8 +160,6 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             context,
           #[cfg(feature = "plugin-system")]
             pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
-        #[cfg(not(feature = "plugin-system"))]
-        plugin_manager,
         #[cfg(feature = "plugin-system")]
         plugin_registry,
       debug_gate: NoopGate,
@@ -187,8 +178,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     event_emitter: EventEmitter,
     config: EngineConfig,
     context: Arc<RuntimeContext>,
-    #[cfg(not(feature = "plugin-system"))]
-    plugin_manager: Option<Arc<PluginManager>>,
     #[cfg(feature = "plugin-system")]
     plugin_registry: Option<Arc<PluginRegistry>>,
     debug_gate: G,
@@ -205,8 +194,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       context,
       #[cfg(feature = "plugin-system")]
       pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
-      #[cfg(not(feature = "plugin-system"))]
-      plugin_manager,
       #[cfg(feature = "plugin-system")]
       plugin_registry,
       debug_gate,
@@ -300,10 +287,8 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
           for (key, value) in &variables {
             let parts: Vec<&str> = key.splitn(2, '.').collect();
             if parts.len() == 2 {
-              pool.set(
-                &[parts[0].to_string(), parts[1].to_string()],
-                Segment::from_value(value),
-              );
+              let selector = crate::core::variable_pool::Selector::new(parts[0], parts[1]);
+              pool.set(&selector, Segment::from_value(value));
             }
           }
           drop(pool);
@@ -318,10 +303,10 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   async fn skip_node(&self, node_id: &str, is_branch: bool) {
     let mut g = self.graph.write().await;
     if let Some(node) = g.nodes.get_mut(node_id) {
-      node.state = NodeState::Skipped;
+      node.state = EdgeTraversalState::Skipped;
     }
     if is_branch {
-      g.process_branch_edges(node_id, "false");
+      g.process_branch_edges(node_id, &crate::dsl::schema::EdgeHandle::Branch("false".to_string()));
     } else {
       g.process_normal_edges(node_id);
     }
@@ -329,7 +314,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
   #[cfg(feature = "security")]
   fn effective_limits(&self) -> (i32, u64) {
-    if let Some(group) = &self.context.resource_group {
+    if let Some(group) = self.context.resource_group() {
       let max_steps = self.config.max_steps.min(group.quota.max_steps);
       let max_time = self
         .config
@@ -353,11 +338,11 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     severity: EventSeverity,
     node_id: Option<String>,
   ) {
-    let logger = match &self.context.audit_logger {
+    let logger = match self.context.audit_logger() {
       Some(l) => l,
       None => return,
     };
-    let group_id = match &self.context.resource_group {
+    let group_id = match self.context.resource_group() {
       Some(g) => g.group_id.clone(),
       None => return,
     };
@@ -445,10 +430,10 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     node_type: &str,
     node_config: &Value,
   ) -> Result<(), NodeError> {
-    let Some(governor) = &self.context.resource_governor else {
+    let Some(governor) = self.context.resource_governor() else {
       return Ok(());
     };
-    let Some(group) = &self.context.resource_group else {
+    let Some(group) = self.context.resource_group() else {
       return Ok(());
     };
 
@@ -495,9 +480,9 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     &self,
     node_id: &str,
     node_type: &str,
-    outputs: &HashMap<String, Value>,
+    outputs: &crate::dsl::schema::NodeOutputs,
   ) -> Result<(), NodeError> {
-    let Some(policy) = &self.context.security_policy else {
+    let Some(policy) = self.context.security_policy() else {
       return Ok(());
     };
     let Some(limits) = policy.node_limits.get(node_type) else {
@@ -505,6 +490,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     };
 
     let output_size: usize = outputs
+      .ready()
       .values()
       .map(|v| serde_json::to_vec(v).map(|b| b.len()).unwrap_or(0))
       .sum();
@@ -527,22 +513,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
         // Emit graph started
         self.event_emitter.emit(GraphEngineEvent::GraphRunStarted).await;
-
-      #[cfg(not(feature = "plugin-system"))]
-      if let Some(pm) = &self.plugin_manager {
-        let pool_snapshot = self.variable_pool.read().await.clone();
-        let payload = serde_json::json!({
-          "event": "before_workflow_run",
-        });
-        pm.execute_hooks(
-          PluginHookType::BeforeWorkflowRun,
-          &payload,
-          Arc::new(std::sync::RwLock::new(pool_snapshot)),
-          Some(self.event_emitter.tx().clone()),
-        )
-        .await
-        .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-      }
 
       #[cfg(feature = "plugin-system")]
       {
@@ -610,7 +580,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
             {
                 let g = self.graph.read().await;
                 if let Some(node) = g.get_node(&node_id) {
-                    if node.state == NodeState::Skipped {
+                    if node.state == EdgeTraversalState::Skipped {
                         continue;
                     }
                 }
@@ -652,6 +622,11 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                 .await
             {
                 let error_detail = e.to_structured_json();
+                let error_info = crate::dsl::schema::NodeErrorInfo {
+                  message: e.to_string(),
+                  error_type: Some(e.error_code()),
+                  detail: Some(error_detail.clone()),
+                };
                 if self.event_emitter.is_active() {
                   self.event_emitter
                     .emit(GraphEngineEvent::NodeRunFailed {
@@ -660,9 +635,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                       node_type: node_type.clone(),
                       node_run_result: NodeRunResult {
                         status: WorkflowNodeExecutionStatus::Failed,
-                        error: Some(e.to_string()),
-                        error_type: Some(e.error_code()),
-                        error_detail: Some(error_detail.clone()),
+                        error: Some(error_info.clone()),
                         ..Default::default()
                       },
                       error: e.to_string(),
@@ -695,26 +668,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                   predecessor_node_id: None,
                 })
                 .await;
-            }
-
-            #[cfg(not(feature = "plugin-system"))]
-            if let Some(pm) = &self.plugin_manager {
-              let pool_snapshot = self.variable_pool.read().await.clone();
-              let payload = serde_json::json!({
-                "event": "before_node_execute",
-                "node_id": node_id.clone(),
-                "node_type": node_type.clone(),
-                "node_title": node_title.clone(),
-                "config": node_config.clone(),
-              });
-              pm.execute_hooks(
-                PluginHookType::BeforeNodeExecute,
-                &payload,
-                Arc::new(std::sync::RwLock::new(pool_snapshot)),
-                Some(self.event_emitter.tx().clone()),
-              )
-              .await
-              .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
             }
 
             #[cfg(feature = "plugin-system")]
@@ -827,16 +780,19 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                       .unwrap_or_else(|| NodeError::ExecutionError("Unknown error".to_string()));
                     let error_type = last_err.error_code();
                     let error_detail = last_err.to_structured_json();
+                    let error_info = crate::dsl::schema::NodeErrorInfo {
+                      message: last_err.to_string(),
+                      error_type: Some(error_type),
+                      detail: Some(error_detail),
+                    };
 
                     match error_strategy.as_ref().map(|es| &es.strategy_type) {
                       Some(ErrorStrategyType::FailBranch) => {
                         self.exceptions_count += 1;
                         Ok(NodeRunResult {
                           status: WorkflowNodeExecutionStatus::Exception,
-                          error: Some(last_err.to_string()),
-                          error_type: Some(error_type),
-                          error_detail: Some(error_detail),
-                          edge_source_handle: "fail-branch".to_string(),
+                          error: Some(error_info),
+                          edge_source_handle: crate::dsl::schema::EdgeHandle::Branch("fail-branch".to_string()),
                           ..Default::default()
                         })
                       }
@@ -848,11 +804,9 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                           .unwrap_or_default();
                         Ok(NodeRunResult {
                           status: WorkflowNodeExecutionStatus::Exception,
-                          outputs: defaults,
-                          error: Some(last_err.to_string()),
-                          error_type: Some(error_type),
-                          error_detail: Some(error_detail),
-                          edge_source_handle: "source".to_string(),
+                          outputs: crate::dsl::schema::NodeOutputs::Sync(defaults),
+                          error: Some(error_info),
+                          edge_source_handle: crate::dsl::schema::EdgeHandle::Default,
                           ..Default::default()
                         })
                       }
@@ -897,28 +851,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
             match run_result {
                 Ok(result) => {
-                #[cfg(not(feature = "plugin-system"))]
-                if let Some(pm) = &self.plugin_manager {
-                  let pool_snapshot = self.variable_pool.read().await.clone();
-                  let payload = serde_json::json!({
-                    "event": "after_node_execute",
-                    "node_id": node_id.clone(),
-                    "node_type": node_type.clone(),
-                    "node_title": node_title.clone(),
-                    "status": format!("{:?}", result.status),
-                    "outputs": result.outputs.clone(),
-                    "error": result.error.clone(),
-                  });
-                  pm.execute_hooks(
-                    PluginHookType::AfterNodeExecute,
-                    &payload,
-                    Arc::new(std::sync::RwLock::new(pool_snapshot)),
-                    Some(self.event_emitter.tx().clone()),
-                  )
-                  .await
-                  .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-                }
-
                 #[cfg(feature = "plugin-system")]
                 {
                   let _ = self
@@ -929,8 +861,8 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                         "node_type": node_type.clone(),
                         "node_title": node_title.clone(),
                         "status": format!("{:?}", result.status),
-                        "outputs": result.outputs.clone(),
-                        "error": result.error.clone(),
+                        "outputs": result.outputs.ready().clone(),
+                        "error": result.error.as_ref().map(|e| e.message.clone()),
                       })
                     })
                     .await?;
@@ -938,52 +870,25 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
                 #[cfg(feature = "security")]
                 if let (Some(governor), Some(group), Some(usage)) = (
-                  self.context.resource_governor.as_ref(),
-                  self.context.resource_group.as_ref(),
+                  self.context.resource_governor(),
+                  self.context.resource_group(),
                   result.llm_usage.as_ref(),
                 ) {
                   governor.record_llm_usage(&group.group_id, usage).await;
                 }
 
                     // Store outputs in variable pool
-                    let mut outputs_for_write = result.outputs.clone();
-                    let stream_outputs = result.stream_outputs.clone();
-                    #[cfg(not(feature = "plugin-system"))]
-                    if let Some(pm) = &self.plugin_manager {
-                      let pool_snapshot = self.variable_pool.read().await.clone();
-                      let pool_snapshot = Arc::new(std::sync::RwLock::new(pool_snapshot));
-                      let event_tx = Some(self.event_emitter.tx().clone());
-                      for (key, value) in outputs_for_write.iter_mut() {
-                        let payload = serde_json::json!({
-                          "event": "before_variable_write",
-                          "node_id": node_id.clone(),
-                          "selector": [node_id.clone(), key.clone()],
-                          "value": value.clone(),
-                        });
-                        let results = pm
-                          .execute_hooks(
-                            PluginHookType::BeforeVariableWrite,
-                            &payload,
-                            pool_snapshot.clone(),
-                            event_tx.clone(),
-                          )
-                          .await
-                          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
-                          *value = last;
-                        }
-                      }
-                    }
-
+                    let (mut outputs_for_write, stream_outputs) = result.outputs.clone().into_parts();
                     #[cfg(feature = "plugin-system")]
-                    {
+                    if node_type != "end" && node_type != "answer" {
                       for (key, value) in outputs_for_write.iter_mut() {
+                        let selector = crate::core::variable_pool::Selector::new(node_id.clone(), key.clone());
                         let results = self
                           .execute_hooks(HookPoint::BeforeVariableWrite, || {
                             serde_json::json!({
                               "event": "before_variable_write",
                               "node_id": node_id.clone(),
-                              "selector": [node_id.clone(), key.clone()],
+                              "selector": selector,
                               "value": value.clone(),
                             })
                           })
@@ -994,43 +899,19 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                       }
                     }
 
-                    let mut assigner_meta: Option<(WriteMode, Vec<String>, Value)> = None;
+                    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Value)> = None;
                     if node_type == "assigner" {
-                      let write_mode = result.outputs.get("write_mode")
+                      let write_mode = outputs_for_write.get("write_mode")
                         .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
                         .unwrap_or(WriteMode::Overwrite);
-                      let assigned_sel: Vec<String> = result.outputs.get("assigned_variable_selector")
+                      let assigned_sel: crate::core::variable_pool::Selector = outputs_for_write
+                        .get("assigned_variable_selector")
                         .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| crate::core::variable_pool::Selector::new("__scope__", "output"));
                       let mut output_val = outputs_for_write
                         .get("output")
                         .cloned()
                         .unwrap_or(Value::Null);
-
-                      #[cfg(not(feature = "plugin-system"))]
-                      if let Some(pm) = &self.plugin_manager {
-                        let pool_snapshot = self.variable_pool.read().await.clone();
-                        let pool_snapshot = Arc::new(std::sync::RwLock::new(pool_snapshot));
-                        let event_tx = Some(self.event_emitter.tx().clone());
-                        let payload = serde_json::json!({
-                          "event": "before_variable_write",
-                          "node_id": node_id.clone(),
-                          "selector": assigned_sel.clone(),
-                          "value": output_val.clone(),
-                        });
-                        let results = pm
-                          .execute_hooks(
-                            PluginHookType::BeforeVariableWrite,
-                            &payload,
-                            pool_snapshot.clone(),
-                            event_tx.clone(),
-                          )
-                          .await
-                          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
-                          output_val = last;
-                        }
-                      }
 
                       #[cfg(feature = "plugin-system")]
                       {
@@ -1072,7 +953,8 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
                       pool.set_node_outputs(&node_id, &outputs_for_write);
                       for (key, stream) in stream_outputs {
-                        pool.set(&[node_id.clone(), key], Segment::Stream(stream));
+                        let selector = crate::core::variable_pool::Selector::new(node_id.clone(), key);
+                        pool.set(&selector, Segment::Stream(stream));
                       }
                     }
                     #[cfg(feature = "plugin-system")]
@@ -1080,7 +962,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
                     // Track final outputs for end/answer nodes
                     if node_type == "end" || node_type == "answer" {
-                      for (k, v) in &result.outputs {
+                      for (k, v) in &outputs_for_write {
                         self.final_outputs.insert(k.clone(), v.clone());
                       }
                     }
@@ -1095,7 +977,11 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                               node_id: node_id.clone(),
                               node_type: node_type.clone(),
                               node_run_result: result.clone(),
-                              error: result.error.clone().unwrap_or_default(),
+                              error: result
+                                .error
+                                .as_ref()
+                                .map(|e| e.message.clone())
+                                .unwrap_or_default(),
                             })
                             .await;
                         }
@@ -1118,7 +1004,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                     {
                         let mut g = self.graph.write().await;
                         if let Some(node) = g.nodes.get_mut(&node_id) {
-                            node.state = NodeState::Taken;
+                          node.state = EdgeTraversalState::Taken;
                         }
                     }
 
@@ -1126,7 +1012,35 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                     {
                         let mut g = self.graph.write().await;
                         if is_branch {
-                            g.process_branch_edges(&node_id, &result.edge_source_handle);
+                            match &result.edge_source_handle {
+                              crate::dsl::schema::EdgeHandle::Branch(handle) => {
+                                let valid = g
+                                  .out_edges
+                                  .get(&node_id)
+                                  .map(|eids| {
+                                    eids.iter().any(|eid| {
+                                      g.edges
+                                        .get(eid)
+                                        .and_then(|e| e.source_handle.as_deref())
+                                        == Some(handle.as_str())
+                                    })
+                                  })
+                                  .unwrap_or(false);
+                                if !valid {
+                                  return Err(WorkflowError::GraphValidationError(format!(
+                                    "Node {} returned branch handle '{}' but no matching edge found",
+                                    node_id, handle
+                                  )));
+                                }
+                                g.process_branch_edges(&node_id, &result.edge_source_handle);
+                              }
+                              crate::dsl::schema::EdgeHandle::Default => {
+                                return Err(WorkflowError::GraphValidationError(format!(
+                                  "Node {} returned default handle for branch node",
+                                  node_id
+                                )));
+                              }
+                            }
                         } else {
                             g.process_normal_edges(&node_id);
                         }
@@ -1165,13 +1079,16 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                     // Node execution failed, abort workflow
                   let error_type = e.error_code();
                   let error_detail = e.to_structured_json();
-                    let err_result = NodeRunResult {
-                        status: WorkflowNodeExecutionStatus::Failed,
-                    error: Some(e.to_string()),
+                  let error_info = crate::dsl::schema::NodeErrorInfo {
+                    message: e.to_string(),
                     error_type: Some(error_type),
-                    error_detail: Some(error_detail.clone()),
-                        ..Default::default()
-                    };
+                    detail: Some(error_detail.clone()),
+                  };
+                  let err_result = NodeRunResult {
+                    status: WorkflowNodeExecutionStatus::Failed,
+                    error: Some(error_info),
+                    ..Default::default()
+                  };
 
                     if self.event_emitter.is_active() {
                       self.event_emitter
@@ -1217,24 +1134,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
               })
               .await;
           }
-        }
-
-        #[cfg(not(feature = "plugin-system"))]
-        if let Some(pm) = &self.plugin_manager {
-          let pool_snapshot = self.variable_pool.read().await.clone();
-          let payload = serde_json::json!({
-            "event": "after_workflow_run",
-            "outputs": self.final_outputs.clone(),
-            "exceptions_count": self.exceptions_count,
-          });
-          pm.execute_hooks(
-            PluginHookType::AfterWorkflowRun,
-            &payload,
-            Arc::new(std::sync::RwLock::new(pool_snapshot)),
-            Some(self.event_emitter.tx().clone()),
-          )
-          .await
-          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
         }
 
         #[cfg(feature = "plugin-system")]
@@ -1331,12 +1230,12 @@ edges:
 
         let mut pool = VariablePool::new();
         pool.set(
-            &["start_1".to_string(), "query".to_string()],
-            Segment::String("hello".into()),
+          &crate::core::variable_pool::Selector::new("start_1", "query"),
+          Segment::String("hello".into()),
         );
         pool.set(
-            &["sys".to_string(), "query".to_string()],
-            Segment::String("hello".into()),
+          &crate::core::variable_pool::Selector::new("sys", "query"),
+          Segment::String("hello".into()),
         );
 
         let registry = NodeExecutorRegistry::new();
@@ -1350,6 +1249,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await.unwrap();
@@ -1413,7 +1313,10 @@ edges:
         let graph = build_graph(&schema).unwrap();
 
         let mut pool = VariablePool::new();
-        pool.set(&["start".to_string(), "x".to_string()], Segment::Integer(10));
+        pool.set(
+          &crate::core::variable_pool::Selector::new("start", "x"),
+          Segment::Integer(10),
+        );
 
         let registry = NodeExecutorRegistry::new();
         let (emitter, _rx) = make_emitter();
@@ -1426,6 +1329,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await.unwrap();
@@ -1479,7 +1383,10 @@ edges:
         let graph = build_graph(&schema).unwrap();
 
         let mut pool = VariablePool::new();
-        pool.set(&["start".to_string(), "x".to_string()], Segment::Integer(3));
+        pool.set(
+          &crate::core::variable_pool::Selector::new("start", "x"),
+          Segment::Integer(3),
+        );
 
         let registry = NodeExecutorRegistry::new();
         let (emitter, _rx) = make_emitter();
@@ -1492,6 +1399,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await.unwrap();
@@ -1528,7 +1436,10 @@ edges:
         let graph = build_graph(&schema).unwrap();
 
         let mut pool = VariablePool::new();
-        pool.set(&["start".to_string(), "name".to_string()], Segment::String("Alice".into()));
+        pool.set(
+          &crate::core::variable_pool::Selector::new("start", "name"),
+          Segment::String("Alice".into()),
+        );
 
         let registry = NodeExecutorRegistry::new();
         let (emitter, _rx) = make_emitter();
@@ -1541,6 +1452,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await.unwrap();
@@ -1568,7 +1480,11 @@ edges:
         let registry = NodeExecutorRegistry::new();
         let (emitter, _rx) = make_emitter();
 
-        let config = EngineConfig { max_steps: 0, max_execution_time_secs: 600 };
+        let config = EngineConfig {
+          max_steps: 0,
+          max_execution_time_secs: 600,
+          strict_template: false,
+        };
         let context = Arc::new(RuntimeContext::default());
         let mut dispatcher = WorkflowDispatcher::new(
           graph,
@@ -1577,6 +1493,7 @@ edges:
           emitter,
           config,
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await;
@@ -1615,7 +1532,10 @@ edges:
         let graph = build_graph(&schema).unwrap();
 
         let mut pool = VariablePool::new();
-        pool.set(&["start".to_string(), "name".to_string()], Segment::String("World".into()));
+        pool.set(
+          &crate::core::variable_pool::Selector::new("start", "name"),
+          Segment::String("World".into()),
+        );
 
         let registry = NodeExecutorRegistry::new();
         let (emitter, _rx) = make_emitter();
@@ -1628,6 +1548,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await.unwrap();
@@ -1691,7 +1612,10 @@ edges:
         let graph = build_graph(&schema).unwrap();
 
         let mut pool = VariablePool::new();
-        pool.set(&["start".to_string(), "flag".to_string()], Segment::String("true".into()));
+        pool.set(
+          &crate::core::variable_pool::Selector::new("start", "flag"),
+          Segment::String("true".into()),
+        );
 
         let registry = NodeExecutorRegistry::new();
         let (emitter, _rx) = make_emitter();
@@ -1704,6 +1628,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let result = dispatcher.run().await.unwrap();
@@ -1739,6 +1664,7 @@ edges:
           emitter,
           EngineConfig::default(),
           context,
+          #[cfg(feature = "plugin-system")]
           None,
         );
         let _ = dispatcher.run().await.unwrap();

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use serde_json::Value;
 
-use crate::core::variable_pool::SegmentType;
+use crate::core::variable_pool::{SegmentType, Selector};
 use crate::dsl::schema::{
     AnswerNodeData, CodeNodeData, EndNodeData, HttpRequestNodeData, IfElseNodeData,
     StartNodeData, TemplateTransformNodeData, VariableAggregatorNodeData,
@@ -564,14 +564,14 @@ fn build_edges_by_source(schema: &WorkflowSchema) -> HashMap<String, Vec<crate::
 }
 
 fn validate_selector(
-    selector: &[String],
+    selector: &Selector,
     current_node: &str,
     field_path: &str,
     node_ids: &HashSet<String>,
     topo: &TopologyInfo,
     diags: &mut Vec<Diagnostic>,
 ) {
-    if selector.len() < 2 {
+    if selector.is_empty() {
         diags.push(error(
             "E401",
             "Variable selector too short".to_string(),
@@ -580,7 +580,7 @@ fn validate_selector(
         ));
         return;
     }
-    let root = selector[0].as_str();
+    let root = selector.node_id();
     if !RESERVED_NAMESPACES.contains(&root) && !node_ids.contains(root) {
         diags.push(error(
             "E402",

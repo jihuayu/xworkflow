@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::core::variable_pool::SegmentStream;
+use crate::core::variable_pool::{Selector, SegmentStream};
 
 // ================================
 // Variable Selector (Dify-compatible)
 // ================================
 
 /// Variable selector: e.g. ["node_id", "output_name"] or ["sys", "query"]
-pub type VariableSelector = Vec<String>;
+pub type VariableSelector = Selector;
 
 // ================================
 // Workflow DSL Schema
@@ -614,35 +614,82 @@ pub enum WorkflowNodeExecutionStatus {
 pub struct NodeRunResult {
     pub status: WorkflowNodeExecutionStatus,
     pub inputs: HashMap<String, Value>,
-    pub process_data: HashMap<String, Value>,
-    pub outputs: HashMap<String, Value>,
-    pub stream_outputs: HashMap<String, SegmentStream>,
+    pub outputs: NodeOutputs,
     pub metadata: HashMap<String, Value>,
     pub llm_usage: Option<LlmUsage>,
-    pub edge_source_handle: String,
-    pub error: Option<String>,
-    pub error_type: Option<String>,
+    pub edge_source_handle: EdgeHandle,
+    pub error: Option<NodeErrorInfo>,
     pub retry_index: i32,
-    pub error_detail: Option<Value>,
 }
 
 impl Default for NodeRunResult {
     fn default() -> Self {
         NodeRunResult {
-            status: WorkflowNodeExecutionStatus::Succeeded,
+            status: WorkflowNodeExecutionStatus::Pending,
             inputs: HashMap::new(),
-            process_data: HashMap::new(),
-            outputs: HashMap::new(),
-            stream_outputs: HashMap::new(),
+            outputs: NodeOutputs::Sync(HashMap::new()),
             metadata: HashMap::new(),
             llm_usage: None,
-            edge_source_handle: "source".to_string(),
+            edge_source_handle: EdgeHandle::Default,
             error: None,
-            error_type: None,
             retry_index: 0,
-            error_detail: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EdgeHandle {
+    /// Non-branch nodes: all edges are taken
+    Default,
+    /// Branch nodes: select specific edge handle
+    Branch(String),
+}
+
+impl Default for EdgeHandle {
+    fn default() -> Self {
+        EdgeHandle::Default
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum NodeOutputs {
+    /// All outputs are ready
+    Sync(HashMap<String, Value>),
+    /// Some outputs are streaming; ready holds non-stream values
+    Stream {
+        ready: HashMap<String, Value>,
+        streams: HashMap<String, SegmentStream>,
+    },
+}
+
+impl NodeOutputs {
+    pub fn ready(&self) -> &HashMap<String, Value> {
+        match self {
+            NodeOutputs::Sync(map) => map,
+            NodeOutputs::Stream { ready, .. } => ready,
+        }
+    }
+
+    pub fn streams(&self) -> Option<&HashMap<String, SegmentStream>> {
+        match self {
+            NodeOutputs::Stream { streams, .. } => Some(streams),
+            _ => None,
+        }
+    }
+
+    pub fn into_parts(self) -> (HashMap<String, Value>, HashMap<String, SegmentStream>) {
+        match self {
+            NodeOutputs::Sync(map) => (map, HashMap::new()),
+            NodeOutputs::Stream { ready, streams } => (ready, streams),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeErrorInfo {
+    pub message: String,
+    pub error_type: Option<String>,
+    pub detail: Option<Value>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]

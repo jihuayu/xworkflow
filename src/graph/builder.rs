@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::dsl::schema::{WorkflowSchema, NodeSchema};
 use crate::error::WorkflowError;
-use super::types::{Graph, GraphNode, GraphEdge, NodeState};
+use super::types::{Graph, GraphNode, GraphEdge, EdgeTraversalState};
 
 /// Build a Graph from a validated WorkflowSchema
 pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
@@ -22,7 +22,7 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
             title: ns.data.title.clone(),
             config,
             version: ns.data.version.clone().unwrap_or_else(|| "1".to_string()),
-            state: NodeState::Unknown,
+            state: EdgeTraversalState::Pending,
         };
 
         if ns.data.node_type == "start" {
@@ -53,7 +53,7 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
             source_node_id: es.source.clone(),
             target_node_id: es.target.clone(),
             source_handle: es.source_handle.clone(),
-            state: NodeState::Unknown,
+            state: EdgeTraversalState::Pending,
         };
 
         in_edges.entry(es.target.clone()).or_default().push(edge_id.clone());

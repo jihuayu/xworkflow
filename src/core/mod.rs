@@ -10,6 +10,8 @@ pub use variable_pool::{
 	Segment,
 	SegmentStream,
 	SegmentType,
+	Selector,
+	SCOPE_NODE_ID,
 	StreamEvent,
 	StreamReader,
 	StreamStatus,

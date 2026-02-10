@@ -8,12 +8,15 @@ use tokio::sync::Semaphore;
 
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
-use crate::core::variable_pool::{Segment, VariablePool};
+use crate::core::variable_pool::{Segment, Selector, VariablePool};
 use crate::dsl::schema::{
-    ComparisonOperator, Condition, IterationErrorMode, NodeRunResult, WorkflowNodeExecutionStatus,
+    ComparisonOperator, Condition, EdgeHandle, IterationErrorMode, NodeOutputs, NodeRunResult,
+    WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
-use crate::evaluator::condition::evaluate_condition;
+use crate::evaluator::condition::{evaluate_condition, ConditionResult};
+#[cfg(feature = "security")]
+use crate::security::SecurityLevel;
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::subgraph::SubGraphDefinition;
 use crate::nodes::utils::selector_from_value;
@@ -49,9 +52,8 @@ fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Te
 
 fn resolve_sub_graph_runner(context: &RuntimeContext) -> Arc<dyn SubGraphRunner> {
     context
-        .sub_graph_runner
-        .as_ref()
-        .cloned()
+    .sub_graph_runner()
+    .cloned()
         .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner))
 }
 
@@ -62,7 +64,7 @@ impl IterationNodeExecutor {
         Self
     }
 
-    fn resolve_input_selector(config: &IterationNodeConfig) -> Result<Vec<String>, NodeError> {
+    fn resolve_input_selector(config: &IterationNodeConfig) -> Result<Selector, NodeError> {
         let selector_val = config
             .input_selector
             .as_ref()
@@ -106,7 +108,7 @@ impl NodeExecutor for IterationNodeExecutor {
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
         let input_selector = Self::resolve_input_selector(&config)?;
-        let input_value = variable_pool.get(&input_selector).to_value();
+        let input_value = variable_pool.get(&input_selector).snapshot_to_value();
         let items = input_value
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Input must be an array".to_string()))?;
@@ -131,8 +133,8 @@ impl NodeExecutor for IterationNodeExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -281,13 +283,13 @@ impl LoopNodeExecutor {
         &self,
         condition: &LoopConditionConfig,
         loop_vars: &HashMap<String, Value>,
-    ) -> Result<bool, NodeError> {
+    ) -> Result<ConditionResult, NodeError> {
         let selector = selector_from_value(&condition.variable_selector)
             .ok_or_else(|| NodeError::ConfigError("Invalid loop condition selector".to_string()))?;
 
         let mut pool = VariablePool::new();
         for (k, v) in loop_vars {
-            pool.set(&["loop".to_string(), k.clone()], Segment::from_value(v));
+            pool.set(&Selector::new("loop", k.clone()), Segment::from_value(v));
         }
 
         let cond = Condition {
@@ -325,8 +327,36 @@ impl NodeExecutor for LoopNodeExecutor {
                 )));
             }
 
-            if !self.evaluate_condition(&config.condition, &loop_vars).await? {
-                break;
+            match self.evaluate_condition(&config.condition, &loop_vars).await? {
+                ConditionResult::True => {}
+                ConditionResult::False => break,
+                ConditionResult::TypeMismatch(mismatch) => {
+                    let message = format!(
+                        "Condition type mismatch: expected {}, got {} for {:?}",
+                        mismatch.expected_type, mismatch.actual_type, mismatch.operator
+                    );
+
+                    #[cfg(feature = "security")]
+                    let is_strict = context
+                        .security_policy()
+                        .map(|policy| policy.level == SecurityLevel::Strict)
+                        .or_else(|| {
+                            context
+                                .resource_group()
+                                .map(|group| group.security_level == SecurityLevel::Strict)
+                        })
+                        .unwrap_or(false);
+
+                    #[cfg(not(feature = "security"))]
+                    let is_strict = false;
+
+                    if is_strict {
+                        return Err(NodeError::TypeError(message));
+                    }
+
+                    tracing::warn!("{}; terminating loop", message);
+                    break;
+                }
             }
 
             let mut scope_vars = HashMap::new();
@@ -355,8 +385,8 @@ impl NodeExecutor for LoopNodeExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -435,7 +465,7 @@ impl NodeExecutor for ListOperatorNodeExecutor {
 
         let input_selector = selector_from_value(&config.input_selector)
             .ok_or_else(|| NodeError::ConfigError("Invalid input_selector".to_string()))?;
-        let input = pool.get(&input_selector).to_value();
+        let input = pool.get(&input_selector).snapshot_to_value();
 
         let result = match config.operation {
             ListOperation::Filter => {
@@ -461,8 +491,8 @@ impl NodeExecutor for ListOperatorNodeExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -730,7 +760,7 @@ impl ListOperatorNodeExecutor {
         let second_selector = selector_from_value(second_selector_val)
             .ok_or_else(|| NodeError::ConfigError("Invalid second_input_selector".to_string()))?;
 
-        let input2 = pool.get(&second_selector).to_value();
+        let input2 = pool.get(&second_selector).snapshot_to_value();
         let items2 = input2
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Second input must be an array".to_string()))?;
@@ -792,7 +822,7 @@ mod tests {
     fn make_pool() -> VariablePool {
         let mut pool = VariablePool::new();
         pool.set(
-            &["input".to_string(), "items".to_string()],
+            &Selector::new("input", "items"),
             Segment::from_value(&serde_json::json!([1, 2, 3])),
         );
         pool
@@ -821,7 +851,7 @@ mod tests {
         });
 
         let result = executor.execute("iter1", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.get("results"), Some(&serde_json::json!([
+        assert_eq!(result.outputs.ready().get("results"), Some(&serde_json::json!([
             {"value": 1},
             {"value": 2},
             {"value": 3}
@@ -858,8 +888,11 @@ mod tests {
         });
 
         let result = executor.execute("loop1", &config, &make_pool(), &context).await.unwrap();
-        assert!(result.outputs.contains_key("loop_result"));
-        assert_eq!(result.outputs.get("_iterations"), Some(&serde_json::json!(0)));
+        assert!(result.outputs.ready().contains_key("loop_result"));
+        assert_eq!(
+            result.outputs.ready().get("_iterations"),
+            Some(&serde_json::json!(0))
+        );
     }
 
     #[tokio::test]
@@ -887,6 +920,6 @@ mod tests {
         });
 
         let result = executor.execute("list1", &config, &make_pool(), &context).await.unwrap();
-        assert!(result.outputs.get("filtered").is_some());
+        assert!(result.outputs.ready().get("filtered").is_some());
     }
 }

@@ -76,8 +76,7 @@ impl SubGraphExecutor {
         context: &RuntimeContext,
     ) -> Result<Value, SubGraphError> {
         let runner = context
-            .sub_graph_runner
-            .as_ref()
+            .sub_graph_runner()
             .cloned()
             .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner));
 
@@ -91,15 +90,12 @@ impl SubGraphExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::variable_pool::Segment;
+    use crate::core::variable_pool::{Segment, Selector};
     use serde_json::json;
 
     fn make_pool() -> VariablePool {
         let mut pool = VariablePool::new();
-        pool.set(
-            &["input".to_string(), "value".to_string()],
-            Segment::Integer(1),
-        );
+        pool.set(&Selector::new("input", "value"), Segment::Integer(1));
         pool
     }
 

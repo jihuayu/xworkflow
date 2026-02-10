@@ -8,6 +8,8 @@ use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, Interac
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
+#[cfg(feature = "security")]
+use crate::core::runtime_context::SecurityContext;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{ErrorHandlingMode, WorkflowSchema};
@@ -74,11 +76,11 @@ async fn audit_dsl_validation_failed(
   context: &RuntimeContext,
   report: &ValidationReport,
 ) {
-  let logger = match &context.audit_logger {
+  let logger = match context.audit_logger() {
     Some(l) => l,
     None => return,
   };
-  let group_id = match &context.resource_group {
+  let group_id = match context.resource_group() {
     Some(g) => g.group_id.clone(),
     None => return,
   };
@@ -318,41 +320,60 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  #[cfg(feature = "security")]
+  fn ensure_security_context(&mut self) -> &mut SecurityContext {
+    if self.context.extensions.security.is_none() {
+      self.context.extensions.security = Some(SecurityContext {
+        resource_group: None,
+        security_policy: None,
+        resource_governor: None,
+        credential_provider: None,
+        audit_logger: None,
+      });
+    }
+    self.context.extensions.security.as_mut().unwrap()
+  }
+
   pub fn sub_graph_runner(mut self, runner: Arc<dyn SubGraphRunner>) -> Self {
-    self.context.sub_graph_runner = Some(runner);
+    self.context.extensions.sub_graph_runner = Some(runner);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn security_policy(mut self, policy: SecurityPolicy) -> Self {
-    self.context.security_policy = Some(policy.clone());
-    if self.context.audit_logger.is_none() {
-      self.context.audit_logger = policy.audit_logger.clone();
+    let security = self.ensure_security_context();
+    if security.audit_logger.is_none() {
+      security.audit_logger = policy.audit_logger.clone();
     }
+    security.security_policy = Some(policy);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn resource_group(mut self, group: ResourceGroup) -> Self {
-    self.context.resource_group = Some(group);
+    let security = self.ensure_security_context();
+    security.resource_group = Some(group);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn resource_governor(mut self, governor: Arc<dyn ResourceGovernor>) -> Self {
-    self.context.resource_governor = Some(governor);
+    let security = self.ensure_security_context();
+    security.resource_governor = Some(governor);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn credential_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
-    self.context.credential_provider = Some(provider);
+    let security = self.ensure_security_context();
+    security.credential_provider = Some(provider);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn audit_logger(mut self, logger: Arc<dyn AuditLogger>) -> Self {
-    self.context.audit_logger = Some(logger);
+    let security = self.ensure_security_context();
+    security.audit_logger = Some(logger);
     self
   }
 
@@ -484,8 +505,7 @@ impl WorkflowRunnerBuilder {
     #[cfg(feature = "security")]
     let mut report = if let Some(policy) = builder
       .context
-      .security_policy
-      .as_ref()
+      .security_policy()
       .and_then(|p| p.dsl_validation.as_ref())
     {
       crate::dsl::validation::validate_schema_with_config(&builder.schema, policy)
@@ -561,8 +581,7 @@ impl WorkflowRunnerBuilder {
     #[cfg(feature = "security")]
     if let Some(selector_cfg) = builder
       .context
-      .security_policy
-      .as_ref()
+      .security_policy()
       .and_then(|p| p.dsl_validation.as_ref())
       .and_then(|d| d.selector_validation.clone())
     {
@@ -571,39 +590,29 @@ impl WorkflowRunnerBuilder {
 
     // Set system variables
     for (k, v) in &builder.system_vars {
-      pool.set(&["sys".to_string(), k.clone()], Segment::from_value(v));
+      let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     // Set environment variables
     for (k, v) in &builder.environment_vars {
-      pool.set(&["env".to_string(), k.clone()], Segment::from_value(v));
+      let selector = crate::core::variable_pool::Selector::new("env", k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     // Set conversation variables
     for (k, v) in &builder.conversation_vars {
-      pool.set(
-        &["conversation".to_string(), k.clone()],
-        Segment::from_value(v),
-      );
+      let selector = crate::core::variable_pool::Selector::new("conversation", k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     // Set user inputs mapped to start node
     let start_node_id = graph.root_node_id.clone();
     for (k, v) in &builder.user_inputs {
-      pool.set(
-        &[start_node_id.clone(), k.clone()],
-        Segment::from_value(v),
-      );
+      let selector = crate::core::variable_pool::Selector::new(start_node_id.clone(), k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
-    #[cfg(not(feature = "plugin-system"))]
-    let mut registry = if let Some(pm) = &builder.plugin_manager {
-      NodeExecutorRegistry::new_with_plugins(pm.clone())
-    } else {
-      NodeExecutorRegistry::new()
-    };
-
-    #[cfg(feature = "plugin-system")]
     let mut registry = NodeExecutorRegistry::new();
 
     #[cfg(feature = "plugin-system")]
@@ -626,9 +635,7 @@ impl WorkflowRunnerBuilder {
     registry.set_llm_provider_registry(llm_registry);
 
     let registry = Arc::new(registry);
-    builder
-      .context
-      .node_executor_registry = Some(Arc::clone(&registry));
+    builder.context.extensions.node_executor_registry = Some(Arc::clone(&registry));
 
 
     let (tx, mut rx) = mpsc::channel(256);
@@ -636,13 +643,14 @@ impl WorkflowRunnerBuilder {
     let event_emitter = EventEmitter::new(tx.clone(), event_active.clone());
     let error_event_emitter = event_emitter.clone();
     #[cfg(feature = "security")]
-    let config = if let Some(group) = &builder.context.resource_group {
+    let config = if let Some(group) = builder.context.resource_group() {
       EngineConfig {
         max_steps: builder.config.max_steps.min(group.quota.max_steps),
         max_execution_time_secs: builder
           .config
           .max_execution_time_secs
           .min(group.quota.max_execution_time_secs),
+        strict_template: builder.config.strict_template,
       }
     } else {
       builder.config
@@ -651,13 +659,17 @@ impl WorkflowRunnerBuilder {
     #[cfg(not(feature = "security"))]
     let config = builder.config;
 
+    builder.context.extensions.strict_template = config.strict_template;
+
+    builder.context.extensions.strict_template = config.strict_template;
+
     #[cfg(feature = "security")]
     let workflow_id = builder.context.id_generator.next_id();
 
     #[cfg(feature = "security")]
     if let (Some(governor), Some(group)) = (
-      builder.context.resource_governor.as_ref(),
-      builder.context.resource_group.as_ref(),
+      builder.context.resource_governor(),
+      builder.context.resource_group(),
     ) {
       governor
         .check_workflow_start(&group.group_id)
@@ -678,7 +690,8 @@ impl WorkflowRunnerBuilder {
           builder.context.id_generator = id_gen;
         }
         if !reg.template_functions().is_empty() {
-          builder.context.template_functions = Some(Arc::new(reg.template_functions().clone()));
+          builder.context.extensions.template_functions =
+            Some(Arc::new(reg.template_functions().clone()));
         }
       }
     }
@@ -721,8 +734,6 @@ impl WorkflowRunnerBuilder {
         event_emitter,
         config,
         context.clone(),
-        #[cfg(not(feature = "plugin-system"))]
-        plugin_manager,
         #[cfg(feature = "plugin-system")]
         plugin_registry,
       );
@@ -745,8 +756,7 @@ impl WorkflowRunnerBuilder {
             }
 
             let runner = context
-              .sub_graph_runner
-              .as_ref()
+              .sub_graph_runner()
               .cloned()
               .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner));
             match runner
@@ -803,8 +813,8 @@ impl WorkflowRunnerBuilder {
 
       #[cfg(feature = "security")]
       if let (Some(governor), Some(group)) = (
-        context.resource_governor.as_ref(),
-        context.resource_group.as_ref(),
+        context.resource_governor(),
+        context.resource_group(),
       ) {
         governor
           .record_workflow_end(&group.group_id, &workflow_id)
@@ -822,8 +832,7 @@ impl WorkflowRunnerBuilder {
     #[cfg(feature = "security")]
     let mut report = if let Some(policy) = builder
       .context
-      .security_policy
-      .as_ref()
+      .security_policy()
       .and_then(|p| p.dsl_validation.as_ref())
     {
       crate::dsl::validation::validate_schema_with_config(&builder.schema, policy)
@@ -893,26 +902,24 @@ impl WorkflowRunnerBuilder {
     let mut pool = VariablePool::new();
 
     for (k, v) in &builder.system_vars {
-      pool.set(&["sys".to_string(), k.clone()], Segment::from_value(v));
+      let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     for (k, v) in &builder.environment_vars {
-      pool.set(&["env".to_string(), k.clone()], Segment::from_value(v));
+      let selector = crate::core::variable_pool::Selector::new("env", k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     for (k, v) in &builder.conversation_vars {
-      pool.set(
-        &["conversation".to_string(), k.clone()],
-        Segment::from_value(v),
-      );
+      let selector = crate::core::variable_pool::Selector::new("conversation", k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     let start_node_id = graph.root_node_id.clone();
     for (k, v) in &builder.user_inputs {
-      pool.set(
-        &[start_node_id.clone(), k.clone()],
-        Segment::from_value(v),
-      );
+      let selector = crate::core::variable_pool::Selector::new(start_node_id.clone(), k.clone());
+      pool.set(&selector, Segment::from_value(v));
     }
 
     #[cfg(not(feature = "plugin-system"))]
@@ -944,11 +951,6 @@ impl WorkflowRunnerBuilder {
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(llm_registry);
 
-    let registry = Arc::new(registry);
-    builder
-      .context
-      .node_executor_registry = Some(Arc::clone(&registry));
-
 
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (debug_evt_tx, debug_evt_rx) = mpsc::channel(256);
@@ -979,13 +981,14 @@ impl WorkflowRunnerBuilder {
     let event_emitter = EventEmitter::new(tx.clone(), event_active.clone());
     let error_event_emitter = event_emitter.clone();
     #[cfg(feature = "security")]
-    let config = if let Some(group) = &builder.context.resource_group {
+    let config = if let Some(group) = builder.context.resource_group() {
       EngineConfig {
         max_steps: builder.config.max_steps.min(group.quota.max_steps),
         max_execution_time_secs: builder
           .config
           .max_execution_time_secs
           .min(group.quota.max_execution_time_secs),
+        strict_template: builder.config.strict_template,
       }
     } else {
       builder.config
@@ -999,8 +1002,8 @@ impl WorkflowRunnerBuilder {
 
     #[cfg(feature = "security")]
     if let (Some(governor), Some(group)) = (
-      builder.context.resource_governor.as_ref(),
-      builder.context.resource_group.as_ref(),
+      builder.context.resource_governor(),
+      builder.context.resource_group(),
     ) {
       governor
         .check_workflow_start(&group.group_id)
@@ -1021,7 +1024,8 @@ impl WorkflowRunnerBuilder {
           builder.context.id_generator = id_gen;
         }
         if !reg.template_functions().is_empty() {
-          builder.context.template_functions = Some(Arc::new(reg.template_functions().clone()));
+          builder.context.extensions.template_functions =
+            Some(Arc::new(reg.template_functions().clone()));
         }
       }
     }
@@ -1057,6 +1061,8 @@ impl WorkflowRunnerBuilder {
     let mut hook = hook;
     hook.graph_event_tx = Some(tx.clone());
 
+    let registry = Arc::new(registry);
+
     tokio::spawn(async move {
       let mut dispatcher = WorkflowDispatcher::new_with_debug(
         graph,
@@ -1091,8 +1097,7 @@ impl WorkflowRunnerBuilder {
             }
 
             let runner = context
-              .sub_graph_runner
-              .as_ref()
+              .sub_graph_runner()
               .cloned()
               .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner));
             match runner
@@ -1149,8 +1154,8 @@ impl WorkflowRunnerBuilder {
 
       #[cfg(feature = "security")]
       if let (Some(governor), Some(group)) = (
-        context.resource_governor.as_ref(),
-        context.resource_group.as_ref(),
+        context.resource_governor(),
+        context.resource_group(),
       ) {
         governor
           .record_workflow_end(&group.group_id, &workflow_id)

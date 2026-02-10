@@ -194,14 +194,14 @@ impl NodeExecutor for StubExecutor {
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         Ok(NodeRunResult {
-            outputs: {
+            outputs: crate::dsl::schema::NodeOutputs::Sync({
                 let mut m = HashMap::new();
                 m.insert(
                     "text".to_string(),
                     Value::String(format!("[Stub: {} node {} not implemented]", self.0, node_id)),
                 );
                 m
-            },
+            }),
             ..Default::default()
         })
     }

@@ -75,6 +75,7 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 [features]
 default = [
 	"security",
+	"plugin-system",
 	"builtin-sandbox-js",
 	"builtin-sandbox-wasm",
 	"builtin-template-jinja",

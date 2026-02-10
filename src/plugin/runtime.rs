@@ -7,7 +7,7 @@ use wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
-use crate::dsl::schema::{NodeRunResult, WorkflowNodeExecutionStatus};
+use crate::dsl::schema::{EdgeHandle, NodeOutputs, NodeRunResult, WorkflowNodeExecutionStatus};
 use crate::error::NodeError;
 
 use super::error::PluginError;
@@ -194,8 +194,8 @@ impl PluginRuntime {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }

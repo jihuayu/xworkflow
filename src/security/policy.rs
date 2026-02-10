@@ -8,7 +8,7 @@ use super::audit::{AuditLogger, TracingAuditLogger};
 use super::network::{NetworkPolicy, NetworkPolicyMode};
 use super::validation::{DslValidationConfig, TemplateSafetyConfig};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum SecurityLevel {
     Permissive,
     #[default]

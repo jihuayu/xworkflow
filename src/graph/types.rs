@@ -1,13 +1,15 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::dsl::schema::EdgeHandle;
+
 // ================================
-// Node State / Edge State
+// Edge Traversal State
 // ================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeState {
-    Unknown,
+pub enum EdgeTraversalState {
+    Pending,
     Taken,
     Skipped,
 }
@@ -23,7 +25,7 @@ pub struct GraphNode {
     pub title: String,
     pub config: Value,
     pub version: String,
-    pub state: NodeState,
+    pub state: EdgeTraversalState,
 }
 
 // ================================
@@ -36,7 +38,7 @@ pub struct GraphEdge {
     pub source_node_id: String,
     pub target_node_id: String,
     pub source_handle: Option<String>,
-    pub state: NodeState,
+    pub state: EdgeTraversalState,
 }
 
 // ================================
@@ -63,10 +65,10 @@ impl Graph {
             return node_id == self.root_node_id;
         }
         let all_resolved = edge_ids.iter().all(|eid| {
-            self.edges.get(eid).map_or(true, |e| e.state != NodeState::Unknown)
+            self.edges.get(eid).map_or(true, |e| e.state != EdgeTraversalState::Pending)
         });
         let any_taken = edge_ids.iter().any(|eid| {
-            self.edges.get(eid).map_or(false, |e| e.state == NodeState::Taken)
+            self.edges.get(eid).map_or(false, |e| e.state == EdgeTraversalState::Taken)
         });
         all_resolved && any_taken
     }
@@ -76,14 +78,18 @@ impl Graph {
         if let Some(edge_ids) = self.out_edges.get(node_id).cloned() {
             for eid in &edge_ids {
                 if let Some(edge) = self.edges.get_mut(eid) {
-                    edge.state = NodeState::Taken;
+                    edge.state = EdgeTraversalState::Taken;
                 }
             }
         }
     }
 
     /// Process branch edges: mark the selected branch as Taken, others as Skipped
-    pub fn process_branch_edges(&mut self, node_id: &str, selected_handle: &str) {
+    pub fn process_branch_edges(&mut self, node_id: &str, selected_handle: &EdgeHandle) {
+        let selected_handle = match selected_handle {
+            EdgeHandle::Branch(handle) => handle.as_str(),
+            EdgeHandle::Default => "source",
+        };
         let edge_ids = match self.out_edges.get(node_id) {
             Some(ids) => ids.clone(),
             None => return,
@@ -93,9 +99,9 @@ impl Graph {
             if let Some(edge) = self.edges.get_mut(eid) {
                 let handle = edge.source_handle.as_deref().unwrap_or("source");
                 if handle == selected_handle {
-                    edge.state = NodeState::Taken;
+                    edge.state = EdgeTraversalState::Taken;
                 } else {
-                    edge.state = NodeState::Skipped;
+                    edge.state = EdgeTraversalState::Skipped;
                     skipped_targets.push(edge.target_node_id.clone());
                 }
             }
@@ -112,7 +118,7 @@ impl Graph {
         let all_skipped = self.in_edges.get(node_id)
             .map(|eids| {
                 !eids.is_empty() && eids.iter().all(|eid| {
-                    self.edges.get(eid).map_or(false, |e| e.state == NodeState::Skipped)
+                    self.edges.get(eid).map_or(false, |e| e.state == EdgeTraversalState::Skipped)
                 })
             })
             .unwrap_or(false);
@@ -122,14 +128,14 @@ impl Graph {
         }
 
         if let Some(node) = self.nodes.get_mut(node_id) {
-            node.state = NodeState::Skipped;
+            node.state = EdgeTraversalState::Skipped;
         }
 
         let out = self.out_edges.get(node_id).cloned().unwrap_or_default();
         for eid in &out {
             let target = {
                 if let Some(edge) = self.edges.get_mut(eid) {
-                    edge.state = NodeState::Skipped;
+                    edge.state = EdgeTraversalState::Skipped;
                     edge.target_node_id.clone()
                 } else {
                     continue;
@@ -157,9 +163,18 @@ impl Graph {
 
     /// Check if a node type is a branch type
     pub fn is_branch_node(&self, node_id: &str) -> bool {
-        self.nodes.get(node_id).map_or(false, |n| {
-            n.node_type == "if-else" || n.node_type == "question-classifier"
-        })
+        self.out_edges
+            .get(node_id)
+            .map(|eids| {
+                eids.iter().any(|eid| {
+                    self.edges
+                        .get(eid)
+                        .and_then(|e| e.source_handle.as_deref())
+                        .map(|h| h != "source")
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -171,17 +186,17 @@ mod tests {
         let mut nodes = HashMap::new();
         nodes.insert("start".into(), GraphNode {
             id: "start".into(), node_type: "start".into(), title: "Start".into(),
-            config: Value::Null, version: "1".into(), state: NodeState::Unknown,
+            config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
         });
         nodes.insert("end".into(), GraphNode {
             id: "end".into(), node_type: "end".into(), title: "End".into(),
-            config: Value::Null, version: "1".into(), state: NodeState::Unknown,
+            config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
         });
 
         let mut edges = HashMap::new();
         edges.insert("e1".into(), GraphEdge {
             id: "e1".into(), source_node_id: "start".into(), target_node_id: "end".into(),
-            source_handle: Some("source".into()), state: NodeState::Unknown,
+            source_handle: Some("source".into()), state: EdgeTraversalState::Pending,
         });
 
         let mut in_edges = HashMap::new();
@@ -217,25 +232,25 @@ mod tests {
         let mut nodes = HashMap::new();
         nodes.insert("if".into(), GraphNode {
             id: "if".into(), node_type: "if-else".into(), title: "IF".into(),
-            config: Value::Null, version: "1".into(), state: NodeState::Unknown,
+            config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
         });
         nodes.insert("a".into(), GraphNode {
             id: "a".into(), node_type: "code".into(), title: "A".into(),
-            config: Value::Null, version: "1".into(), state: NodeState::Unknown,
+            config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
         });
         nodes.insert("b".into(), GraphNode {
             id: "b".into(), node_type: "code".into(), title: "B".into(),
-            config: Value::Null, version: "1".into(), state: NodeState::Unknown,
+            config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
         });
 
         let mut edges = HashMap::new();
         edges.insert("e_true".into(), GraphEdge {
             id: "e_true".into(), source_node_id: "if".into(), target_node_id: "a".into(),
-            source_handle: Some("case1".into()), state: NodeState::Unknown,
+            source_handle: Some("case1".into()), state: EdgeTraversalState::Pending,
         });
         edges.insert("e_false".into(), GraphEdge {
             id: "e_false".into(), source_node_id: "if".into(), target_node_id: "b".into(),
-            source_handle: Some("false".into()), state: NodeState::Unknown,
+            source_handle: Some("false".into()), state: EdgeTraversalState::Pending,
         });
 
         let mut in_edges = HashMap::new();
@@ -247,10 +262,10 @@ mod tests {
 
         let mut g = Graph { nodes, edges, in_edges, out_edges, root_node_id: "if".into() };
 
-        g.process_branch_edges("if", "case1");
+        g.process_branch_edges("if", &EdgeHandle::Branch("case1".to_string()));
 
         assert!(g.is_node_ready("a"));
         assert!(!g.is_node_ready("b"));
-        assert_eq!(g.nodes.get("b").unwrap().state, NodeState::Skipped);
+        assert_eq!(g.nodes.get("b").unwrap().state, EdgeTraversalState::Skipped);
     }
 }

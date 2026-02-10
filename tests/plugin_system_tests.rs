@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use serde_json::Value;
 use tempfile::TempDir;
 
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 use xworkflow::plugin::{
     AllowedCapabilities, PluginCapabilities, PluginHook, PluginHookType, PluginManifest,
     PluginManager, PluginManagerConfig, PluginNodeType, PluginRuntime, PluginState,
@@ -227,7 +227,7 @@ fn test_plugin_host_var_get() {
     let runtime = PluginRuntime::new(manifest.clone(), &wasm_bytes).unwrap();
     let mut pool = VariablePool::new();
     pool.set(
-        &["node1".to_string(), "key1".to_string()],
+        &Selector::new("node1", "key1"),
         Segment::String("value1".to_string()),
     );
 
@@ -288,7 +288,7 @@ fn test_plugin_host_var_set() {
         .unwrap();
 
     let pool_guard = pool.read().unwrap();
-    let value = pool_guard.get(&["node1".to_string(), "key1".to_string()]);
+    let value = pool_guard.get(&Selector::new("node1", "key1"));
     assert_eq!(value.to_value(), Value::String("new-value".to_string()));
 }
 
@@ -305,7 +305,10 @@ async fn test_plugin_custom_node_and_hook() {
         .execute_node(node_type, &Value::Null, &pool, &context)
         .await
         .unwrap();
-    assert_eq!(result.outputs.get("echo"), Some(&Value::String("ok".to_string())));
+    assert_eq!(
+        result.outputs.ready().get("echo"),
+        Some(&Value::String("ok".to_string()))
+    );
 
     let hook_output = runtime
         .execute_hook(

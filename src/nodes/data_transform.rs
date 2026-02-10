@@ -8,10 +8,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::{Segment, SegmentStream, StreamEvent, StreamStatus, VariablePool};
+use crate::core::variable_pool::{
+    Segment, SegmentStream, Selector, StreamEvent, StreamStatus, VariablePool, SCOPE_NODE_ID,
+};
 use crate::dsl::schema::{
-    NodeRunResult,
-    VariableMapping, WorkflowNodeExecutionStatus, WriteMode,
+    EdgeHandle, NodeOutputs, NodeRunResult, VariableMapping, WorkflowNodeExecutionStatus, WriteMode,
 };
 use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
@@ -19,7 +20,7 @@ use crate::nodes::utils::selector_from_value;
 use crate::template::{
     CompiledTemplate,
     render_jinja2_with_functions_and_config,
-    render_template_async,
+    render_template_async_with_config,
 };
 #[cfg(not(feature = "security"))]
 use crate::template::render_jinja2_with_functions;
@@ -102,14 +103,13 @@ impl NodeExecutor for TemplateTransformExecutor {
         if stream_vars.is_empty() {
             #[cfg(feature = "plugin-system")]
             let tmpl_functions: Option<&HashMap<String, Arc<dyn TemplateFunction>>> =
-                context.template_functions.as_ref().map(|f| f.as_ref());
+                context.template_functions().map(|f| f.as_ref());
             #[cfg(not(feature = "plugin-system"))]
             let tmpl_functions: Option<&HashMap<String, Arc<dyn TemplateFunction>>> = None;
 
             #[cfg(feature = "security")]
             let safety = context
-                .security_policy
-                .as_ref()
+                .security_policy()
                 .and_then(|p| p.template.as_ref());
 
             let rendered = if let Some(engine) = &self.engine {
@@ -214,8 +214,8 @@ impl NodeExecutor for TemplateTransformExecutor {
 
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
-                outputs,
-                edge_source_handle: "source".to_string(),
+                outputs: NodeOutputs::Sync(outputs),
+                edge_source_handle: EdgeHandle::Default,
                 ..Default::default()
             });
         }
@@ -227,7 +227,7 @@ impl NodeExecutor for TemplateTransformExecutor {
         let tmpl_functions: Option<Arc<HashMap<String, Arc<dyn TemplateFunction>>>> = {
             #[cfg(feature = "plugin-system")]
             {
-                context.template_functions.as_ref().map(|f| f.clone())
+                context.template_functions().cloned()
             }
             #[cfg(not(feature = "plugin-system"))]
             {
@@ -239,8 +239,7 @@ impl NodeExecutor for TemplateTransformExecutor {
 
         #[cfg(feature = "security")]
         let safety = context
-            .security_policy
-            .as_ref()
+            .security_policy()
             .and_then(|p| p.template.as_ref());
 
         let render_fn = if let Some(engine) = &self.engine {
@@ -431,8 +430,11 @@ impl NodeExecutor for TemplateTransformExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            stream_outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Stream {
+                ready: HashMap::new(),
+                streams: stream_outputs,
+            },
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -453,7 +455,7 @@ impl NodeExecutor for VariableAggregatorExecutor {
         variable_pool: &VariablePool,
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
-        let selectors: Vec<Vec<String>> = config
+        let selectors: Vec<Selector> = config
             .get("variables")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
@@ -472,8 +474,8 @@ impl NodeExecutor for VariableAggregatorExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -511,10 +513,10 @@ impl NodeExecutor for VariableAssignerExecutor {
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         // Parse config
-        let assigned_sel: Vec<String> = config
+        let assigned_sel: Selector = config
             .get("assigned_variable_selector")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+            .unwrap_or_else(|| Selector::new(SCOPE_NODE_ID, "output"));
 
         let write_mode: WriteMode = config
             .get("write_mode")
@@ -523,8 +525,11 @@ impl NodeExecutor for VariableAssignerExecutor {
 
         // Get source value
         let source_value = if let Some(input_sel) = config.get("input_variable_selector") {
-            let sel: Vec<String> = serde_json::from_value(input_sel.clone()).unwrap_or_default();
-            variable_pool.get_resolved_value(&sel).await
+            if let Some(sel) = selector_from_value(input_sel) {
+                variable_pool.get_resolved_value(&sel).await
+            } else {
+                Value::Null
+            }
         } else if let Some(val) = config.get("value") {
             val.clone()
         } else {
@@ -535,12 +540,15 @@ impl NodeExecutor for VariableAssignerExecutor {
         let mut outputs = HashMap::new();
         outputs.insert("output".to_string(), source_value.clone());
         outputs.insert("write_mode".to_string(), serde_json::to_value(&write_mode).unwrap_or(Value::Null));
-        outputs.insert("assigned_variable_selector".to_string(), serde_json::json!(assigned_sel));
+        outputs.insert(
+            "assigned_variable_selector".to_string(),
+            serde_json::to_value(&assigned_sel).unwrap_or(Value::Null),
+        );
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -570,7 +578,13 @@ impl NodeExecutor for HttpRequestExecutor {
             .unwrap_or(false);
 
         // Substitute variables in URL
-        let url = render_template_async(url_template, variable_pool).await;
+        let url = render_template_async_with_config(
+            url_template,
+            variable_pool,
+            _context.strict_template(),
+        )
+        .await
+        .map_err(|e| NodeError::VariableNotFound(e.selector))?;
 
         // Build headers
         let mut headers = reqwest::header::HeaderMap::new();
@@ -578,7 +592,13 @@ impl NodeExecutor for HttpRequestExecutor {
             for h in h_arr {
                 let key = h.get("key").and_then(|v| v.as_str()).unwrap_or("");
                 let val = h.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                let val = render_template_async(val, variable_pool).await;
+                let val = render_template_async_with_config(
+                    val,
+                    variable_pool,
+                    _context.strict_template(),
+                )
+                .await
+                .map_err(|e| NodeError::VariableNotFound(e.selector))?;
                 if let (Ok(name), Ok(value)) = (
                     reqwest::header::HeaderName::from_bytes(key.as_bytes()),
                     reqwest::header::HeaderValue::from_str(&val),
@@ -615,8 +635,7 @@ impl NodeExecutor for HttpRequestExecutor {
         #[cfg(feature = "security")]
         let client = {
             if let Some(policy) = _context
-                .security_policy
-                .as_ref()
+                .security_policy()
                 .and_then(|p| p.network.as_ref())
             {
                 if let Err(err) = validate_url(&url, policy).await {
@@ -662,12 +681,24 @@ impl NodeExecutor for HttpRequestExecutor {
             match body.get("type").and_then(|v| v.as_str()).unwrap_or("none") {
                 "raw_text" => {
                     let data = body.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                    let data = render_template_async(data, variable_pool).await;
+                    let data = render_template_async_with_config(
+                        data,
+                        variable_pool,
+                        _context.strict_template(),
+                    )
+                    .await
+                    .map_err(|e| NodeError::VariableNotFound(e.selector))?;
                     req_builder.body(data)
                 }
                 "json" => {
                     let data = body.get("data").and_then(|v| v.as_str()).unwrap_or("{}");
-                    let data = render_template_async(data, variable_pool).await;
+                    let data = render_template_async_with_config(
+                        data,
+                        variable_pool,
+                        _context.strict_template(),
+                    )
+                    .await
+                    .map_err(|e| NodeError::VariableNotFound(e.selector))?;
                     req_builder
                         .header("Content-Type", "application/json")
                         .body(data)
@@ -690,10 +721,9 @@ impl NodeExecutor for HttpRequestExecutor {
         #[cfg(feature = "security")]
         let max_response_bytes = {
             let mut max = _context
-                .resource_group
-                .as_ref()
+                .resource_group()
                 .map(|g| g.quota.http_max_response_bytes);
-            if let Some(policy) = _context.security_policy.as_ref() {
+            if let Some(policy) = _context.security_policy() {
                 if let Some(limit) = policy.node_limits.get("http-request") {
                     max = Some(max.map(|m| m.min(limit.max_output_bytes)).unwrap_or(limit.max_output_bytes));
                 }
@@ -757,8 +787,8 @@ impl NodeExecutor for HttpRequestExecutor {
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -805,11 +835,11 @@ async fn audit_security_event(
     severity: EventSeverity,
     node_id: Option<String>,
 ) {
-    let logger = match &context.audit_logger {
+    let logger = match context.audit_logger() {
         Some(l) => l,
         None => return,
     };
-    let group_id = match &context.resource_group {
+    let group_id = match context.resource_group() {
         Some(g) => g.group_id.clone(),
         None => return,
     };
@@ -1309,8 +1339,8 @@ impl NodeExecutor for CodeNodeExecutor {
                 return Ok(NodeRunResult {
                     status: WorkflowNodeExecutionStatus::Succeeded,
                     inputs: resolved_inputs.into_iter().map(|(k, v)| (k, v)).collect(),
-                    outputs,
-                    edge_source_handle: "source".to_string(),
+                    outputs: NodeOutputs::Sync(outputs),
+                    edge_source_handle: EdgeHandle::Default,
                     ..Default::default()
                 });
             }
@@ -1409,9 +1439,11 @@ impl NodeExecutor for CodeNodeExecutor {
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
                 inputs: inputs_map.into_iter().map(|(k, v)| (k, v)).collect(),
-                outputs,
-                stream_outputs,
-                edge_source_handle: "source".to_string(),
+                outputs: NodeOutputs::Stream {
+                    ready: outputs,
+                    streams: stream_outputs,
+                },
+                edge_source_handle: EdgeHandle::Default,
                 ..Default::default()
             });
             }
@@ -1459,8 +1491,8 @@ impl NodeExecutor for CodeNodeExecutor {
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
                 inputs: resolved_inputs.into_iter().map(|(k, v)| (k, v)).collect(),
-                outputs,
-                edge_source_handle: "source".to_string(),
+                outputs: NodeOutputs::Sync(outputs),
+                edge_source_handle: EdgeHandle::Default,
                 ..Default::default()
             });
         }
@@ -1499,8 +1531,8 @@ impl NodeExecutor for CodeNodeExecutor {
                 .into_iter()
                 .map(|(k, v)| (k, v))
                 .collect(),
-            outputs,
-            edge_source_handle: "source".to_string(),
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -1509,13 +1541,13 @@ impl NodeExecutor for CodeNodeExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::variable_pool::Segment;
+    use crate::core::variable_pool::{Segment, Selector};
 
     #[tokio::test]
     async fn test_template_transform() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["n1".to_string(), "name".to_string()],
+            &Selector::new("n1", "name"),
             Segment::String("World".into()),
         );
 
@@ -1527,7 +1559,10 @@ mod tests {
         let executor = TemplateTransformExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("tt1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("output"), Some(&Value::String("Hello World!".into())));
+        assert_eq!(
+            result.outputs.ready().get("output"),
+            Some(&Value::String("Hello World!".into()))
+        );
     }
 
     #[tokio::test]
@@ -1535,7 +1570,7 @@ mod tests {
         let mut pool = VariablePool::new();
         // First selector has no value, second has a value
         pool.set(
-            &["n2".to_string(), "out".to_string()],
+            &Selector::new("n2", "out"),
             Segment::String("found".into()),
         );
 
@@ -1546,7 +1581,10 @@ mod tests {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("agg1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("output"), Some(&Value::String("found".into())));
+        assert_eq!(
+            result.outputs.ready().get("output"),
+            Some(&Value::String("found".into()))
+        );
     }
 
     #[tokio::test]
@@ -1559,14 +1597,14 @@ mod tests {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("agg1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("output"), Some(&Value::Null));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Value::Null));
     }
 
     #[tokio::test]
     async fn test_variable_assigner() {
         let mut pool = VariablePool::new();
         pool.set(
-            &["src".to_string(), "val".to_string()],
+            &Selector::new("src", "val"),
             Segment::String("data".into()),
         );
 
@@ -1579,7 +1617,10 @@ mod tests {
         let executor = VariableAssignerExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("va1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("output"), Some(&Value::String("data".into())));
+        assert_eq!(
+            result.outputs.ready().get("output"),
+            Some(&Value::String("data".into()))
+        );
     }
 
     #[tokio::test]
@@ -1593,16 +1634,16 @@ mod tests {
         let executor = CodeNodeExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("code1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("result"), Some(&Value::Number(serde_json::Number::from(42))));
+        assert_eq!(
+            result.outputs.ready().get("result"),
+            Some(&Value::Number(serde_json::Number::from(42)))
+        );
     }
 
     #[tokio::test]
     async fn test_code_node_with_variables() {
         let mut pool = VariablePool::new();
-        pool.set(
-            &["src".to_string(), "val".to_string()],
-            Segment::Float(10.0),
-        );
+        pool.set(&Selector::new("src", "val"), Segment::Float(10.0));
 
         let config = serde_json::json!({
             "code": "function main(inputs) { return { doubled: inputs.x * 2 }; }",
@@ -1613,17 +1654,17 @@ mod tests {
         let executor = CodeNodeExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("code2", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("doubled"), Some(&Value::Number(serde_json::Number::from(20))));
+        assert_eq!(
+            result.outputs.ready().get("doubled"),
+            Some(&Value::Number(serde_json::Number::from(20)))
+        );
     }
 
     #[tokio::test]
     async fn test_template_transform_with_stream() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut pool = VariablePool::new();
-        pool.set(
-            &["n1".to_string(), "text".to_string()],
-            Segment::Stream(stream),
-        );
+        pool.set(&Selector::new("n1", "text"), Segment::Stream(stream));
 
         tokio::spawn(async move {
             writer.send(Segment::String("World".into())).await;
@@ -1638,7 +1679,11 @@ mod tests {
         let executor = TemplateTransformExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("tt_stream", &config, &pool, &context).await.unwrap();
-        let stream = result.stream_outputs.get("output").cloned().expect("missing stream output");
+        let stream = result
+            .outputs
+            .streams()
+            .and_then(|streams| streams.get("output").cloned())
+            .expect("missing stream output");
         let final_seg = stream.collect().await.unwrap_or(Segment::None);
         assert_eq!(final_seg.to_display_string(), "Hello World!");
     }
@@ -1647,10 +1692,7 @@ mod tests {
     async fn test_code_node_with_stream_input() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut pool = VariablePool::new();
-        pool.set(
-            &["src".to_string(), "val".to_string()],
-            Segment::Stream(stream),
-        );
+        pool.set(&Selector::new("src", "val"), Segment::Stream(stream));
 
         tokio::spawn(async move {
             writer.send(Segment::String("hi".into())).await;
@@ -1666,17 +1708,17 @@ mod tests {
         let executor = CodeNodeExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("code_stream", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("result"), Some(&Value::String("hi!".into())));
+        assert_eq!(
+            result.outputs.ready().get("result"),
+            Some(&Value::String("hi!".into()))
+        );
     }
 
     #[tokio::test]
     async fn test_code_node_stream_on_chunk() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut pool = VariablePool::new();
-        pool.set(
-            &["src".to_string(), "text".to_string()],
-            Segment::Stream(stream),
-        );
+        pool.set(&Selector::new("src", "text"), Segment::Stream(stream));
 
         tokio::spawn(async move {
             writer.send(Segment::String("hi".into())).await;
@@ -1694,7 +1736,11 @@ mod tests {
         let context = RuntimeContext::default();
         let result = executor.execute("code_stream_cb", &config, &pool, &context).await.unwrap();
 
-        let stream = result.stream_outputs.get("output").cloned().expect("missing stream output");
+        let stream = result
+            .outputs
+            .streams()
+            .and_then(|streams| streams.get("output").cloned())
+            .expect("missing stream output");
         let final_seg = stream.collect().await.unwrap_or(Segment::None);
         let final_val = final_seg.to_value();
         assert_eq!(final_val.get("output"), Some(&Value::String("YO".into())));

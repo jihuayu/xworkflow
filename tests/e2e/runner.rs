@@ -305,7 +305,7 @@ impl NodeExecutor for TestEchoExecutor {
         outputs.insert("result".to_string(), Value::String(message.to_string()));
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
+            outputs: xworkflow::dsl::NodeOutputs::Sync(outputs),
             ..Default::default()
         })
     }

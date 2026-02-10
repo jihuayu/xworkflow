@@ -7,13 +7,14 @@ use tokio::sync::mpsc;
 
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::{Segment, SegmentStream, VariablePool};
+use crate::core::variable_pool::{Segment, SegmentStream, Selector, VariablePool};
 use crate::dsl::schema::{
-    LlmNodeData, MemoryConfig, PromptMessage, WorkflowNodeExecutionStatus,
+    EdgeHandle, LlmNodeData, MemoryConfig, NodeOutputs, PromptMessage,
+    WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
-use crate::template::render_template_async;
+use crate::template::render_template_async_with_config;
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 #[cfg(feature = "security")]
@@ -53,7 +54,13 @@ impl NodeExecutor for LlmNodeExecutor {
         }
 
         for msg in &data.prompt_template {
-            let rendered = render_template_async(&msg.text, variable_pool).await;
+            let rendered = render_template_async_with_config(
+                &msg.text,
+                variable_pool,
+                context.strict_template(),
+            )
+            .await
+            .map_err(|e| NodeError::VariableNotFound(e.selector))?;
             let role = map_role(&msg.role)?;
             messages.push(ChatMessage {
                 role,
@@ -81,8 +88,7 @@ impl NodeExecutor for LlmNodeExecutor {
                     if !urls.is_empty() {
                         #[cfg(feature = "security")]
                         if let Some(policy) = context
-                            .security_policy
-                            .as_ref()
+                            .security_policy()
                             .and_then(|p| p.network.as_ref())
                         {
                             for url in &urls {
@@ -142,8 +148,8 @@ impl NodeExecutor for LlmNodeExecutor {
         let request = {
             let mut req = request;
             if let (Some(provider), Some(group)) = (
-                context.credential_provider.as_ref(),
-                context.resource_group.as_ref(),
+                context.credential_provider(),
+                context.resource_group(),
             ) {
                 match provider
                     .get_credentials(&group.group_id, &data.model.provider)
@@ -188,7 +194,7 @@ impl NodeExecutor for LlmNodeExecutor {
         if request.stream {
             let (stream, writer) = SegmentStream::channel();
             let provider = provider.clone();
-            let event_tx = context.event_tx.clone();
+            let event_tx = context.event_tx().cloned();
             let node_id = node_id.to_string();
             let exec_id = context.id_generator.next_id();
 
@@ -215,7 +221,7 @@ impl NodeExecutor for LlmNodeExecutor {
                                     node_id: node_id_for_chunks.clone(),
                                     node_type: "llm".to_string(),
                                     chunk: chunk.delta.clone(),
-                                    selector: vec![node_id_for_chunks.clone(), "text".to_string()],
+                                        selector: Selector::new(node_id_for_chunks.clone(), "text"),
                                     is_final: chunk.finish_reason.is_some(),
                                 })
                                 .await;
@@ -247,8 +253,11 @@ impl NodeExecutor for LlmNodeExecutor {
 
             return Ok(crate::dsl::schema::NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
-                stream_outputs,
-                edge_source_handle: "source".to_string(),
+                outputs: NodeOutputs::Stream {
+                    ready: HashMap::new(),
+                    streams: stream_outputs,
+                },
+                edge_source_handle: EdgeHandle::Default,
                 ..Default::default()
             });
         }
@@ -278,10 +287,10 @@ impl NodeExecutor for LlmNodeExecutor {
 
         Ok(crate::dsl::schema::NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
+            outputs: NodeOutputs::Sync(outputs),
             metadata,
             llm_usage: Some(response.usage.clone()),
-            edge_source_handle: "source".to_string(),
+            edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
     }
@@ -294,11 +303,11 @@ async fn audit_security_event(
     severity: EventSeverity,
     node_id: Option<String>,
 ) {
-    let logger = match &context.audit_logger {
+    let logger = match context.audit_logger() {
         Some(l) => l,
         None => return,
     };
-    let group_id = match &context.resource_group {
+    let group_id = match context.resource_group() {
         Some(g) => g.group_id.clone(),
         None => return,
     };
@@ -464,10 +473,13 @@ mod tests {
         });
 
         let mut pool = VariablePool::new();
-        pool.set(&["start".to_string(), "query".to_string()], Segment::String("world".into()));
+        pool.set(&Selector::new("start", "query"), Segment::String("world".into()));
 
         let context = RuntimeContext::default();
         let result = executor.execute("llm1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.get("text"), Some(&Value::String("hello".into())));
+        assert_eq!(
+            result.outputs.ready().get("text"),
+            Some(&Value::String("hello".into()))
+        );
     }
 }

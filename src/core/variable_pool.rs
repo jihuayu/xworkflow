@@ -4,6 +4,126 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 
+pub const SCOPE_NODE_ID: &str = "__scope__";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Selector {
+    node_id: String,
+    variable_name: String,
+}
+
+impl Selector {
+    pub fn new(node_id: impl Into<String>, variable_name: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            variable_name: variable_name.into(),
+        }
+    }
+
+    pub fn parse_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Array(arr) => {
+                let mut parts = Vec::with_capacity(arr.len());
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        if !s.is_empty() {
+                            parts.push(s.to_string());
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+                Self::from_parts(parts)
+            }
+            Value::String(s) => Self::parse_str(s),
+            _ => None,
+        }
+    }
+
+    pub fn parse_str(selector: &str) -> Option<Self> {
+        let parts: Vec<String> = selector
+            .split('.')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string())
+            .collect();
+        Self::from_parts(parts)
+    }
+
+    fn from_parts(parts: Vec<String>) -> Option<Self> {
+        match parts.len() {
+            1 => Some(Self::new(SCOPE_NODE_ID, parts[0].clone())),
+            2 => Some(Self::new(parts[0].clone(), parts[1].clone())),
+            _ => None,
+        }
+    }
+
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    pub fn variable_name(&self) -> &str {
+        &self.variable_name
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.node_id.is_empty() || self.variable_name.is_empty()
+    }
+
+    pub(crate) fn pool_key(&self) -> String {
+        format!("{}:{}", self.node_id, self.variable_name)
+    }
+}
+
+impl Serialize for Selector {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let parts = vec![self.node_id.clone(), self.variable_name.clone()];
+        parts.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Selector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SelectorVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SelectorVisitor {
+            type Value = Selector;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("selector string like 'node.var' or string array")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Selector::parse_str(v).ok_or_else(|| E::custom("invalid selector string"))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut parts = Vec::new();
+                while let Some(value) = seq.next_element::<String>()? {
+                    if !value.is_empty() {
+                        parts.push(value);
+                    }
+                }
+                Selector::from_parts(parts)
+                    .ok_or_else(|| serde::de::Error::custom("invalid selector array"))
+            }
+        }
+
+        deserializer.deserialize_any(SelectorVisitor)
+    }
+}
+
 // ================================
 // Segment – Dify variable type system
 // ================================
@@ -48,7 +168,7 @@ impl FileSegment {
     }
 
     pub fn from_segment(seg: &Segment) -> Option<Self> {
-        serde_json::from_value(seg.to_value()).ok()
+        serde_json::from_value(seg.snapshot_to_value()).ok()
     }
 }
 
@@ -343,7 +463,7 @@ impl Serialize for Segment {
     where
         S: Serializer,
     {
-        self.to_value().serialize(serializer)
+        self.snapshot_to_value().serialize(serializer)
     }
 }
 
@@ -358,7 +478,12 @@ impl<'de> Deserialize<'de> for Segment {
 }
 
 impl Segment {
-    /// Convert Segment → serde_json::Value
+    /// Explicitly construct a string array.
+    pub fn string_array(items: Vec<String>) -> Self {
+        Segment::ArrayString(items)
+    }
+
+    /// Convert Segment → serde_json::Value (non-stream only).
     pub fn to_value(&self) -> Value {
         match self {
             Segment::None => Value::Null,
@@ -375,10 +500,20 @@ impl Segment {
             }
             Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
             Segment::Array(v) => Value::Array(v.iter().map(|s| s.to_value()).collect()),
+            Segment::Stream(_) => panic!(
+                "Cannot call to_value() on Stream. Use snapshot_to_value() for explicit lossy conversion."
+            ),
+        }
+    }
+
+    /// Convert Segment → serde_json::Value, snapshotting streams if needed.
+    pub fn snapshot_to_value(&self) -> Value {
+        match self {
             Segment::Stream(stream) => match stream.snapshot_segment() {
-                Segment::Array(arr) => Value::Array(arr.iter().map(|s| s.to_value()).collect()),
-                other => other.to_value(),
+                Segment::Array(arr) => Value::Array(arr.iter().map(|s| s.snapshot_to_value()).collect()),
+                other => other.snapshot_to_value(),
             },
+            other => other.to_value(),
         }
     }
 
@@ -397,18 +532,9 @@ impl Segment {
             Value::String(s) => Segment::String(s.clone()),
             Value::Array(arr) => {
                 if arr.is_empty() {
-                    return Segment::Array(Vec::new());
-                }
-                let all_strings = arr.iter().all(|v| v.is_string());
-                if all_strings {
-                    let items = arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect();
-                    Segment::ArrayString(items)
+                    Segment::Array(Vec::new())
                 } else {
-                    let segs: Vec<Segment> = arr.iter().map(Segment::from_value).collect();
-                    Segment::Array(segs)
+                    Segment::Array(arr.iter().map(Segment::from_value).collect())
                 }
             }
             Value::Object(map) => {
@@ -503,12 +629,8 @@ impl PartialEq for Segment {
             (Segment::String(a), Segment::String(b)) => a == b,
             (Segment::Integer(a), Segment::Integer(b)) => a == b,
             (Segment::Float(a), Segment::Float(b)) => (a - b).abs() < 1e-10,
-            (Segment::Integer(a), Segment::Float(b)) | (Segment::Float(b), Segment::Integer(a)) => {
-                (*a as f64 - b).abs() < 1e-10
-            }
-            (Segment::Boolean(a), Segment::Boolean(b)) => a == b,
             (Segment::ArrayString(a), Segment::ArrayString(b)) => a == b,
-            _ => self.to_value() == other.to_value(),
+            _ => self.snapshot_to_value() == other.snapshot_to_value(),
         }
     }
 }
@@ -521,7 +643,7 @@ impl std::fmt::Display for Segment {
 
 // ================================
 // VariablePool – Dify-compatible
-// Key: "node_id\0variable_name"
+// Key: "node_id:variable_name"
 // ================================
 
 #[derive(Debug, Clone)]
@@ -585,39 +707,28 @@ impl VariablePool {
     pub fn make_key(node_id: &str, var_name: &str) -> String {
         let mut key = String::with_capacity(node_id.len() + 1 + var_name.len());
         key.push_str(node_id);
-        key.push('\0');
+        key.push(':');
         key.push_str(var_name);
         key
-    }
-
-    fn make_key_from_selector(selector: &[String]) -> Option<String> {
-        if selector.len() < 2 {
-            return None;
-        }
-        Some(Self::make_key(&selector[0], &selector[1]))
     }
 
     fn key_prefix(node_id: &str) -> String {
         let mut prefix = String::with_capacity(node_id.len() + 1);
         prefix.push_str(node_id);
-        prefix.push('\0');
+        prefix.push(':');
         prefix
     }
 
     #[cfg(feature = "security")]
-    fn selector_allowed(&self, selector: &[String]) -> bool {
+    fn selector_allowed(&self, selector: &Selector) -> bool {
         let Some(cfg) = &self.selector_validation else {
             return true;
         };
-        if selector.len() < 2 || selector.len() > cfg.max_depth {
+        if 2 > cfg.max_depth {
             return false;
         }
 
-        let total_len = selector
-            .iter()
-            .map(|s| s.len())
-            .sum::<usize>()
-            .saturating_add(selector.len().saturating_sub(1));
+        let total_len = selector.node_id().len() + 1 + selector.variable_name().len();
         if total_len > cfg.max_length {
             return false;
         }
@@ -625,24 +736,24 @@ impl VariablePool {
         if cfg.allowed_prefixes.iter().any(|p| p == "*") {
             return true;
         }
-        let prefix = selector.first().map(|s| s.as_str()).unwrap_or("");
+        let prefix = selector.node_id();
         cfg.allowed_prefixes.iter().any(|p| p == prefix)
     }
 
-    /// Get variable by selector: ["node_id", "var_name"] or ["sys", "query"]
-    pub fn get(&self, selector: &[String]) -> Segment {
+    /// Get variable by selector: (node_id, var_name)
+    pub fn get(&self, selector: &Selector) -> Segment {
         #[cfg(feature = "security")]
         if !self.selector_allowed(selector) {
             return Segment::None;
         }
-        let Some(key) = Self::make_key_from_selector(selector) else {
-            return Segment::None;
-        };
-        self.variables.get(&key).cloned().unwrap_or(Segment::None)
+        self.variables
+            .get(&selector.pool_key())
+            .cloned()
+            .unwrap_or(Segment::None)
     }
 
     /// Get variable and resolve Stream by collecting it.
-    pub async fn get_resolved(&self, selector: &[String]) -> Segment {
+    pub async fn get_resolved(&self, selector: &Selector) -> Segment {
         match self.get(selector) {
             Segment::Stream(stream) => stream.collect().await.unwrap_or(Segment::None),
             other => other,
@@ -650,21 +761,19 @@ impl VariablePool {
     }
 
     /// Get variable and resolve Stream, returning serde_json::Value.
-    pub async fn get_resolved_value(&self, selector: &[String]) -> Value {
+    pub async fn get_resolved_value(&self, selector: &Selector) -> Value {
         self.get_resolved(selector).await.to_value()
     }
 
     /// Set a single variable
-    pub fn set(&mut self, selector: &[String], value: Segment) {
-        if let Some(key) = Self::make_key_from_selector(selector) {
-            self.variables.insert(key, value);
-        }
+    pub fn set(&mut self, selector: &Selector, value: Segment) {
+        self.variables.insert(selector.pool_key(), value);
     }
 
     #[cfg(feature = "security")]
     pub fn set_checked(
         &mut self,
-        selector: &[String],
+        selector: &Selector,
         value: Segment,
         max_entries: usize,
         max_memory_bytes: usize,
@@ -703,15 +812,14 @@ impl VariablePool {
     }
 
     /// Check if variable exists and is not None
-    pub fn has(&self, selector: &[String]) -> bool {
+    pub fn has(&self, selector: &Selector) -> bool {
         #[cfg(feature = "security")]
         if !self.selector_allowed(selector) {
             return false;
         }
-        let Some(key) = Self::make_key_from_selector(selector) else {
-            return false;
-        };
-        self.variables.get(&key).map_or(false, |s| !s.is_none())
+        self.variables
+            .get(&selector.pool_key())
+            .map_or(false, |s| !s.is_none())
     }
 
     /// Get all variables for a given node_id
@@ -721,7 +829,7 @@ impl VariablePool {
             .iter()
             .filter(|(key, _)| key.starts_with(&prefix))
             .filter_map(|(key, val)| {
-                key.split_once('\0')
+                key.split_once(':')
                     .map(|(_, var)| (var.to_string(), val.clone()))
             })
             .collect()
@@ -734,26 +842,22 @@ impl VariablePool {
     }
 
     /// Append value to an existing array variable
-    pub fn append(&mut self, selector: &[String], value: Segment) {
-        let Some(key) = Self::make_key_from_selector(selector) else {
-            return;
-        };
+    pub fn append(&mut self, selector: &Selector, value: Segment) {
+        let key = selector.pool_key();
         let existing = self.variables.entry(key).or_insert(Segment::Array(vec![]));
         match existing {
             Segment::Array(arr) => arr.push(value),
-            Segment::ArrayString(arr) => {
-                match value {
-                    Segment::String(s) => arr.push(s),
-                    other => {
-                        let mut promoted: Vec<Segment> = arr
-                            .drain(..)
-                            .map(Segment::String)
-                            .collect();
-                        promoted.push(other);
-                        *existing = Segment::Array(promoted);
-                    }
+            Segment::ArrayString(arr) => match value {
+                Segment::String(s) => arr.push(s),
+                other => {
+                    let mut promoted: Vec<Segment> = arr
+                        .drain(..)
+                        .map(Segment::String)
+                        .collect();
+                    promoted.push(other);
+                    *existing = Segment::Array(promoted);
                 }
-            }
+            },
             Segment::String(s) => {
                 *s += &value.to_display_string();
             }
@@ -761,7 +865,6 @@ impl VariablePool {
                 *existing = Segment::Array(vec![value]);
             }
             _ => {
-                // Convert to Array
                 let old = std::mem::replace(existing, Segment::None);
                 *existing = Segment::Array(vec![old, value]);
             }
@@ -769,10 +872,8 @@ impl VariablePool {
     }
 
     /// Clear a variable (set to None)
-    pub fn clear(&mut self, selector: &[String]) {
-        if let Some(key) = Self::make_key_from_selector(selector) {
-            self.variables.insert(key, Segment::None);
-        }
+    pub fn clear(&mut self, selector: &Selector) {
+        self.variables.insert(selector.pool_key(), Segment::None);
     }
 
     /// Snapshot entire pool for serialization
@@ -794,7 +895,7 @@ mod tests {
     #[test]
     fn test_variable_pool_basic() {
         let mut pool = VariablePool::new();
-        let sel = vec!["node1".to_string(), "output".to_string()];
+        let sel = Selector::new("node1", "output");
         pool.set(&sel, Segment::String("hello".to_string()));
         let val = pool.get(&sel);
         assert!(matches!(val, Segment::String(s) if s == "hello"));
@@ -803,7 +904,7 @@ mod tests {
     #[test]
     fn test_variable_pool_sys() {
         let mut pool = VariablePool::new();
-        let sel = vec!["sys".to_string(), "query".to_string()];
+        let sel = Selector::new("sys", "query");
         pool.set(&sel, Segment::String("test query".to_string()));
         assert!(pool.has(&sel));
         let val = pool.get(&sel);
@@ -813,7 +914,7 @@ mod tests {
     #[test]
     fn test_variable_pool_missing() {
         let pool = VariablePool::new();
-        let sel = vec!["nonexistent".to_string(), "var".to_string()];
+        let sel = Selector::new("nonexistent", "var");
         assert!(pool.get(&sel).is_none());
         assert!(!pool.has(&sel));
     }
@@ -826,10 +927,10 @@ mod tests {
         outputs.insert("count".to_string(), serde_json::json!(42));
         pool.set_node_outputs("node_llm", &outputs);
 
-        let text = pool.get(&["node_llm".to_string(), "text".to_string()]);
+        let text = pool.get(&Selector::new("node_llm", "text"));
         assert!(matches!(text, Segment::String(s) if s == "result"));
 
-        let count = pool.get(&["node_llm".to_string(), "count".to_string()]);
+        let count = pool.get(&Selector::new("node_llm", "count"));
         assert!(matches!(count, Segment::Integer(42)));
     }
 
@@ -846,7 +947,7 @@ mod tests {
     #[test]
     fn test_append() {
         let mut pool = VariablePool::new();
-        let sel = vec!["n".to_string(), "arr".to_string()];
+        let sel = Selector::new("n", "arr");
         pool.set(&sel, Segment::Array(vec![]));
         pool.append(&sel, Segment::Integer(1));
         pool.append(&sel, Segment::Integer(2));
@@ -859,7 +960,7 @@ mod tests {
     #[test]
     fn test_from_value_array_inference() {
         let seg = Segment::from_value(&serde_json::json!(["a", "b"]));
-        assert!(matches!(seg, Segment::ArrayString(_)));
+        assert!(matches!(seg, Segment::Array(_)));
 
         let seg = Segment::from_value(&serde_json::json!([1, 2, 3]));
         assert!(matches!(seg, Segment::Array(_)));
@@ -887,7 +988,7 @@ mod tests {
     #[test]
     fn test_append_array_string_promote() {
         let mut pool = VariablePool::new();
-        let sel = vec!["n".to_string(), "arr".to_string()];
+        let sel = Selector::new("n", "arr");
         pool.set(&sel, Segment::ArrayString(vec!["a".into()]));
         pool.append(&sel, Segment::Integer(1));
         match pool.get(&sel) {
@@ -944,19 +1045,15 @@ mod tests {
     async fn test_get_resolved_stream() {
         let (stream, writer) = SegmentStream::channel();
         let mut pool = VariablePool::new();
-        pool.set(
-            &["n1".to_string(), "text".to_string()],
-            Segment::Stream(stream),
-        );
+        let sel = Selector::new("n1", "text");
+        pool.set(&sel, Segment::Stream(stream));
 
         tokio::spawn(async move {
             writer.send(Segment::String("hello".into())).await;
             writer.end(Segment::String("hello".into())).await;
         });
 
-        let resolved = pool
-            .get_resolved(&["n1".to_string(), "text".to_string()])
-            .await;
+        let resolved = pool.get_resolved(&sel).await;
         assert_eq!(resolved.to_display_string(), "hello");
     }
 }

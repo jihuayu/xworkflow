@@ -101,7 +101,7 @@ fn var_get_impl(
         return Err(anyhow!("Capability denied: read_variables"));
     }
     let selector_bytes = read_bytes(&mut caller, selector_ptr, selector_len)?;
-    let selector: Vec<String> = serde_json::from_slice(&selector_bytes)
+    let selector: crate::core::variable_pool::Selector = serde_json::from_slice(&selector_bytes)
         .map_err(|e| anyhow!(e.to_string()))?;
     let pool = caller
         .data()
@@ -112,7 +112,7 @@ fn var_get_impl(
         .read()
         .map_err(|_| anyhow!("Variable pool poisoned"))?
         .get(&selector)
-        .to_value();
+        .snapshot_to_value();
     write_json_to_guest(&mut caller, &value)
 }
 
@@ -127,7 +127,7 @@ fn var_set_impl(
         return Ok(-1);
     }
     let selector_bytes = read_bytes(&mut caller, selector_ptr, selector_len)?;
-    let selector: Vec<String> = serde_json::from_slice(&selector_bytes)
+    let selector: crate::core::variable_pool::Selector = serde_json::from_slice(&selector_bytes)
         .map_err(|e| anyhow!(e.to_string()))?;
     let value_bytes = read_bytes(&mut caller, value_ptr, value_len)?;
     let value: Value = serde_json::from_slice(&value_bytes)
