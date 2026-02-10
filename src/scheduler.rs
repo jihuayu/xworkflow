@@ -11,14 +11,12 @@ use crate::core::runtime_context::RuntimeContext;
 #[cfg(feature = "security")]
 use crate::core::runtime_context::SecurityContext;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
-use crate::core::variable_pool::{Segment, VariablePool};
-use crate::dsl::schema::{ErrorHandlingMode, WorkflowSchema};
+use crate::core::variable_pool::{Segment, SegmentType, VariablePool};
+use crate::dsl::schema::{ErrorHandlingMode, StartVariable, WorkflowSchema};
 use crate::dsl::validation::{validate_schema, ValidationReport};
 use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
-#[cfg(not(feature = "plugin-system"))]
-use crate::plugin::PluginManager;
 use crate::llm::LlmProviderRegistry;
 #[cfg(feature = "security")]
 use crate::security::{AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, SecurityPolicy};
@@ -162,8 +160,6 @@ pub struct WorkflowRunner {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
-  #[cfg(not(feature = "plugin-system"))]
-  plugin_manager: Option<Arc<PluginManager>>,
   #[cfg(feature = "plugin-system")]
   plugin_system_config: Option<PluginSystemConfig>,
   #[cfg(feature = "plugin-system")]
@@ -186,8 +182,6 @@ impl WorkflowRunner {
       conversation_vars: HashMap::new(),
       config: EngineConfig::default(),
       context: RuntimeContext::default(),
-      #[cfg(not(feature = "plugin-system"))]
-      plugin_manager: None,
       #[cfg(feature = "plugin-system")]
       plugin_system_config: None,
       #[cfg(feature = "plugin-system")]
@@ -243,6 +237,53 @@ fn error_type_name(error: &WorkflowError) -> &'static str {
   }
 }
 
+fn segment_from_type(value: &Value, seg_type: Option<&SegmentType>) -> Segment {
+  if let Some(SegmentType::ArrayString) = seg_type {
+    if let Value::Array(items) = value {
+      let mut values = Vec::with_capacity(items.len());
+      for item in items {
+        if let Some(s) = item.as_str() {
+          values.push(s.to_string());
+        } else {
+          return Segment::from_value(value);
+        }
+      }
+      return Segment::string_array(values);
+    }
+  }
+
+  Segment::from_value(value)
+}
+
+fn collect_start_variable_types(schema: &WorkflowSchema) -> HashMap<String, SegmentType> {
+  let mut map = HashMap::new();
+  for node in &schema.nodes {
+    if node.data.node_type != "start" {
+      continue;
+    }
+    if let Some(vars_val) = node.data.extra.get("variables") {
+      if let Ok(vars) = serde_json::from_value::<Vec<StartVariable>>(vars_val.clone()) {
+        for var in vars {
+          if let Some(seg_type) = SegmentType::from_dsl_type(&var.var_type) {
+            map.insert(var.variable, seg_type);
+          }
+        }
+      }
+    }
+  }
+  map
+}
+
+fn collect_conversation_variable_types(schema: &WorkflowSchema) -> HashMap<String, SegmentType> {
+  let mut map = HashMap::new();
+  for var in &schema.conversation_variables {
+    if let Some(seg_type) = SegmentType::from_dsl_type(&var.var_type) {
+      map.insert(var.name.clone(), seg_type);
+    }
+  }
+  map
+}
+
 fn extract_error_node_info(
   error: &WorkflowError,
   schema: &WorkflowSchema,
@@ -268,8 +309,6 @@ pub struct WorkflowRunnerBuilder {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
-  #[cfg(not(feature = "plugin-system"))]
-  plugin_manager: Option<Arc<PluginManager>>,
   #[cfg(feature = "plugin-system")]
   plugin_system_config: Option<PluginSystemConfig>,
   #[cfg(feature = "plugin-system")]
@@ -374,12 +413,6 @@ impl WorkflowRunnerBuilder {
   pub fn audit_logger(mut self, logger: Arc<dyn AuditLogger>) -> Self {
     let security = self.ensure_security_context();
     security.audit_logger = Some(logger);
-    self
-  }
-
-  #[cfg(not(feature = "plugin-system"))]
-  pub fn plugin_manager(mut self, plugin_manager: Arc<PluginManager>) -> Self {
-    self.plugin_manager = Some(plugin_manager);
     self
   }
 
@@ -578,6 +611,8 @@ impl WorkflowRunnerBuilder {
 
     // Build variable pool
     let mut pool = VariablePool::new();
+    let start_var_types = collect_start_variable_types(&builder.schema);
+    let conversation_var_types = collect_conversation_variable_types(&builder.schema);
     #[cfg(feature = "security")]
     if let Some(selector_cfg) = builder
       .context
@@ -603,14 +638,16 @@ impl WorkflowRunnerBuilder {
     // Set conversation variables
     for (k, v) in &builder.conversation_vars {
       let selector = crate::core::variable_pool::Selector::new("conversation", k.clone());
-      pool.set(&selector, Segment::from_value(v));
+      let seg = segment_from_type(v, conversation_var_types.get(k));
+      pool.set(&selector, seg);
     }
 
     // Set user inputs mapped to start node
     let start_node_id = graph.root_node_id.clone();
     for (k, v) in &builder.user_inputs {
       let selector = crate::core::variable_pool::Selector::new(start_node_id.clone(), k.clone());
-      pool.set(&selector, Segment::from_value(v));
+      let seg = segment_from_type(v, start_var_types.get(k));
+      pool.set(&selector, seg);
     }
 
     let mut registry = NodeExecutorRegistry::new();
@@ -721,8 +758,6 @@ impl WorkflowRunnerBuilder {
 
     // Spawn workflow execution
     let status_exec = status.clone();
-    #[cfg(not(feature = "plugin-system"))]
-    let plugin_manager = builder.plugin_manager.clone();
     #[cfg(feature = "plugin-system")]
     let plugin_registry = builder.plugin_registry.map(Arc::new);
     let schema = builder.schema.clone();
@@ -900,6 +935,8 @@ impl WorkflowRunnerBuilder {
     let graph = build_graph(&builder.schema)?;
 
     let mut pool = VariablePool::new();
+    let start_var_types = collect_start_variable_types(&builder.schema);
+    let conversation_var_types = collect_conversation_variable_types(&builder.schema);
 
     for (k, v) in &builder.system_vars {
       let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
@@ -913,23 +950,17 @@ impl WorkflowRunnerBuilder {
 
     for (k, v) in &builder.conversation_vars {
       let selector = crate::core::variable_pool::Selector::new("conversation", k.clone());
-      pool.set(&selector, Segment::from_value(v));
+      let seg = segment_from_type(v, conversation_var_types.get(k));
+      pool.set(&selector, seg);
     }
 
     let start_node_id = graph.root_node_id.clone();
     for (k, v) in &builder.user_inputs {
       let selector = crate::core::variable_pool::Selector::new(start_node_id.clone(), k.clone());
-      pool.set(&selector, Segment::from_value(v));
+      let seg = segment_from_type(v, start_var_types.get(k));
+      pool.set(&selector, seg);
     }
 
-    #[cfg(not(feature = "plugin-system"))]
-    let mut registry = if let Some(pm) = &builder.plugin_manager {
-      NodeExecutorRegistry::new_with_plugins(pm.clone())
-    } else {
-      NodeExecutorRegistry::new()
-    };
-
-    #[cfg(feature = "plugin-system")]
     let mut registry = NodeExecutorRegistry::new();
 
     #[cfg(feature = "plugin-system")]
@@ -1053,8 +1084,6 @@ impl WorkflowRunnerBuilder {
     }
 
     let status_exec = status.clone();
-    #[cfg(not(feature = "plugin-system"))]
-    let plugin_manager = builder.plugin_manager.clone();
     #[cfg(feature = "plugin-system")]
     let plugin_registry = builder.plugin_registry.map(Arc::new);
     let schema = builder.schema.clone();
@@ -1071,8 +1100,6 @@ impl WorkflowRunnerBuilder {
         event_emitter,
         config,
         context.clone(),
-        #[cfg(not(feature = "plugin-system"))]
-        plugin_manager,
         #[cfg(feature = "plugin-system")]
         plugin_registry,
         gate,

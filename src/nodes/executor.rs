@@ -9,8 +9,6 @@ use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
 use crate::llm::LlmProviderRegistry;
-#[cfg(not(feature = "plugin-system"))]
-use crate::plugin::{PluginManager, PluginNodeExecutor};
 use crate::llm::LlmNodeExecutor;
 
 /// Trait for node execution. Each node type implements this.
@@ -110,21 +108,6 @@ impl NodeExecutorRegistry {
         registry
     }
 
-    #[cfg(not(feature = "plugin-system"))]
-    pub fn new_with_plugins(plugin_manager: std::sync::Arc<PluginManager>) -> Self {
-        let mut registry = Self::new();
-        for (node_type, _) in plugin_manager.get_plugin_node_types() {
-            registry.register(
-                &node_type,
-                Box::new(PluginNodeExecutor::new(
-                    plugin_manager.clone(),
-                    Some(node_type.clone()),
-                )),
-            );
-        }
-        registry
-    }
-
     #[cfg(feature = "plugin-system")]
     pub fn apply_plugin_executors(
         &mut self,
@@ -193,7 +176,14 @@ impl NodeExecutor for StubExecutor {
         _variable_pool: &VariablePool,
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
+        let message = format!("Node type '{}' is not implemented", self.0);
         Ok(NodeRunResult {
+            status: crate::dsl::schema::WorkflowNodeExecutionStatus::Exception,
+            error: Some(crate::dsl::schema::NodeErrorInfo {
+                message: message.clone(),
+                error_type: Some("not_implemented".to_string()),
+                detail: None,
+            }),
             outputs: crate::dsl::schema::NodeOutputs::Sync({
                 let mut m = HashMap::new();
                 m.insert(

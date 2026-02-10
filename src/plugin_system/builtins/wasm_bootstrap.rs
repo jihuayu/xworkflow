@@ -8,8 +8,14 @@ use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
-use crate::plugin::manifest::{AllowedCapabilities, PluginHookType, PluginManifest, PluginNodeType};
-use crate::plugin::runtime::PluginRuntime;
+use crate::plugin_system::wasm::{
+    AllowedCapabilities,
+    PluginHook,
+    PluginHookType,
+    PluginManifest,
+    PluginNodeType,
+    PluginRuntime,
+};
 
 use super::super::context::PluginContext;
 use super::super::error::PluginError;
@@ -246,7 +252,7 @@ impl NodeExecutor for WasmNodeExecutorAdapter {
 
 struct WasmHookHandlerAdapter {
     runtime: Arc<PluginRuntime>,
-    hook: crate::plugin::manifest::PluginHook,
+    hook: PluginHook,
 }
 
 #[async_trait]

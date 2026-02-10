@@ -1,9 +1,9 @@
 use std::sync::{Arc, RwLock};
 
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use wasmtime::{Caller, Linker, Memory, StoreLimits};
-use anyhow::{anyhow, Result};
 
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::variable_pool::{Segment, VariablePool};
@@ -49,7 +49,7 @@ fn get_memory(caller: &mut Caller<'_, PluginState>) -> Result<Memory> {
     caller
         .get_export("memory")
         .and_then(|e| e.into_memory())
-    .ok_or_else(|| anyhow!("Missing export: memory"))
+        .ok_or_else(|| anyhow!("Missing export: memory"))
 }
 
 fn read_bytes(caller: &mut Caller<'_, PluginState>, ptr: i32, len: i32) -> Result<Vec<u8>> {
@@ -65,7 +65,7 @@ fn write_bytes(caller: &mut Caller<'_, PluginState>, ptr: i32, bytes: &[u8]) -> 
     let memory = get_memory(caller)?;
     memory
         .write(caller, ptr as usize, bytes)
-    .map_err(|e| anyhow!(e.to_string()))
+        .map_err(|e| anyhow!(e.to_string()))
 }
 
 fn alloc_in_guest(caller: &mut Caller<'_, PluginState>, size: i32) -> Result<i32> {
@@ -76,9 +76,7 @@ fn alloc_in_guest(caller: &mut Caller<'_, PluginState>, size: i32) -> Result<i32
     let alloc = alloc
         .typed::<i32, i32>(&mut *caller)
         .map_err(|e| anyhow!(e.to_string()))?;
-    alloc
-        .call(caller, size)
-        .map_err(|e| anyhow!(e.to_string()))
+    alloc.call(caller, size).map_err(|e| anyhow!(e.to_string()))
 }
 
 fn write_json_to_guest(

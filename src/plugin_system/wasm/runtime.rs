@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use tokio::sync::mpsc;
 use wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
+use wasmtime_wasi::preview1;
 
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
@@ -13,7 +14,6 @@ use crate::error::NodeError;
 use super::error::PluginError;
 use super::host_functions::{register_host_functions, PluginState};
 use super::manifest::{PluginHookType, PluginManifest, PluginNodeType};
-use wasmtime_wasi::{preview1, WasiCtxBuilder};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginStatus {
@@ -170,7 +170,7 @@ impl PluginRuntime {
     ) -> Result<NodeRunResult, NodeError> {
         let pool = Arc::new(RwLock::new(variable_pool.clone()));
         let state = PluginState {
-            wasi: WasiCtxBuilder::new().build_p1(),
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build_p1(),
             variable_pool: Some(pool),
             event_tx: None,
             capabilities: self.manifest.capabilities.clone(),
@@ -215,7 +215,7 @@ impl PluginRuntime {
             .ok_or_else(|| PluginError::MissingExport(format!("hook:{:?}", hook_type)))?;
 
         let state = PluginState {
-            wasi: WasiCtxBuilder::new().build_p1(),
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build_p1(),
             variable_pool: Some(variable_pool),
             event_tx,
             capabilities: self.manifest.capabilities.clone(),

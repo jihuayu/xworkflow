@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use xworkflow::dsl::schema::{NodeRunResult, WorkflowNodeExecutionStatus};
 use xworkflow::error::NodeError;
 use xworkflow::nodes::executor::NodeExecutor;
-use xworkflow::plugin::manifest::{
+use xworkflow::plugin_system::wasm::{
     PluginCapabilities, PluginManifest, PluginNodeType,
 };
 use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};

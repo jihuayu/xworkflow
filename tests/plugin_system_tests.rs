@@ -5,10 +5,18 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
-use xworkflow::plugin::{
-    AllowedCapabilities, PluginCapabilities, PluginHook, PluginHookType, PluginManifest,
-    PluginManager, PluginManagerConfig, PluginNodeType, PluginRuntime, PluginState,
+use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
+use xworkflow::plugin_system::wasm::{
+    AllowedCapabilities,
+    PluginCapabilities,
+    PluginHook,
+    PluginHookType,
+    PluginManifest,
+    PluginNodeType,
+    PluginRuntime,
+    PluginState,
 };
+use xworkflow::plugin_system::{PluginLoadSource, PluginRegistry};
 
 fn basic_plugin_wat() -> &'static str {
     r#"(module
@@ -140,8 +148,8 @@ fn test_plugin_load_manifest() {
     assert_eq!(manifest.node_types.len(), 1);
 }
 
-#[test]
-fn test_plugin_discover() {
+#[tokio::test]
+async fn test_plugin_discover() {
     let temp = TempDir::new().unwrap();
     let plugin_dir = temp.path().join("com.example.basic");
     fs::create_dir_all(&plugin_dir).unwrap();
@@ -154,8 +162,8 @@ fn test_plugin_discover() {
     )
     .unwrap();
 
-    let config = PluginManagerConfig {
-        plugin_dir: temp.path().to_path_buf(),
+    let mut registry = PluginRegistry::new();
+    let config = WasmPluginConfig {
         auto_discover: false,
         default_max_memory_pages: 64,
         default_max_fuel: 100_000,
@@ -167,15 +175,32 @@ fn test_plugin_discover() {
             fs_access: false,
         },
     };
+    registry
+        .run_bootstrap_phase(Vec::new(), vec![Box::new(WasmBootstrapPlugin::new(config))])
+        .await
+        .unwrap();
 
-    let mut manager = PluginManager::new(config).unwrap();
-    let loaded = manager.discover_and_load().unwrap();
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(manager.list_plugins().len(), 1);
+    let mut params = std::collections::HashMap::new();
+    params.insert(
+        "dir".to_string(),
+        plugin_dir.to_string_lossy().into_owned(),
+    );
+    let sources = vec![PluginLoadSource {
+        loader_type: "wasm".to_string(),
+        params,
+    }];
+
+    registry
+        .run_normal_phase(sources, Vec::new())
+        .await
+        .unwrap();
+
+    let executors = registry.take_node_executors();
+    assert!(executors.contains_key("plugin.echo"));
 }
 
-#[test]
-fn test_plugin_capability_deny() {
+#[tokio::test]
+async fn test_plugin_capability_deny() {
     let temp = TempDir::new().unwrap();
     let plugin_dir = temp.path().join("com.example.basic");
     fs::create_dir_all(&plugin_dir).unwrap();
@@ -188,16 +213,29 @@ fn test_plugin_capability_deny() {
     )
     .unwrap();
 
-    let config = PluginManagerConfig {
-        plugin_dir: temp.path().to_path_buf(),
+    let mut registry = PluginRegistry::new();
+    let config = WasmPluginConfig {
         auto_discover: false,
         default_max_memory_pages: 64,
         default_max_fuel: 100_000,
         allowed_capabilities: AllowedCapabilities::default(),
     };
+    registry
+        .run_bootstrap_phase(Vec::new(), vec![Box::new(WasmBootstrapPlugin::new(config))])
+        .await
+        .unwrap();
 
-    let mut manager = PluginManager::new(config).unwrap();
-    let result = manager.load_plugin(&plugin_dir);
+    let mut params = std::collections::HashMap::new();
+    params.insert(
+        "dir".to_string(),
+        plugin_dir.to_string_lossy().into_owned(),
+    );
+    let sources = vec![PluginLoadSource {
+        loader_type: "wasm".to_string(),
+        params,
+    }];
+
+    let result = registry.run_normal_phase(sources, Vec::new()).await;
     assert!(result.is_err());
 }
 
@@ -322,36 +360,3 @@ async fn test_plugin_custom_node_and_hook() {
     assert!(hook_output.is_some());
 }
 
-#[test]
-fn test_plugin_unload() {
-    let temp = TempDir::new().unwrap();
-    let plugin_dir = temp.path().join("com.example.basic");
-    fs::create_dir_all(&plugin_dir).unwrap();
-
-    let wasm_bytes = wat::parse_str(basic_plugin_wat()).unwrap();
-    fs::write(plugin_dir.join("plugin.wasm"), wasm_bytes).unwrap();
-    fs::write(
-        plugin_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&basic_manifest()).unwrap(),
-    )
-    .unwrap();
-
-    let config = PluginManagerConfig {
-        plugin_dir: temp.path().to_path_buf(),
-        auto_discover: false,
-        default_max_memory_pages: 64,
-        default_max_fuel: 100_000,
-        allowed_capabilities: AllowedCapabilities {
-            read_variables: true,
-            write_variables: true,
-            emit_events: false,
-            http_access: false,
-            fs_access: false,
-        },
-    };
-
-    let mut manager = PluginManager::new(config).unwrap();
-    let plugin_id = manager.load_plugin(&plugin_dir).unwrap();
-    manager.unload_plugin(&plugin_id).unwrap();
-    assert!(manager.list_plugins().is_empty());
-}

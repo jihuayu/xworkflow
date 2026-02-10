@@ -9,6 +9,7 @@ pub mod traits;
 pub mod macros;
 pub mod loaders;
 pub mod builtins;
+pub mod wasm;
 
 pub use config::PluginSystemConfig;
 pub use context::PluginContext;

@@ -7,7 +7,6 @@ pub mod nodes;
 pub mod sandbox;
 pub mod template;
 pub mod scheduler;
-pub mod plugin;
 pub mod llm;
 #[cfg(feature = "security")]
 pub mod security;

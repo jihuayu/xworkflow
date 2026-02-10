@@ -17,8 +17,6 @@ use xworkflow::{
     RuntimeContext,
     WorkflowRunner,
 };
-#[cfg(not(feature = "plugin-system"))]
-use xworkflow::plugin::{AllowedCapabilities, PluginManager, PluginManagerConfig};
 #[cfg(feature = "plugin-system")]
 use xworkflow::plugin_system::{
     HookHandler,
@@ -77,9 +75,6 @@ struct StateFile {
     fake_time: Option<FakeTimeConfig>,
     #[serde(default)]
     fake_id: Option<FakeIdConfig>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    plugin_dir: Option<String>,
     #[cfg(feature = "plugin-system")]
     #[serde(default)]
     plugin_system: Option<PluginSystemState>,
@@ -616,29 +611,6 @@ pub async fn run_case(case_dir: &Path) {
         }
     }
 
-    #[cfg(not(feature = "plugin-system"))]
-    if let Some(plugin_dir) = state.plugin_dir {
-        let plugin_path = if Path::new(&plugin_dir).is_absolute() {
-            PathBuf::from(plugin_dir)
-        } else {
-            case_dir.join(plugin_dir)
-        };
-        let manager = PluginManager::new(PluginManagerConfig {
-            plugin_dir: plugin_path,
-            auto_discover: true,
-            default_max_memory_pages: 64,
-            default_max_fuel: 100_000,
-            allowed_capabilities: AllowedCapabilities {
-                read_variables: true,
-                write_variables: true,
-                emit_events: true,
-                http_access: false,
-                fs_access: false,
-            },
-        })
-        .unwrap();
-        builder = builder.plugin_manager(Arc::new(manager));
-    }
 
     let handle = builder.run().await;
     if handle.is_err() {
@@ -880,29 +852,6 @@ pub async fn run_debug_case(case_dir: &Path) {
         }
     }
 
-    #[cfg(not(feature = "plugin-system"))]
-    if let Some(plugin_dir) = state.plugin_dir {
-        let plugin_path = if Path::new(&plugin_dir).is_absolute() {
-            PathBuf::from(plugin_dir)
-        } else {
-            case_dir.join(plugin_dir)
-        };
-        let manager = PluginManager::new(PluginManagerConfig {
-            plugin_dir: plugin_path,
-            auto_discover: true,
-            default_max_memory_pages: 64,
-            default_max_fuel: 100_000,
-            allowed_capabilities: AllowedCapabilities {
-                read_variables: true,
-                write_variables: true,
-                emit_events: true,
-                http_access: false,
-                fs_access: false,
-            },
-        })
-        .unwrap();
-        builder = builder.plugin_manager(Arc::new(manager));
-    }
 
     let (handle, debug) = builder
         .run_debug()
