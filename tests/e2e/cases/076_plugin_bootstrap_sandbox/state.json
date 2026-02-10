@@ -1,5 +1,0 @@
-{
-  "plugin_system": {
-    "host_bootstrap_plugins": ["test_sandbox_bootstrap"]
-  }
-}

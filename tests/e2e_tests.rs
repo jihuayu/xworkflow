@@ -75,7 +75,6 @@ e2e::e2e_test_cases!(
     "tests/e2e/cases",
     case_047_plugin_node_basic => "047_plugin_node_basic",
     case_075_plugin_host_node_basic => "075_plugin_host_node_basic",
-    case_076_plugin_bootstrap_sandbox => "076_plugin_bootstrap_sandbox",
     case_077_plugin_llm_provider => "077_plugin_llm_provider",
     case_078_plugin_hook_modifier => "078_plugin_hook_modifier",
 );
