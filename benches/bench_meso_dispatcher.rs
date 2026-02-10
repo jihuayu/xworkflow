@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 
 mod helpers;
 
@@ -34,7 +34,7 @@ fn bench_dispatcher(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
-            pool.set(&["start".to_string(), "flag0".to_string()], Segment::Boolean(true));
+            pool.set(&Selector::new("start", "flag0"), Segment::Boolean(true));
             setup.run_hot(pool).await;
         });
     });
@@ -44,7 +44,7 @@ fn bench_dispatcher(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
-            pool.set(&["start".to_string(), "flag0".to_string()], Segment::Boolean(true));
+            pool.set(&Selector::new("start", "flag0"), Segment::Boolean(true));
             setup.run_hot(pool).await;
         });
     });
@@ -54,8 +54,8 @@ fn bench_dispatcher(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
-            pool.set(&["start".to_string(), "flag0".to_string()], Segment::Boolean(true));
-            pool.set(&["start".to_string(), "query".to_string()], Segment::String("bench".into()));
+            pool.set(&Selector::new("start", "flag0"), Segment::Boolean(true));
+            pool.set(&Selector::new("start", "query"), Segment::String("bench".into()));
             setup.run_hot(pool).await;
         });
     });
@@ -67,7 +67,7 @@ fn bench_dispatcher(c: &mut Criterion) {
             let mut pool = VariablePool::new();
             for i in 1..=10 {
                 pool.set(
-                    &["start".to_string(), format!("flag{}", i)],
+                    &Selector::new("start", format!("flag{}", i)),
                     Segment::Boolean(true),
                 );
             }

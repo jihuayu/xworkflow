@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use xworkflow::core::runtime_context::RuntimeContext;
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 use xworkflow::nodes::executor::NodeExecutor;
 use xworkflow::nodes::control_flow::{AnswerNodeExecutor, EndNodeExecutor, IfElseNodeExecutor, StartNodeExecutor};
 use xworkflow::nodes::data_transform::{CodeNodeExecutor, TemplateTransformExecutor, VariableAggregatorExecutor};
@@ -16,7 +16,7 @@ fn bench_node_executors(c: &mut Criterion) {
         let mut pool = VariablePool::new();
         for i in 0..5 {
             pool.set(
-                &["start".to_string(), format!("v{}", i)],
+                &Selector::new("start", format!("v{}", i)),
                 Segment::String(format!("val{}", i)),
             );
         }
@@ -35,7 +35,7 @@ fn bench_node_executors(c: &mut Criterion) {
         let mut pool = VariablePool::new();
         for i in 0..5 {
             pool.set(
-                &[format!("n{}", i), "out".to_string()],
+                &Selector::new(format!("n{}", i), "out"),
                 Segment::String(format!("v{}", i)),
             );
         }
@@ -56,7 +56,7 @@ fn bench_node_executors(c: &mut Criterion) {
         let mut pool = VariablePool::new();
         for i in 0..5 {
             pool.set(
-                &["n".to_string(), format!("v{}", i)],
+                &Selector::new("n", format!("v{}", i)),
                 Segment::String(format!("val{}", i)),
             );
         }
@@ -75,7 +75,7 @@ fn bench_node_executors(c: &mut Criterion) {
 
     c.bench_function("ifelse_5_cases_5_conditions", |b| {
         let mut pool = VariablePool::new();
-        pool.set(&["n".to_string(), "x".to_string()], Segment::Integer(10));
+        pool.set(&Selector::new("n", "x"), Segment::Integer(10));
         let cases = (0..5)
             .map(|i| {
                 serde_json::json!({
@@ -104,7 +104,7 @@ fn bench_node_executors(c: &mut Criterion) {
         let mut pool = VariablePool::new();
         for i in 0..5 {
             pool.set(
-                &["n".to_string(), format!("v{}", i)],
+                &Selector::new("n", format!("v{}", i)),
                 Segment::String(format!("val{}", i)),
             );
         }
@@ -126,7 +126,7 @@ fn bench_node_executors(c: &mut Criterion) {
 
     c.bench_function("variable_aggregator_5_selectors", |b| {
         let mut pool = VariablePool::new();
-        pool.set(&["n3".to_string(), "out".to_string()], Segment::String("hit".into()));
+        pool.set(&Selector::new("n3", "out"), Segment::String("hit".into()));
         let variables = (0..5)
             .map(|i| serde_json::json!([format!("n{}", i), "out"]))
             .collect::<Vec<_>>();

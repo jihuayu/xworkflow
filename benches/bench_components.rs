@@ -5,7 +5,7 @@ use serde_json::Value;
 use wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
 
 use xworkflow::core::runtime_context::RuntimeContext;
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 use xworkflow::nodes::control_flow::{
     AnswerNodeExecutor, EndNodeExecutor, IfElseNodeExecutor, StartNodeExecutor,
 };
@@ -29,7 +29,7 @@ fn bench_node_executors(c: &mut Criterion) {
     let mut pool = VariablePool::new();
     for i in 0..5 {
         pool.set(
-            &["start".to_string(), format!("v{}", i)],
+            &Selector::new("start", format!("v{}", i)),
             Segment::String(format!("val{}", i)),
         );
     }
@@ -52,7 +52,7 @@ fn bench_node_executors(c: &mut Criterion) {
     let mut pool = VariablePool::new();
     for i in 0..5 {
         pool.set(
-            &[format!("n{}", i), "out".to_string()],
+            &Selector::new(format!("n{}", i), "out"),
             Segment::String(format!("v{}", i)),
         );
     }
@@ -75,7 +75,7 @@ fn bench_node_executors(c: &mut Criterion) {
     let mut pool = VariablePool::new();
     for i in 0..5 {
         pool.set(
-            &["n".to_string(), format!("v{}", i)],
+            &Selector::new("n", format!("v{}", i)),
             Segment::String(format!("val{}", i)),
         );
     }
@@ -96,7 +96,7 @@ fn bench_node_executors(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("node/ifelse");
     let mut pool = VariablePool::new();
-    pool.set(&["n".to_string(), "x".to_string()], Segment::Integer(10));
+    pool.set(&Selector::new("n", "x"), Segment::Integer(10));
     let cases = (0..5)
         .map(|i| {
             serde_json::json!({
@@ -127,7 +127,7 @@ fn bench_node_executors(c: &mut Criterion) {
     let mut pool = VariablePool::new();
     for i in 0..5 {
         pool.set(
-            &["n".to_string(), format!("v{}", i)],
+            &Selector::new("n", format!("v{}", i)),
             Segment::String(format!("val{}", i)),
         );
     }
@@ -151,7 +151,7 @@ fn bench_node_executors(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("node/aggregator");
     let mut pool = VariablePool::new();
-    pool.set(&["n3".to_string(), "out".to_string()], Segment::String("hit".into()));
+    pool.set(&Selector::new("n3", "out"), Segment::String("hit".into()));
     let variables = (0..5)
         .map(|i| serde_json::json!([format!("n{}", i), "out"]))
         .collect::<Vec<_>>();

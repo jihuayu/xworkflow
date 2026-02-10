@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 
 mod helpers;
 
@@ -27,7 +27,7 @@ fn bench_macro_iteration(c: &mut Criterion) {
         let items_vec: Vec<String> = (0..items).map(|i| format!("item{}", i)).collect();
         let mut base_pool = VariablePool::new();
         base_pool.set(
-            &["start".to_string(), "items".to_string()],
+            &Selector::new("start", "items"),
             Segment::from_value(&serde_json::json!(items_vec)),
         );
         c.bench_function(name, |b| {
@@ -44,7 +44,7 @@ fn bench_macro_iteration(c: &mut Criterion) {
         let items_vec: Vec<String> = (0..50).map(|i| format!("item{}", i)).collect();
         let mut base_pool = VariablePool::new();
         base_pool.set(
-            &["start".to_string(), "items".to_string()],
+            &Selector::new("start", "items"),
             Segment::from_value(&serde_json::json!(items_vec)),
         );
         group.bench_with_input(BenchmarkId::new("mode", label), &parallel, |b, _| {

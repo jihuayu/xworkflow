@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 
 mod helpers;
 
@@ -78,7 +78,7 @@ fn bench_macro_scalability(c: &mut Criterion) {
         let mut base_pool = VariablePool::new();
         for i in 0..size {
             base_pool.set(
-                &["start".to_string(), format!("k{}", i)],
+                &Selector::new("start", format!("k{}", i)),
                 Segment::Integer(i as i64),
             );
         }
@@ -97,7 +97,7 @@ fn bench_macro_scalability(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         let mut base_pool = VariablePool::new();
         base_pool.set(
-            &["start".to_string(), "blob".to_string()],
+            &Selector::new("start", "blob"),
             Segment::String("x".repeat(size)),
         );
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
@@ -116,7 +116,7 @@ fn bench_macro_scalability(c: &mut Criterion) {
         let mut base_pool = VariablePool::new();
         for i in 0..count {
             base_pool.set(
-                &["start".to_string(), format!("c{}", i)],
+                &Selector::new("start", format!("c{}", i)),
                 Segment::Boolean(true),
             );
         }
@@ -136,7 +136,7 @@ fn bench_macro_scalability(c: &mut Criterion) {
         let mut base_pool = VariablePool::new();
         for i in 0..count {
             base_pool.set(
-                &["start".to_string(), format!("v{}", i)],
+                &Selector::new("start", format!("v{}", i)),
                 Segment::String("x".into()),
             );
         }

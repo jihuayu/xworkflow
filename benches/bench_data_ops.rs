@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::evaluator::{evaluate_case, evaluate_cases, evaluate_condition};
 use xworkflow::graph::build_graph;
@@ -13,6 +13,7 @@ use xworkflow::dsl::schema::{Case, ComparisonOperator, Condition, LogicalOperato
 
 mod helpers;
 
+use helpers::bench_runtime;
 use helpers::pool_factories::{make_pool_with_objects, make_pool_with_strings, make_realistic_pool};
 use helpers::workflow_builders::build_linear_workflow;
 
@@ -20,7 +21,7 @@ fn build_pool_with_vars(count: usize) -> VariablePool {
     let mut pool = VariablePool::new();
     for i in 0..count {
         pool.set(
-            &["node".to_string(), format!("v{}", i)],
+            &Selector::new("node", format!("v{}", i)),
             Segment::String(format!("val{}", i)),
         );
     }
@@ -70,23 +71,25 @@ fn build_json_workflow(node_count: usize) -> String {
 
 fn make_pool_with_value(value: Segment) -> VariablePool {
     let mut pool = VariablePool::new();
-    pool.set(&["n".to_string(), "x".to_string()], value);
+    pool.set(&Selector::new("n", "x"), value);
     pool
 }
 
 fn make_condition(op: ComparisonOperator, val: serde_json::Value) -> Condition {
     Condition {
-        variable_selector: vec!["n".to_string(), "x".to_string()],
+        variable_selector: Selector::new("n", "x"),
         comparison_operator: op,
         value: val,
     }
 }
 
 fn bench_data_ops(c: &mut Criterion) {
+    let rt = bench_runtime();
+
     let mut group = c.benchmark_group("pool/write");
     group.bench_function("set_string", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "k".to_string()];
+        let selector = Selector::new("n", "k");
         b.iter(|| {
             pool.set(black_box(&selector), Segment::String("value".into()));
         });
@@ -107,7 +110,7 @@ fn bench_data_ops(c: &mut Criterion) {
     let mut group = c.benchmark_group("pool/read");
     group.bench_function("get_hit", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "k".to_string()];
+        let selector = Selector::new("n", "k");
         pool.set(&selector, Segment::String("value".into()));
         b.iter(|| {
             let _ = black_box(pool.get(&selector));
@@ -116,7 +119,7 @@ fn bench_data_ops(c: &mut Criterion) {
 
     group.bench_function("get_miss", |b| {
         let pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "missing".to_string()];
+        let selector = Selector::new("n", "missing");
         b.iter(|| {
             let _ = black_box(pool.get(&selector));
         });
@@ -124,7 +127,7 @@ fn bench_data_ops(c: &mut Criterion) {
 
     group.bench_function("has_check", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "k".to_string()];
+        let selector = Selector::new("n", "k");
         pool.set(&selector, Segment::String("value".into()));
         b.iter(|| {
             let _ = black_box(pool.has(&selector));
@@ -159,7 +162,7 @@ fn bench_data_ops(c: &mut Criterion) {
     let mut group = c.benchmark_group("pool/mutate");
     group.bench_function("append_array", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "arr".to_string()];
+        let selector = Selector::new("n", "arr");
         pool.set(&selector, Segment::Array(vec![]));
         b.iter(|| {
             pool.append(&selector, Segment::Integer(1));
@@ -242,24 +245,24 @@ fn bench_data_ops(c: &mut Criterion) {
     group.bench_function("string_is", |b| {
         let pool = make_pool_with_value(Segment::String("hello".into()));
         let cond = make_condition(ComparisonOperator::Is, serde_json::json!("hello"));
-        b.iter(|| {
-            let _ = black_box(evaluate_condition(&cond, &pool));
+        b.to_async(&rt).iter(|| async {
+            let _ = black_box(evaluate_condition(&cond, &pool).await);
         });
     });
 
     group.bench_function("string_contains", |b| {
         let pool = make_pool_with_value(Segment::String("x".repeat(1024)));
         let cond = make_condition(ComparisonOperator::Contains, serde_json::json!("abc"));
-        b.iter(|| {
-            let _ = black_box(evaluate_condition(&cond, &pool));
+        b.to_async(&rt).iter(|| async {
+            let _ = black_box(evaluate_condition(&cond, &pool).await);
         });
     });
 
     group.bench_function("numeric_gt", |b| {
         let pool = make_pool_with_value(Segment::Integer(42));
         let cond = make_condition(ComparisonOperator::GreaterThan, serde_json::json!(10));
-        b.iter(|| {
-            let _ = black_box(evaluate_condition(&cond, &pool));
+        b.to_async(&rt).iter(|| async {
+            let _ = black_box(evaluate_condition(&cond, &pool).await);
         });
     });
 
@@ -268,8 +271,8 @@ fn bench_data_ops(c: &mut Criterion) {
             let pool = make_pool_with_value(Segment::String("item42".into()));
             let items: Vec<String> = (0..*size).map(|i| format!("item{}", i)).collect();
             let cond = make_condition(ComparisonOperator::In, serde_json::json!(items));
-            b.iter(|| {
-                let _ = black_box(evaluate_condition(&cond, &pool));
+            b.to_async(&rt).iter(|| async {
+                let _ = black_box(evaluate_condition(&cond, &pool).await);
             });
         });
     }
@@ -286,8 +289,8 @@ fn bench_data_ops(c: &mut Criterion) {
             logical_operator: LogicalOperator::And,
             conditions,
         };
-        b.iter(|| {
-            let _ = black_box(evaluate_case(&case, &pool));
+        b.to_async(&rt).iter(|| async {
+            let _ = black_box(evaluate_case(&case, &pool).await);
         });
     });
 
@@ -301,8 +304,8 @@ fn bench_data_ops(c: &mut Criterion) {
             logical_operator: LogicalOperator::Or,
             conditions,
         };
-        b.iter(|| {
-            let _ = black_box(evaluate_case(&case, &pool));
+        b.to_async(&rt).iter(|| async {
+            let _ = black_box(evaluate_case(&case, &pool).await);
         });
     });
 
@@ -327,8 +330,8 @@ fn bench_data_ops(c: &mut Criterion) {
                     )],
                 });
             }
-            b.iter(|| {
-                let _ = black_box(evaluate_cases(&cases, &pool));
+            b.to_async(&rt).iter(|| async {
+                let _ = black_box(evaluate_cases(&cases, &pool).await);
             });
         });
     }

@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 use xworkflow::template::{render_jinja2, render_template};
 
 fn build_pool_with_vars(count: usize) -> VariablePool {
     let mut pool = VariablePool::new();
     for i in 0..count {
         pool.set(
-            &["node".to_string(), format!("v{}", i)],
+            &Selector::new("node", format!("v{}", i)),
             Segment::String(format!("val{}", i)),
         );
     }

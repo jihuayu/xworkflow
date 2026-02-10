@@ -171,14 +171,6 @@ fn segment_type_name(seg: &Segment) -> &'static str {
     }
 }
 
-fn value_to_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Number(n) => n.as_f64(),
-        Value::String(s) => s.parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
 fn value_to_string_vec(v: &Value) -> Vec<String> {
     match v {
         Value::Array(arr) => arr.iter().map(|x| value_to_string(x)).collect(),
