@@ -46,7 +46,12 @@ impl Plugin for TransformNodesPlugin {
     }
 
     async fn register(&self, ctx: &mut PluginContext) -> Result<(), PluginError> {
-        ctx.register_node_executor("template-transform", Box::new(TemplateTransformExecutor))?;
+        let template_executor = if let Some(engine) = ctx.query_template_engine().cloned() {
+            TemplateTransformExecutor::new_with_engine(engine)
+        } else {
+            TemplateTransformExecutor::new()
+        };
+        ctx.register_node_executor("template-transform", Box::new(template_executor))?;
         ctx.register_node_executor(
             "variable-aggregator",
             Box::new(VariableAggregatorExecutor),

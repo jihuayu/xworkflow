@@ -1,27 +1,11 @@
-use std::collections::HashMap;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-
-use xworkflow::dsl::{parse_dsl, DslFormat, WorkflowSchema};
-use xworkflow::scheduler::WorkflowRunner;
+use xworkflow::core::variable_pool::{Segment, VariablePool};
 
 mod helpers;
 
 use helpers::workflow_builders::{build_fanout_workflow, build_linear_workflow};
-use helpers::bench_runtime;
-
-async fn run_workflow(
-    schema: WorkflowSchema,
-    inputs: HashMap<String, serde_json::Value>,
-    system_vars: HashMap<String, serde_json::Value>,
-) {
-    let runner = WorkflowRunner::builder(schema)
-        .user_inputs(inputs)
-        .system_vars(system_vars);
-    let handle = runner.run().await.unwrap();
-    let status = handle.wait().await;
-    black_box(status);
-}
+use helpers::{bench_runtime, DispatcherSetup};
 
 fn build_condition_count_workflow(count: usize) -> String {
     let mut yaml = String::new();
@@ -68,11 +52,10 @@ fn bench_macro_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scale_node_count");
     for size in [5usize, 10, 25, 50, 100, 200] {
         let yaml = build_linear_workflow(size, "template-transform");
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
+        let setup = DispatcherSetup::from_yaml(&yaml);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                run_workflow(schema.clone(), HashMap::new(), HashMap::new()).await;
-            });
+            b.to_async(&rt)
+                .iter(|| async { setup.run_hot(VariablePool::new()).await });
         });
     }
     group.finish();
@@ -80,11 +63,10 @@ fn bench_macro_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scale_branch_count");
     for size in [2usize, 5, 10, 20, 50] {
         let yaml = build_fanout_workflow(size);
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
+        let setup = DispatcherSetup::from_yaml(&yaml);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                run_workflow(schema.clone(), HashMap::new(), HashMap::new()).await;
-            });
+            b.to_async(&rt)
+                .iter(|| async { setup.run_hot(VariablePool::new()).await });
         });
     }
     group.finish();
@@ -92,14 +74,18 @@ fn bench_macro_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scale_pool_size");
     for size in [10usize, 50, 100, 500] {
         let yaml = build_linear_workflow(5, "template-transform");
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+        let setup = DispatcherSetup::from_yaml(&yaml);
+        let mut base_pool = VariablePool::new();
+        for i in 0..size {
+            base_pool.set(
+                &["start".to_string(), format!("k{}", i)],
+                Segment::Integer(i as i64),
+            );
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut sys_vars = HashMap::new();
-                for i in 0..*size {
-                    sys_vars.insert(format!("k{}", i), serde_json::json!(i));
-                }
-                run_workflow(schema.clone(), HashMap::new(), sys_vars).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -108,12 +94,16 @@ fn bench_macro_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scale_data_size");
     for size in [100usize, 1024, 10 * 1024, 100 * 1024] {
         let yaml = build_linear_workflow(5, "template-transform");
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+        let setup = DispatcherSetup::from_yaml(&yaml);
+        let mut base_pool = VariablePool::new();
+        base_pool.set(
+            &["start".to_string(), "blob".to_string()],
+            Segment::String("x".repeat(size)),
+        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut sys_vars = HashMap::new();
-                sys_vars.insert("blob".to_string(), serde_json::json!("x".repeat(*size)));
-                run_workflow(schema.clone(), HashMap::new(), sys_vars).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -122,14 +112,18 @@ fn bench_macro_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scale_condition_count");
     for count in [1usize, 5, 10, 20, 50] {
         let yaml = build_condition_count_workflow(count);
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
-        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, count| {
+        let setup = DispatcherSetup::from_yaml(&yaml);
+        let mut base_pool = VariablePool::new();
+        for i in 0..count {
+            base_pool.set(
+                &["start".to_string(), format!("c{}", i)],
+                Segment::Boolean(true),
+            );
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut inputs = HashMap::new();
-                for i in 0..*count {
-                    inputs.insert(format!("c{}", i), serde_json::json!(true));
-                }
-                run_workflow(schema.clone(), inputs, HashMap::new()).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -138,14 +132,18 @@ fn bench_macro_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scale_template_vars");
     for count in [1usize, 5, 10, 25, 50] {
         let yaml = build_template_var_workflow(count);
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
-        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, count| {
+        let setup = DispatcherSetup::from_yaml(&yaml);
+        let mut base_pool = VariablePool::new();
+        for i in 0..count {
+            base_pool.set(
+                &["start".to_string(), format!("v{}", i)],
+                Segment::String("x".into()),
+            );
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut inputs = HashMap::new();
-                for i in 0..*count {
-                    inputs.insert(format!("v{}", i), serde_json::json!("x"));
-                }
-                run_workflow(schema.clone(), inputs, HashMap::new()).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }

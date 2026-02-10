@@ -3,15 +3,17 @@
 pub mod pool_factories;
 pub mod workflow_builders;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
+use serde_json::Value;
 
 use xworkflow::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use xworkflow::core::variable_pool::VariablePool;
-use xworkflow::dsl::{parse_dsl, DslFormat};
+use xworkflow::dsl::{parse_dsl, DslFormat, WorkflowSchema};
 use xworkflow::graph::build_graph;
 use xworkflow::graph::types::Graph;
 use xworkflow::nodes::NodeExecutorRegistry;
@@ -44,7 +46,20 @@ impl DispatcherSetup {
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
         let graph = build_graph(&schema).unwrap();
         let registry = Arc::new(NodeExecutorRegistry::new());
-        let context = Arc::new(bench_context());
+        let context = Arc::new(bench_context().with_node_executor_registry(Arc::clone(&registry)));
+        let config = EngineConfig::default();
+        Self {
+            graph,
+            registry,
+            context,
+            config,
+        }
+    }
+
+    pub fn from_schema(schema: &WorkflowSchema) -> Self {
+        let graph = build_graph(schema).unwrap();
+        let registry = Arc::new(NodeExecutorRegistry::new());
+        let context = Arc::new(bench_context().with_node_executor_registry(Arc::clone(&registry)));
         let config = EngineConfig::default();
         Self {
             graph,
@@ -81,6 +96,35 @@ impl DispatcherSetup {
         );
 
         let _ = dispatcher.run().await.unwrap();
+    }
+
+    pub async fn run_hot_with_outputs(&self, pool: VariablePool) -> HashMap<String, Value> {
+        let graph = self.graph.clone();
+        let emitter = Self::make_emitter();
+
+        #[cfg(not(feature = "plugin-system"))]
+        let mut dispatcher = WorkflowDispatcher::new_with_registry(
+            graph,
+            pool,
+            Arc::clone(&self.registry),
+            emitter,
+            self.config.clone(),
+            Arc::clone(&self.context),
+            None,
+        );
+
+        #[cfg(feature = "plugin-system")]
+        let mut dispatcher = WorkflowDispatcher::new_with_registry(
+            graph,
+            pool,
+            Arc::clone(&self.registry),
+            emitter,
+            self.config.clone(),
+            Arc::clone(&self.context),
+            None,
+        );
+
+        dispatcher.run().await.unwrap()
     }
 
     fn make_emitter() -> EventEmitter {

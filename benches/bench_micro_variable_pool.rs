@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use serde_json::Value;
 
 use xworkflow::core::variable_pool::{Segment, VariablePool};
@@ -72,12 +72,21 @@ fn bench_variable_pool(c: &mut Criterion) {
     });
 
     c.bench_function("pool_append_array", |b| {
-        let mut pool = VariablePool::new();
         let selector = vec!["n".to_string(), "arr".to_string()];
-        pool.set(&selector, Segment::Array(vec![]));
-        b.iter(|| {
-            pool.append(&selector, Segment::Integer(1));
-        });
+        b.iter_batched(
+            || {
+                let mut pool = VariablePool::new();
+                pool.set(
+                    &selector,
+                    Segment::Array(vec![Segment::Integer(1); 100]),
+                );
+                pool
+            },
+            |mut pool| {
+                pool.append(&selector, Segment::Integer(1));
+            },
+            BatchSize::SmallInput,
+        );
     });
 
     c.bench_function("pool_has_check", |b| {

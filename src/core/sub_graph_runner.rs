@@ -49,13 +49,28 @@ async fn execute_sub_graph_default(
     inject_scope_vars(&mut scoped_pool, scope_vars)?;
 
     let graph = build_sub_graph(sub_graph)?;
-    let registry = NodeExecutorRegistry::new();
+    let registry = context
+        .node_executor_registry
+        .clone()
+        .unwrap_or_else(|| Arc::new(NodeExecutorRegistry::new()));
     let (tx, _rx) = mpsc::channel(16);
     let active = Arc::new(AtomicBool::new(false));
     let emitter = EventEmitter::new(tx.clone(), active);
     let sub_context = context.clone().with_event_tx(tx.clone());
 
-    let mut dispatcher = WorkflowDispatcher::new(
+    #[cfg(not(feature = "plugin-system"))]
+    let mut dispatcher = WorkflowDispatcher::new_with_registry(
+        graph,
+        scoped_pool,
+        registry,
+        emitter,
+        EngineConfig::default(),
+        Arc::new(sub_context),
+        None,
+    );
+
+    #[cfg(feature = "plugin-system")]
+    let mut dispatcher = WorkflowDispatcher::new_with_registry(
         graph,
         scoped_pool,
         registry,

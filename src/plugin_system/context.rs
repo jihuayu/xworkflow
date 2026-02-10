@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use crate::sandbox::{CodeLanguage, CodeSandbox};
 
 use super::error::PluginError;
 use super::extensions::{DslValidator, TemplateFunction};
+use xworkflow_types::template::TemplateEngine;
 use super::hooks::{HookHandler, HookPoint};
 use super::loader::PluginLoader;
 use super::registry::{PluginPhase, PluginRegistryInner};
@@ -64,6 +66,30 @@ impl<'a> PluginContext<'a> {
         self.ensure_phase(PluginPhase::Bootstrap)?;
         self.registry_inner.sandboxes.push((language, sandbox));
         Ok(())
+    }
+
+    /// Register a generic service (Normal phase)
+    pub fn provide_service(
+        &mut self,
+        key: &str,
+        service: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), PluginError> {
+        self.ensure_phase(PluginPhase::Normal)?;
+        self.registry_inner
+            .services
+            .entry(key.to_string())
+            .or_default()
+            .push(service);
+        Ok(())
+    }
+
+    /// Query registered services by key
+    pub fn query_services(&self, key: &str) -> &[Arc<dyn Any + Send + Sync>] {
+        self.registry_inner
+            .services
+            .get(key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn register_plugin_loader(
@@ -163,6 +189,26 @@ impl<'a> PluginContext<'a> {
             .template_functions
             .insert(name.to_string(), func);
         Ok(())
+    }
+
+    /// Register template engine (Bootstrap phase)
+    pub fn register_template_engine(
+        &mut self,
+        engine: Arc<dyn TemplateEngine>,
+    ) -> Result<(), PluginError> {
+        self.ensure_phase(PluginPhase::Bootstrap)?;
+        if self.registry_inner.template_engine.is_some() {
+            return Err(PluginError::ConflictError(
+                "Template engine already registered".into(),
+            ));
+        }
+        self.registry_inner.template_engine = Some(engine);
+        Ok(())
+    }
+
+    /// Query template engine (Normal phase)
+    pub fn query_template_engine(&self) -> Option<&Arc<dyn TemplateEngine>> {
+        self.registry_inner.template_engine.as_ref()
     }
 
     pub fn register_dsl_validator(

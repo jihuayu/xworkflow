@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use futures::StreamExt;
+#[cfg(feature = "builtin-sandbox-js")]
 use boa_engine::{Context, Source};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::core::runtime_context::RuntimeContext;
@@ -14,8 +16,16 @@ use crate::dsl::schema::{
 use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
-use crate::sandbox::js_builtins;
-use crate::template::{CompiledTemplate, render_jinja2_with_functions_and_config, render_template_async};
+use crate::template::{
+    CompiledTemplate,
+    render_jinja2_with_functions_and_config,
+    render_template_async,
+};
+#[cfg(not(feature = "security"))]
+use crate::template::render_jinja2_with_functions;
+use xworkflow_types::template::{TemplateEngine, TemplateFunction};
+#[cfg(feature = "builtin-sandbox-js")]
+use xworkflow_sandbox_js::builtins as js_builtins;
 #[cfg(feature = "security")]
 use crate::security::network::{validate_url, SecureHttpClientFactory};
 #[cfg(feature = "security")]
@@ -25,7 +35,27 @@ use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 // Template Transform
 // ================================
 
-pub struct TemplateTransformExecutor;
+pub struct TemplateTransformExecutor {
+    engine: Option<Arc<dyn TemplateEngine>>,
+}
+
+impl TemplateTransformExecutor {
+    pub fn new() -> Self {
+        Self { engine: None }
+    }
+
+    pub fn new_with_engine(engine: Arc<dyn TemplateEngine>) -> Self {
+        Self {
+            engine: Some(engine),
+        }
+    }
+}
+
+impl Default for TemplateTransformExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl NodeExecutor for TemplateTransformExecutor {
@@ -71,21 +101,202 @@ impl NodeExecutor for TemplateTransformExecutor {
 
         if stream_vars.is_empty() {
             #[cfg(feature = "plugin-system")]
-            let tmpl_functions = context.template_functions.as_ref().map(|f| f.as_ref());
+            let tmpl_functions: Option<&HashMap<String, Arc<dyn TemplateFunction>>> =
+                context.template_functions.as_ref().map(|f| f.as_ref());
             #[cfg(not(feature = "plugin-system"))]
-            let tmpl_functions: Option<&std::collections::HashMap<String, ()>> = None;
+            let tmpl_functions: Option<&HashMap<String, Arc<dyn TemplateFunction>>> = None;
 
             #[cfg(feature = "security")]
-            let rendered = match render_jinja2_with_functions_and_config(
-                template,
-                &static_vars,
-                tmpl_functions,
-                context
-                    .security_policy
-                    .as_ref()
-                    .and_then(|p| p.template.as_ref()),
-            ) {
-                Ok(rendered) => rendered,
+            let safety = context
+                .security_policy
+                .as_ref()
+                .and_then(|p| p.template.as_ref());
+
+            let rendered = if let Some(engine) = &self.engine {
+                #[cfg(feature = "security")]
+                if let Some(cfg) = safety {
+                    if template.len() > cfg.max_template_length {
+                        let err = format!(
+                            "Template too large (max {}, got {})",
+                            cfg.max_template_length,
+                            template.len()
+                        );
+                        if is_template_anomaly_error(&err) {
+                            audit_security_event(
+                                context,
+                                SecurityEventType::TemplateRenderingAnomaly {
+                                    template_length: template_len,
+                                },
+                                EventSeverity::Warning,
+                                Some(node_id.to_string()),
+                            )
+                            .await;
+                        }
+                        return Err(NodeError::TemplateError(err));
+                    }
+                }
+
+                match engine.render(template, &static_vars, tmpl_functions) {
+                    Ok(rendered) => {
+                        #[cfg(feature = "security")]
+                        if let Some(cfg) = safety {
+                            if rendered.len() > cfg.max_output_length {
+                                let err = format!(
+                                    "Template output too large (max {}, got {})",
+                                    cfg.max_output_length,
+                                    rendered.len()
+                                );
+                                if is_template_anomaly_error(&err) {
+                                    audit_security_event(
+                                        context,
+                                        SecurityEventType::TemplateRenderingAnomaly {
+                                            template_length: template_len,
+                                        },
+                                        EventSeverity::Warning,
+                                        Some(node_id.to_string()),
+                                    )
+                                    .await;
+                                }
+                                return Err(NodeError::TemplateError(err));
+                            }
+                        }
+                        rendered
+                    }
+                    Err(e) => {
+                        if is_template_anomaly_error(&e) {
+                            audit_security_event(
+                                context,
+                                SecurityEventType::TemplateRenderingAnomaly {
+                                    template_length: template_len,
+                                },
+                                EventSeverity::Warning,
+                                Some(node_id.to_string()),
+                            )
+                            .await;
+                        }
+                        return Err(NodeError::TemplateError(e));
+                    }
+                }
+            } else {
+                #[cfg(feature = "security")]
+                let rendered = match render_jinja2_with_functions_and_config(
+                    template,
+                    &static_vars,
+                    tmpl_functions,
+                    safety,
+                ) {
+                    Ok(rendered) => rendered,
+                    Err(e) => {
+                        if is_template_anomaly_error(&e) {
+                            audit_security_event(
+                                context,
+                                SecurityEventType::TemplateRenderingAnomaly {
+                                    template_length: template_len,
+                                },
+                                EventSeverity::Warning,
+                                Some(node_id.to_string()),
+                            )
+                            .await;
+                        }
+                        return Err(NodeError::TemplateError(e));
+                    }
+                };
+
+                #[cfg(not(feature = "security"))]
+                let rendered = render_jinja2_with_functions(template, &static_vars, tmpl_functions)
+                    .map_err(|e| NodeError::TemplateError(e))?;
+
+                rendered
+            };
+
+            let mut outputs = HashMap::new();
+            outputs.insert("output".to_string(), Value::String(rendered));
+
+            return Ok(NodeRunResult {
+                status: WorkflowNodeExecutionStatus::Succeeded,
+                outputs,
+                edge_source_handle: "source".to_string(),
+                ..Default::default()
+            });
+        }
+
+        let template_str = template.to_string();
+        let base_vars = static_vars.clone();
+        let (output_stream, writer) = SegmentStream::channel();
+
+        let tmpl_functions: Option<Arc<HashMap<String, Arc<dyn TemplateFunction>>>> = {
+            #[cfg(feature = "plugin-system")]
+            {
+                context.template_functions.as_ref().map(|f| f.clone())
+            }
+            #[cfg(not(feature = "plugin-system"))]
+            {
+                None
+            }
+        };
+
+        let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
+
+        #[cfg(feature = "security")]
+        let safety = context
+            .security_policy
+            .as_ref()
+            .and_then(|p| p.template.as_ref());
+
+        let render_fn = if let Some(engine) = &self.engine {
+            #[cfg(feature = "security")]
+            if let Some(cfg) = safety {
+                if template_str.len() > cfg.max_template_length {
+                    let err = format!(
+                        "Template too large (max {}, got {})",
+                        cfg.max_template_length,
+                        template_str.len()
+                    );
+                    if is_template_anomaly_error(&err) {
+                        audit_security_event(
+                            context,
+                            SecurityEventType::TemplateRenderingAnomaly {
+                                template_length: template_len,
+                            },
+                            EventSeverity::Warning,
+                            Some(node_id.to_string()),
+                        )
+                        .await;
+                    }
+                    return Err(NodeError::TemplateError(err));
+                }
+            }
+
+            let handle = engine
+                .compile(&template_str, funcs_ref)
+                .map_err(NodeError::TemplateError)?;
+            let max_output = {
+                #[cfg(feature = "security")]
+                {
+                    safety.map(|cfg| cfg.max_output_length)
+                }
+                #[cfg(not(feature = "security"))]
+                {
+                    None
+                }
+            };
+            Box::new(move |vars: &HashMap<String, Value>| -> Result<String, String> {
+                let rendered = handle.render(vars)?;
+                if let Some(limit) = max_output {
+                    if rendered.len() > limit {
+                        return Err(format!(
+                            "Template output too large (max {}, got {})",
+                            limit,
+                            rendered.len()
+                        ));
+                    }
+                }
+                Ok(rendered)
+            }) as Box<dyn Fn(&HashMap<String, Value>) -> Result<String, String> + Send + Sync>
+        } else {
+            #[cfg(feature = "security")]
+            let compiled = match CompiledTemplate::new_with_config(&template_str, funcs_ref, safety) {
+                Ok(compiled) => compiled,
                 Err(e) => {
                     if is_template_anomaly_error(&e) {
                         audit_security_event(
@@ -103,66 +314,14 @@ impl NodeExecutor for TemplateTransformExecutor {
             };
 
             #[cfg(not(feature = "security"))]
-            let rendered = render_jinja2_with_functions(template, &static_vars, tmpl_functions)
+            let compiled = CompiledTemplate::new(&template_str, funcs_ref)
                 .map_err(|e| NodeError::TemplateError(e))?;
 
-            let mut outputs = HashMap::new();
-            outputs.insert("output".to_string(), Value::String(rendered));
-
-            return Ok(NodeRunResult {
-                status: WorkflowNodeExecutionStatus::Succeeded,
-                outputs,
-                edge_source_handle: "source".to_string(),
-                ..Default::default()
-            });
-        }
-
-        let template_str = template.to_string();
-        let base_vars = static_vars.clone();
-        let (output_stream, writer) = SegmentStream::channel();
-
-        let tmpl_functions = {
-            #[cfg(feature = "plugin-system")]
-            {
-                context.template_functions.as_ref().map(|f| f.clone())
-            }
-            #[cfg(not(feature = "plugin-system"))]
-            {
-                let _none: Option<std::sync::Arc<std::collections::HashMap<String, ()>>> = None;
-                _none
-            }
+            let compiled = Arc::new(compiled);
+            Box::new(move |vars: &HashMap<String, Value>| -> Result<String, String> {
+                compiled.render(vars)
+            }) as Box<dyn Fn(&HashMap<String, Value>) -> Result<String, String> + Send + Sync>
         };
-
-        let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
-        #[cfg(feature = "security")]
-        let compiled = match CompiledTemplate::new_with_config(
-            &template_str,
-            funcs_ref,
-            context
-                .security_policy
-                .as_ref()
-                .and_then(|p| p.template.as_ref()),
-        ) {
-            Ok(compiled) => compiled,
-            Err(e) => {
-                if is_template_anomaly_error(&e) {
-                    audit_security_event(
-                        context,
-                        SecurityEventType::TemplateRenderingAnomaly {
-                            template_length: template_len,
-                        },
-                        EventSeverity::Warning,
-                        Some(node_id.to_string()),
-                    )
-                    .await;
-                }
-                return Err(NodeError::TemplateError(e));
-            }
-        };
-
-        #[cfg(not(feature = "security"))]
-        let compiled = CompiledTemplate::new(&template_str, funcs_ref)
-            .map_err(|e| NodeError::TemplateError(e))?;
 
         #[cfg(feature = "security")]
         let context_for_stream = context.clone();
@@ -185,7 +344,7 @@ impl NodeExecutor for TemplateTransformExecutor {
                             for (k, v) in &accumulated {
                                 vars.insert(k.clone(), Value::String(v.clone()));
                             }
-                            match compiled.render(&vars) {
+                            match render_fn(&vars) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
                                         rendered[last_rendered.len()..].to_string()
@@ -222,7 +381,7 @@ impl NodeExecutor for TemplateTransformExecutor {
                             for (k, v) in &accumulated {
                                 vars.insert(k.clone(), Value::String(v.clone()));
                             }
-                            match compiled.render(&vars) {
+                            match render_fn(&vars) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
                                         rendered[last_rendered.len()..].to_string()
@@ -761,6 +920,7 @@ async fn execute_sandbox_with_audit(
 // Code Node (sandbox-backed execution)
 // ================================
 
+#[cfg(feature = "builtin-sandbox-js")]
 #[derive(Debug)]
 struct CallbackInvoke {
     var_name: String,
@@ -769,17 +929,20 @@ struct CallbackInvoke {
     resp: oneshot::Sender<Result<Option<Value>, String>>,
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 #[derive(Debug)]
 enum RuntimeCommand {
     Invoke(CallbackInvoke),
     Shutdown,
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 #[derive(Clone, Debug)]
 struct JsStreamRuntime {
     tx: mpsc::Sender<RuntimeCommand>,
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 impl JsStreamRuntime {
     async fn invoke(
         &self,
@@ -803,10 +966,12 @@ impl JsStreamRuntime {
     }
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 fn escape_js_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 fn eval_js_to_string(context: &mut Context, code: &str) -> Result<String, String> {
     let result = context
         .eval(Source::from_bytes(code))
@@ -818,6 +983,7 @@ fn eval_js_to_string(context: &mut Context, code: &str) -> Result<String, String
     Ok(s)
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
     if result_str == "__undefined__" {
         return Ok(None);
@@ -830,6 +996,7 @@ fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
     Ok(Some(val))
 }
 
+#[cfg(feature = "builtin-sandbox-js")]
 async fn spawn_js_stream_runtime(
     code: String,
     inputs: Value,
@@ -1091,6 +1258,8 @@ impl NodeExecutor for CodeNodeExecutor {
         // Execute via sandbox (or stream mode for JS)
         let has_running_streams = !stream_inputs.is_empty();
         if has_running_streams && language == crate::sandbox::CodeLanguage::JavaScript {
+            #[cfg(feature = "builtin-sandbox-js")]
+            {
             self.sandbox_manager
                 .validate(code, language)
                 .await
@@ -1245,6 +1414,14 @@ impl NodeExecutor for CodeNodeExecutor {
                 edge_source_handle: "source".to_string(),
                 ..Default::default()
             });
+            }
+
+            #[cfg(not(feature = "builtin-sandbox-js"))]
+            {
+                return Err(NodeError::SandboxError(
+                    "JS streaming requires builtin-sandbox-js".to_string(),
+                ));
+            }
         }
 
         if has_running_streams {
@@ -1347,7 +1524,7 @@ mod tests {
             "variables": [{"variable": "name", "value_selector": ["n1", "name"]}]
         });
 
-        let executor = TemplateTransformExecutor;
+        let executor = TemplateTransformExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("tt1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("output"), Some(&Value::String("Hello World!".into())));
@@ -1458,7 +1635,7 @@ mod tests {
             "variables": [{"variable": "name", "value_selector": ["n1", "text"]}]
         });
 
-        let executor = TemplateTransformExecutor;
+        let executor = TemplateTransformExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("tt_stream", &config, &pool, &context).await.unwrap();
         let stream = result.stream_outputs.get("output").cloned().expect("missing stream output");

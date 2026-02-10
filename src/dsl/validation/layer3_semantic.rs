@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use minijinja::Environment;
 use regex::Regex;
 use serde_json::Value;
 
@@ -12,6 +11,8 @@ use crate::dsl::schema::{
 };
 use crate::nodes::subgraph_nodes::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
 use crate::nodes::utils::selector_from_value;
+#[cfg(feature = "builtin-template-jinja")]
+use crate::template::CompiledTemplate;
 
 use super::known_types::{is_stub_node_type, BRANCH_NODE_TYPES, RESERVED_NAMESPACES};
 use super::layer2_topology::TopologyInfo;
@@ -226,8 +227,8 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                             Some("template".to_string()),
                         ));
                     }
-                    let env = Environment::new();
-                    if env.template_from_str(&data.template).is_err() {
+                    #[cfg(feature = "builtin-template-jinja")]
+                    if CompiledTemplate::new(&data.template, None).is_err() {
                         diags.push(error(
                             "E501",
                             "Jinja2 template syntax error".to_string(),

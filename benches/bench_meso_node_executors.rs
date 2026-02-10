@@ -116,7 +116,7 @@ fn bench_node_executors(c: &mut Criterion) {
             .map(|i| serde_json::json!({"variable": format!("v{}", i), "value_selector": ["n", format!("v{}", i)]}))
             .collect::<Vec<_>>();
         let config = serde_json::json!({"template": template, "variables": variables});
-        let executor = TemplateTransformExecutor;
+        let executor = TemplateTransformExecutor::new();
         let context = RuntimeContext::default();
         b.to_async(&rt).iter(|| async {
             let result = executor.execute("tpl", &config, &pool, &context).await.unwrap();

@@ -25,10 +25,6 @@ use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 #[cfg(feature = "plugin-system")]
 use crate::dsl::validation::DiagnosticLevel;
 #[cfg(feature = "plugin-system")]
-use crate::nodes::data_transform::CodeNodeExecutor;
-#[cfg(feature = "plugin-system")]
-use crate::sandbox::{SandboxManager, SandboxManagerConfig};
-#[cfg(feature = "plugin-system")]
 use crate::plugin_system::{
   Plugin,
   PluginCategory,
@@ -403,7 +399,34 @@ impl WorkflowRunnerBuilder {
     registry.register_loader(Arc::new(HostPluginLoader));
 
     let bootstrap_sources = self.collect_bootstrap_sources();
-    let bootstrap_plugins = std::mem::take(&mut self.host_bootstrap_plugins);
+    let mut bootstrap_plugins: Vec<Box<dyn Plugin>> = Vec::new();
+
+    #[cfg(feature = "builtin-sandbox-js")]
+    {
+      let (boot, lang) = crate::plugin_system::builtins::create_js_sandbox_plugins(
+        crate::sandbox::BuiltinSandboxConfig::default(),
+      );
+      bootstrap_plugins.push(Box::new(boot));
+      self.host_normal_plugins.insert(0, Box::new(lang));
+    }
+
+    #[cfg(feature = "builtin-sandbox-wasm")]
+    {
+      let (boot, lang) = crate::plugin_system::builtins::create_wasm_sandbox_plugins(
+        crate::sandbox::WasmSandboxConfig::default(),
+      );
+      bootstrap_plugins.push(Box::new(boot));
+      self.host_normal_plugins.insert(0, Box::new(lang));
+    }
+
+    #[cfg(feature = "builtin-template-jinja")]
+    {
+      bootstrap_plugins.push(Box::new(
+        crate::plugin_system::builtins::JinjaTemplatePlugin::new(),
+      ));
+    }
+
+    bootstrap_plugins.extend(std::mem::take(&mut self.host_bootstrap_plugins));
     registry
       .run_bootstrap_phase(bootstrap_sources, bootstrap_plugins)
       .await?;
@@ -602,15 +625,11 @@ impl WorkflowRunnerBuilder {
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(llm_registry);
 
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = &builder.plugin_registry {
-      let mut sandbox_manager = SandboxManager::new(SandboxManagerConfig::default());
-      sandbox_manager.apply_plugin_sandboxes(reg.sandboxes());
-      registry.register(
-        "code",
-        Box::new(CodeNodeExecutor::new_with_manager(Arc::new(sandbox_manager))),
-      );
-    }
+    let registry = Arc::new(registry);
+    builder
+      .context
+      .node_executor_registry = Some(Arc::clone(&registry));
+
 
     let (tx, mut rx) = mpsc::channel(256);
     let event_active = Arc::new(AtomicBool::new(builder.collect_events));
@@ -695,7 +714,7 @@ impl WorkflowRunnerBuilder {
     let plugin_registry = builder.plugin_registry.map(Arc::new);
     let schema = builder.schema.clone();
     tokio::spawn(async move {
-      let mut dispatcher = WorkflowDispatcher::new(
+      let mut dispatcher = WorkflowDispatcher::new_with_registry(
         graph,
         pool,
         registry,
@@ -925,15 +944,11 @@ impl WorkflowRunnerBuilder {
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(llm_registry);
 
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = &builder.plugin_registry {
-      let mut sandbox_manager = SandboxManager::new(SandboxManagerConfig::default());
-      sandbox_manager.apply_plugin_sandboxes(reg.sandboxes());
-      registry.register(
-        "code",
-        Box::new(CodeNodeExecutor::new_with_manager(Arc::new(sandbox_manager))),
-      );
-    }
+    let registry = Arc::new(registry);
+    builder
+      .context
+      .node_executor_registry = Some(Arc::clone(&registry));
+
 
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (debug_evt_tx, debug_evt_rx) = mpsc::channel(256);

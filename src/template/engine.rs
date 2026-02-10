@@ -1,9 +1,12 @@
 use crate::core::variable_pool::VariablePool;
 use regex::Regex;
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, OnceLock};
 
 #[cfg(feature = "security")]
 use crate::security::validation::TemplateSafetyConfig;
+
+use xworkflow_types::template::{CompiledTemplateHandle, TemplateEngine, TemplateFunction};
 
 static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\{\{#([^#]+)#\}\}").unwrap()
@@ -40,28 +43,36 @@ pub async fn render_template_async(template: &str, pool: &VariablePool) -> Strin
     result
 }
 
-#[cfg(feature = "plugin-system")]
-type TemplateFunctionMap = std::collections::HashMap<
-    String,
-    std::sync::Arc<dyn crate::plugin_system::TemplateFunction>,
->;
+type TemplateFunctionMap = HashMap<String, Arc<dyn TemplateFunction>>;
 
-#[cfg(not(feature = "plugin-system"))]
-type TemplateFunctionMap = std::collections::HashMap<String, ()>;
+fn builtin_template_engine() -> Result<&'static Arc<dyn TemplateEngine>, String> {
+    #[cfg(feature = "builtin-template-jinja")]
+    {
+        static ENGINE: OnceLock<Arc<dyn TemplateEngine>> = OnceLock::new();
+        Ok(ENGINE.get_or_init(|| {
+            Arc::new(xworkflow_template_jinja::JinjaTemplateEngine::new())
+                as Arc<dyn TemplateEngine>
+        }))
+    }
+    #[cfg(not(feature = "builtin-template-jinja"))]
+    {
+        Err("Template engine not available (builtin-template-jinja disabled)".into())
+    }
+}
 
 /// Render a Jinja2 template using minijinja with provided variables and optional functions
 pub fn render_jinja2_with_functions(
     template: &str,
     variables: &std::collections::HashMap<String, serde_json::Value>,
-    _functions: Option<&TemplateFunctionMap>,
+    functions: Option<&TemplateFunctionMap>,
 ) -> Result<String, String> {
-    render_jinja2_with_functions_and_config(template, variables, _functions, None)
+    render_jinja2_with_functions_and_config(template, variables, functions, None)
 }
 
 pub fn render_jinja2_with_functions_and_config(
     template: &str,
     variables: &std::collections::HashMap<String, serde_json::Value>,
-    _functions: Option<&TemplateFunctionMap>,
+    functions: Option<&TemplateFunctionMap>,
     #[cfg(feature = "security")] safety: Option<&TemplateSafetyConfig>,
     #[cfg(not(feature = "security"))] _safety: Option<&()>,
 ) -> Result<String, String> {
@@ -76,22 +87,8 @@ pub fn render_jinja2_with_functions_and_config(
         }
     }
 
-    let mut env = minijinja::Environment::new();
-    register_template_functions(&mut env, _functions);
-    #[cfg(feature = "security")]
-    if let Some(cfg) = safety {
-        apply_template_safety(&mut env, cfg);
-    }
-
-    env.add_template("tpl", template)
-        .map_err(|e| format!("Template parse error: {}", e))?;
-    let tmpl = env
-        .get_template("tpl")
-        .map_err(|e| format!("Template not found: {}", e))?;
-    let ctx = minijinja::Value::from_serialize(variables);
-    let rendered = tmpl
-        .render(ctx)
-        .map_err(|e| format!("Template render error: {}", e))?;
+    let engine = builtin_template_engine()?;
+    let rendered = engine.render(template, variables, functions)?;
 
     #[cfg(feature = "security")]
     if let Some(cfg) = safety {
@@ -109,16 +106,9 @@ pub fn render_jinja2_with_functions_and_config(
 
 /// Pre-compiled Jinja2 template for repeated rendering.
 pub struct CompiledTemplate {
-    env: minijinja::Environment<'static>,
-    template_source: *mut str,
+    handle: Box<dyn CompiledTemplateHandle>,
     max_output_length: Option<usize>,
 }
-
-// SAFETY: CompiledTemplate owns its template source pointer and the
-// environment only references that owned memory. It is safe to move
-// across threads as long as it is not aliased mutably.
-unsafe impl Send for CompiledTemplate {}
-unsafe impl Sync for CompiledTemplate {}
 
 impl CompiledTemplate {
     pub fn new(
@@ -145,22 +135,11 @@ impl CompiledTemplate {
             }
         }
 
-        let boxed: Box<str> = template.to_owned().into_boxed_str();
-        let raw = Box::into_raw(boxed);
-        let static_str: &'static str = unsafe { &*raw };
-
-        let mut env = minijinja::Environment::new();
-        register_template_functions(&mut env, functions);
-        #[cfg(feature = "security")]
-        if let Some(cfg) = safety {
-            apply_template_safety(&mut env, cfg);
-        }
-        env.add_template("tpl", static_str)
-            .map_err(|e| format!("Template parse error: {}", e))?;
+        let engine = builtin_template_engine()?;
+        let handle = engine.compile(template, functions)?;
 
         Ok(Self {
-            env,
-            template_source: raw,
+            handle,
             max_output_length: {
                 #[cfg(feature = "security")]
                 {
@@ -178,14 +157,7 @@ impl CompiledTemplate {
         &self,
         variables: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<String, String> {
-        let tmpl = self
-            .env
-            .get_template("tpl")
-            .map_err(|e| format!("Template not found: {}", e))?;
-        let ctx = minijinja::Value::from_serialize(variables);
-        let rendered = tmpl
-            .render(ctx)
-            .map_err(|e| format!("Template render error: {}", e))?;
+        let rendered = self.handle.render(variables)?;
 
         if let Some(limit) = self.max_output_length {
             if rendered.len() > limit {
@@ -198,52 +170,6 @@ impl CompiledTemplate {
         }
 
         Ok(rendered)
-    }
-}
-
-impl Drop for CompiledTemplate {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = Box::from_raw(self.template_source);
-        }
-    }
-}
-
-fn register_template_functions<'a>(
-    _env: &mut minijinja::Environment<'a>,
-    _functions: Option<&TemplateFunctionMap>,
-) {
-    #[cfg(feature = "plugin-system")]
-    if let Some(funcs) = _functions {
-        let owned = funcs
-            .iter()
-            .map(|(name, func)| (name.clone(), func.clone()))
-            .collect::<Vec<_>>();
-        for (name, func) in owned {
-            _env.add_function(name, move |args: Vec<minijinja::Value>| {
-                let json_args = args
-                    .iter()
-                    .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null))
-                    .collect::<Vec<_>>();
-                let result = func.call(&json_args).map_err(|e| {
-                    minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, e)
-                })?;
-                Ok(minijinja::Value::from_serialize(result))
-            });
-        }
-    }
-}
-
-#[cfg(feature = "security")]
-fn apply_template_safety(env: &mut minijinja::Environment<'_>, cfg: &TemplateSafetyConfig) {
-    env.set_recursion_limit(cfg.max_recursion_depth as usize);
-    env.set_fuel(Some(cfg.max_loop_iterations as u64));
-
-    for filter in &cfg.disabled_filters {
-        env.remove_filter(filter);
-    }
-    for func in &cfg.disabled_functions {
-        env.remove_global(func);
     }
 }
 

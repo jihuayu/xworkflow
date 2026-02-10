@@ -1,24 +1,33 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::builtin::{BuiltinSandbox, BuiltinSandboxConfig};
-use super::wasm_sandbox::{WasmSandbox, WasmSandboxConfig};
 use super::error::SandboxError;
 use super::types::*;
+
+use xworkflow_types::LanguageProvider;
+
+#[cfg(feature = "builtin-sandbox-js")]
+use super::BuiltinSandboxConfig;
+#[cfg(feature = "builtin-sandbox-wasm")]
+use super::WasmSandboxConfig;
 
 /// Sandbox manager configuration
 #[derive(Clone, Debug)]
 pub struct SandboxManagerConfig {
     /// Built-in sandbox configuration
+    #[cfg(feature = "builtin-sandbox-js")]
     pub builtin_config: BuiltinSandboxConfig,
     /// WASM sandbox configuration
+    #[cfg(feature = "builtin-sandbox-wasm")]
     pub wasm_config: WasmSandboxConfig,
 }
 
 impl Default for SandboxManagerConfig {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "builtin-sandbox-js")]
             builtin_config: BuiltinSandboxConfig::default(),
+            #[cfg(feature = "builtin-sandbox-wasm")]
             wasm_config: WasmSandboxConfig::default(),
         }
     }
@@ -27,7 +36,7 @@ impl Default for SandboxManagerConfig {
 /// Sandbox manager - manages multiple sandbox implementations
 pub struct SandboxManager {
     /// Default sandbox
-    default_sandbox: Arc<dyn CodeSandbox>,
+    default_sandbox: Option<Arc<dyn CodeSandbox>>,
 
     /// Sandboxes registered by language
     sandboxes: HashMap<CodeLanguage, Arc<dyn CodeSandbox>>,
@@ -40,24 +49,52 @@ pub struct SandboxManager {
 impl SandboxManager {
     /// Create a new sandbox manager
     pub fn new(config: SandboxManagerConfig) -> Self {
-        let default_sandbox: Arc<dyn CodeSandbox> =
-            Arc::new(BuiltinSandbox::new(config.builtin_config.clone()));
+        let mut manager = Self::new_empty(config);
 
-        let mut sandboxes = HashMap::new();
-        sandboxes.insert(
-            CodeLanguage::JavaScript,
-            Arc::new(BuiltinSandbox::new(config.builtin_config.clone())) as Arc<dyn CodeSandbox>,
-        );
-        sandboxes.insert(
-            CodeLanguage::Wasm,
-            Arc::new(WasmSandbox::new(config.wasm_config.clone())) as Arc<dyn CodeSandbox>,
-        );
+        #[cfg(feature = "builtin-sandbox-js")]
+        {
+            let sandbox = Arc::new(super::BuiltinSandbox::new(
+                manager.config.builtin_config.clone(),
+            )) as Arc<dyn CodeSandbox>;
+            manager.register_sandbox(CodeLanguage::JavaScript, sandbox.clone());
+            if manager.default_sandbox.is_none() {
+                manager.default_sandbox = Some(sandbox);
+            }
+        }
 
+        #[cfg(feature = "builtin-sandbox-wasm")]
+        {
+            let sandbox = Arc::new(super::WasmSandbox::new(
+                manager.config.wasm_config.clone(),
+            )) as Arc<dyn CodeSandbox>;
+            manager.register_sandbox(CodeLanguage::Wasm, sandbox.clone());
+            if manager.default_sandbox.is_none() {
+                manager.default_sandbox = Some(sandbox);
+            }
+        }
+
+        manager
+    }
+
+    /// Create an empty sandbox manager
+    pub fn new_empty(config: SandboxManagerConfig) -> Self {
         Self {
-            default_sandbox,
-            sandboxes,
+            default_sandbox: None,
+            sandboxes: HashMap::new(),
             config,
         }
+    }
+
+    /// Build a sandbox manager from language providers
+    pub fn from_providers(providers: &[Arc<dyn LanguageProvider>]) -> Self {
+        let mut manager = Self::new_empty(SandboxManagerConfig::default());
+        for provider in providers {
+            manager.register_sandbox(provider.language(), provider.sandbox());
+        }
+        if let Some(first) = providers.first() {
+            manager.default_sandbox = Some(first.sandbox());
+        }
+        manager
     }
 
     /// Register a sandbox implementation
@@ -67,6 +104,9 @@ impl SandboxManager {
         sandbox: Arc<dyn CodeSandbox>,
     ) {
         self.sandboxes.insert(language, sandbox);
+        if self.default_sandbox.is_none() {
+            self.default_sandbox = self.sandboxes.get(&language).cloned();
+        }
     }
 
     #[cfg(feature = "plugin-system")]
@@ -88,7 +128,8 @@ impl SandboxManager {
         let sandbox = self
             .sandboxes
             .get(&request.language)
-            .unwrap_or(&self.default_sandbox);
+            .or_else(|| self.default_sandbox.as_ref())
+            .ok_or_else(|| SandboxError::UnsupportedLanguage(request.language))?;
 
         // Check if the sandbox supports the language
         if !sandbox.supported_languages().contains(&request.language) {
@@ -108,7 +149,8 @@ impl SandboxManager {
         let sandbox = self
             .sandboxes
             .get(&language)
-            .unwrap_or(&self.default_sandbox);
+            .or_else(|| self.default_sandbox.as_ref())
+            .ok_or_else(|| SandboxError::UnsupportedLanguage(language))?;
 
         sandbox.validate(code, language).await
     }
@@ -146,6 +188,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_sandbox_manager_creation() {
         let manager = SandboxManager::new(SandboxManagerConfig::default());
@@ -156,6 +199,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_sandbox_manager_execute_js() {
         let manager = SandboxManager::new(SandboxManagerConfig::default());
@@ -194,6 +238,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_sandbox_manager_validate() {
         let manager = SandboxManager::new(SandboxManagerConfig::default());
@@ -206,6 +251,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_sandbox_manager_dangerous_code() {
         let manager = SandboxManager::new(SandboxManagerConfig::default());

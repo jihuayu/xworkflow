@@ -4,7 +4,6 @@ pub mod governor;
 pub mod network;
 pub mod policy;
 pub mod resource_group;
-pub mod sandbox;
 pub mod validation;
 
 pub use audit::{AuditLogger, EventSeverity, SecurityEvent, SecurityEventType, TracingAuditLogger};
@@ -13,5 +12,4 @@ pub use governor::{GroupUsage, InMemoryResourceGovernor, QuotaError, ResourceGov
 pub use network::{domain_matches, is_blocked_ip, validate_url, NetworkError, NetworkPolicy, NetworkPolicyMode, SafeDnsResolver, SecureHttpClientFactory};
 pub use policy::{NodeResourceLimits, SecurityLevel, SecurityPolicy};
 pub use resource_group::{ResourceGroup, ResourceQuota};
-pub use sandbox::{AstCodeAnalyzer, CodeAnalysisResult, CodeAnalyzer, CodeViolation, JsSandboxSecurityConfig, ViolationKind};
 pub use validation::{DslValidationConfig, SelectorValidation, TemplateSafetyConfig};

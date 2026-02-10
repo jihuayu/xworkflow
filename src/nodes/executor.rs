@@ -59,7 +59,7 @@ impl NodeExecutorRegistry {
         {
             registry.register(
                 "template-transform",
-                Box::new(super::data_transform::TemplateTransformExecutor),
+                Box::new(super::data_transform::TemplateTransformExecutor::new()),
             );
             registry.register(
                 "variable-aggregator",

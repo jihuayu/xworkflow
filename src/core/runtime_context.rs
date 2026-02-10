@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::core::event_bus::GraphEngineEvent;
+use crate::nodes::executor::NodeExecutorRegistry;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Runtime context providing time and ID generation
@@ -12,6 +13,7 @@ pub struct RuntimeContext {
     pub id_generator: Arc<dyn IdGenerator>,
     pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
     pub sub_graph_runner: Option<Arc<dyn crate::core::sub_graph_runner::SubGraphRunner>>,
+    pub node_executor_registry: Option<Arc<NodeExecutorRegistry>>,
     #[cfg(feature = "plugin-system")]
     pub template_functions: Option<Arc<std::collections::HashMap<String, Arc<dyn crate::plugin_system::TemplateFunction>>>>,
     #[cfg(feature = "security")]
@@ -33,6 +35,7 @@ impl Default for RuntimeContext {
             id_generator: Arc::new(RealIdGenerator::default()),
             event_tx: None,
             sub_graph_runner: None,
+            node_executor_registry: None,
             #[cfg(feature = "plugin-system")]
             template_functions: None,
             #[cfg(feature = "security")]
@@ -52,6 +55,14 @@ impl Default for RuntimeContext {
 impl RuntimeContext {
     pub fn with_event_tx(mut self, event_tx: mpsc::Sender<GraphEngineEvent>) -> Self {
         self.event_tx = Some(event_tx);
+        self
+    }
+
+    pub fn with_node_executor_registry(
+        mut self,
+        registry: Arc<NodeExecutorRegistry>,
+    ) -> Self {
+        self.node_executor_registry = Some(registry);
         self
     }
 }

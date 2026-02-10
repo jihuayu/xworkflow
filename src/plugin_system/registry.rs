@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,6 +10,7 @@ use crate::sandbox::{CodeLanguage, CodeSandbox};
 use super::context::PluginContext;
 use super::error::PluginError;
 use super::extensions::{DslValidator, TemplateFunction};
+use xworkflow_types::template::TemplateEngine;
 use super::hooks::{HookHandler, HookPoint};
 use super::loader::{PluginLoadSource, PluginLoader};
 use super::traits::{Plugin, PluginCategory, PluginCapabilities, PluginMetadata};
@@ -36,6 +38,8 @@ pub(crate) struct PluginRegistryInner {
     pub(crate) sandboxes: Vec<(CodeLanguage, Arc<dyn CodeSandbox>)>,
     pub(crate) hooks: HashMap<HookPoint, Vec<Arc<dyn HookHandler>>>,
     pub(crate) template_functions: HashMap<String, Arc<dyn TemplateFunction>>,
+    pub(crate) services: HashMap<String, Vec<Arc<dyn Any + Send + Sync>>>,
+    pub(crate) template_engine: Option<Arc<dyn TemplateEngine>>,
     pub(crate) dsl_validators: Vec<Arc<dyn DslValidator>>,
     pub(crate) custom_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) custom_id_generator: Option<Arc<dyn IdGenerator>>,
@@ -49,6 +53,8 @@ impl PluginRegistryInner {
             sandboxes: Vec::new(),
             hooks: HashMap::new(),
             template_functions: HashMap::new(),
+            services: HashMap::new(),
+            template_engine: None,
             dsl_validators: Vec::new(),
             custom_time_provider: None,
             custom_id_generator: None,
@@ -157,6 +163,10 @@ impl PluginRegistry {
 
     pub fn template_functions(&self) -> &HashMap<String, Arc<dyn TemplateFunction>> {
         &self.inner.template_functions
+    }
+
+    pub fn template_engine(&self) -> Option<&Arc<dyn TemplateEngine>> {
+        self.inner.template_engine.as_ref()
     }
 
     pub fn dsl_validators(&self) -> &[Arc<dyn DslValidator>] {

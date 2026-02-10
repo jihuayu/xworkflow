@@ -90,7 +90,7 @@ fn bench_wasm_sandbox(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("wasm_execute_precompiled", |b| {
+    c.bench_function("wasm_instantiate_and_execute", |b| {
         let engine = Engine::default();
         let bytes = wat::parse_str(BASIC_WAT).unwrap();
         let module = Module::new(&engine, bytes).unwrap();

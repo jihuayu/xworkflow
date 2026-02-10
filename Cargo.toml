@@ -24,7 +24,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 
 # Template engine
-minijinja = { version = "2.0", features = ["builtins", "fuel"] }
+# (moved to xworkflow-template-jinja)
 
 # HTTP client (for LLM APIs and persistence services)
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
@@ -48,21 +48,23 @@ regex = "1"
 base64 = "0.22"
 libloading = { version = "0.8", optional = true }
 url = "2.5"
+boa_engine = { version = "0.20", optional = true }
 
-# WASM runtime
+# WASM runtime (used by plugin system and WASM plugins)
 wasmtime = "27"
 wasmtime-wasi = "27"
 wat = "1"
 
-# JavaScript sandbox engine
-boa_engine = "0.20"
-sha1 = "0.10"
-sha2 = "0.10"
-md-5 = "0.10"
-hmac = "0.12"
-aes-gcm = "0.10"
+# JavaScript sandbox engine and WASM runtime moved to plugin crates
 rand = "0.8"
-hex = "0.4"
+
+# Shared types
+xworkflow-types = { path = "crates/xworkflow-types" }
+
+# Optional built-in plugin crates
+xworkflow-sandbox-js = { path = "crates/xworkflow-sandbox-js", optional = true }
+xworkflow-sandbox-wasm = { path = "crates/xworkflow-sandbox-wasm", optional = true }
+xworkflow-template-jinja = { path = "crates/xworkflow-template-jinja", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -73,6 +75,9 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 [features]
 default = [
 	"security",
+	"builtin-sandbox-js",
+	"builtin-sandbox-wasm",
+	"builtin-template-jinja",
 	"builtin-core-nodes",
 	"builtin-transform-nodes",
 	"builtin-http-node",
@@ -80,12 +85,15 @@ default = [
 	"builtin-subgraph-nodes",
 	"builtin-llm-node",
 ]
-security = []
+security = ["xworkflow-sandbox-js?/security"]
 plugin-system = ["libloading"]
+builtin-sandbox-js = ["dep:xworkflow-sandbox-js", "dep:boa_engine"]
+builtin-sandbox-wasm = ["dep:xworkflow-sandbox-wasm"]
+builtin-template-jinja = ["dep:xworkflow-template-jinja"]
 builtin-core-nodes = []
-builtin-transform-nodes = []
+builtin-transform-nodes = ["builtin-template-jinja"]
 builtin-http-node = []
-builtin-code-node = []
+builtin-code-node = ["builtin-sandbox-js"]
 builtin-subgraph-nodes = []
 builtin-llm-node = []
 
@@ -94,6 +102,9 @@ resolver = "2"
 members = [
 	".",
 	"crates/xworkflow-types",
+	"crates/xworkflow-sandbox-js",
+	"crates/xworkflow-sandbox-wasm",
+	"crates/xworkflow-template-jinja",
 	"crates/xworkflow-nodes-core",
 	"crates/xworkflow-nodes-transform",
 	"crates/xworkflow-nodes-http",

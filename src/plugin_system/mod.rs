@@ -14,6 +14,7 @@ pub use config::PluginSystemConfig;
 pub use context::PluginContext;
 pub use error::PluginError;
 pub use extensions::{DslValidator, TemplateFunction};
+pub use xworkflow_types::template::{CompiledTemplateHandle, TemplateEngine};
 pub use hooks::{HookHandler, HookPayload, HookPoint};
 pub use loader::{PluginLoadSource, PluginLoader};
 pub use registry::{PluginPhase, PluginRegistry};

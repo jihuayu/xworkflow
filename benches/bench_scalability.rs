@@ -82,10 +82,11 @@ fn bench_scalability(c: &mut Criterion) {
     for size in [2usize, 5, 10, 20, 50] {
         let yaml = build_fanout_workflow(size);
         let setup = DispatcherSetup::from_yaml(&yaml);
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+        let base_pool = build_flags_pool(size);
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let pool = build_flags_pool(*size);
-                setup.run_hot(pool).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -95,16 +96,17 @@ fn bench_scalability(c: &mut Criterion) {
     let yaml = build_linear_workflow(3, "template-transform");
     let setup = DispatcherSetup::from_yaml(&yaml);
     for size in [10usize, 50, 100, 500] {
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+        let mut base_pool = VariablePool::new();
+        for i in 0..size {
+            base_pool.set(
+                &["start".to_string(), format!("k{}", i)],
+                Segment::Integer(i as i64),
+            );
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut pool = VariablePool::new();
-                for i in 0..*size {
-                    pool.set(
-                        &["start".to_string(), format!("k{}", i)],
-                        Segment::Integer(i as i64),
-                    );
-                }
-                setup.run_hot(pool).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -114,14 +116,15 @@ fn bench_scalability(c: &mut Criterion) {
     let yaml = build_linear_workflow(3, "template-transform");
     let setup = DispatcherSetup::from_yaml(&yaml);
     for size in [100usize, 1024, 10 * 1024, 100 * 1024] {
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+        let mut base_pool = VariablePool::new();
+        base_pool.set(
+            &["start".to_string(), "blob".to_string()],
+            Segment::String("x".repeat(size)),
+        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut pool = VariablePool::new();
-                pool.set(
-                    &["start".to_string(), "blob".to_string()],
-                    Segment::String("x".repeat(*size)),
-                );
-                setup.run_hot(pool).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -131,16 +134,17 @@ fn bench_scalability(c: &mut Criterion) {
     for count in [1usize, 5, 10, 20, 50] {
         let yaml = build_condition_count_workflow(count);
         let setup = DispatcherSetup::from_yaml(&yaml);
-        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, count| {
+        let mut base_pool = VariablePool::new();
+        for i in 0..count {
+            base_pool.set(
+                &["start".to_string(), format!("c{}", i)],
+                Segment::Boolean(true),
+            );
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut pool = VariablePool::new();
-                for i in 0..*count {
-                    pool.set(
-                        &["start".to_string(), format!("c{}", i)],
-                        Segment::Boolean(true),
-                    );
-                }
-                setup.run_hot(pool).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }
@@ -150,16 +154,17 @@ fn bench_scalability(c: &mut Criterion) {
     for count in [1usize, 5, 10, 25, 50] {
         let yaml = build_template_var_workflow(count);
         let setup = DispatcherSetup::from_yaml(&yaml);
-        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, count| {
+        let mut base_pool = VariablePool::new();
+        for i in 0..count {
+            base_pool.set(
+                &["start".to_string(), format!("v{}", i)],
+                Segment::String("x".into()),
+            );
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            let base_pool = base_pool.clone();
             b.to_async(&rt).iter(|| async {
-                let mut pool = VariablePool::new();
-                for i in 0..*count {
-                    pool.set(
-                        &["start".to_string(), format!("v{}", i)],
-                        Segment::String("x".into()),
-                    );
-                }
-                setup.run_hot(pool).await;
+                setup.run_hot(base_pool.clone()).await;
             });
         });
     }

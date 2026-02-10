@@ -1,25 +1,11 @@
-use std::collections::HashMap;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-
-use xworkflow::dsl::{parse_dsl, DslFormat, WorkflowSchema};
-use xworkflow::scheduler::WorkflowRunner;
+use xworkflow::core::variable_pool::{Segment, VariablePool};
 
 mod helpers;
 
 use helpers::workflow_builders::build_iteration_workflow;
-use helpers::bench_runtime;
-
-async fn run_iteration(schema: WorkflowSchema, items: usize) {
-    let mut inputs = HashMap::new();
-    let items_vec: Vec<String> = (0..items).map(|i| format!("item{}", i)).collect();
-    inputs.insert("items".to_string(), serde_json::json!(items_vec));
-
-    let runner = WorkflowRunner::builder(schema).user_inputs(inputs);
-    let handle = runner.run().await.unwrap();
-    let status = handle.wait().await;
-    black_box(status);
-}
+use helpers::{bench_runtime, DispatcherSetup};
 
 fn bench_macro_iteration(c: &mut Criterion) {
     let rt = bench_runtime();
@@ -37,22 +23,34 @@ fn bench_macro_iteration(c: &mut Criterion) {
 
     for (name, items, parallel, parallelism) in cases {
         let yaml = build_iteration_workflow(items, parallel, parallelism);
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
+        let setup = DispatcherSetup::from_yaml(&yaml);
+        let items_vec: Vec<String> = (0..items).map(|i| format!("item{}", i)).collect();
+        let mut base_pool = VariablePool::new();
+        base_pool.set(
+            &["start".to_string(), "items".to_string()],
+            Segment::from_value(&serde_json::json!(items_vec)),
+        );
         c.bench_function(name, |b| {
-            b.to_async(&rt).iter(|| async {
-                run_iteration(schema.clone(), items).await;
-            });
+            let base_pool = base_pool.clone();
+            b.to_async(&rt)
+                .iter(|| async { setup.run_hot(base_pool.clone()).await });
         });
     }
 
     let mut group = c.benchmark_group("iter_seq_vs_par_50");
     for (label, parallel, parallelism) in [("seq", false, 1), ("par", true, 10)] {
         let yaml = build_iteration_workflow(50, parallel, parallelism);
-        let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
+        let setup = DispatcherSetup::from_yaml(&yaml);
+        let items_vec: Vec<String> = (0..50).map(|i| format!("item{}", i)).collect();
+        let mut base_pool = VariablePool::new();
+        base_pool.set(
+            &["start".to_string(), "items".to_string()],
+            Segment::from_value(&serde_json::json!(items_vec)),
+        );
         group.bench_with_input(BenchmarkId::new("mode", label), &parallel, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                run_iteration(schema.clone(), 50).await;
-            });
+            let base_pool = base_pool.clone();
+            b.to_async(&rt)
+                .iter(|| async { setup.run_hot(base_pool.clone()).await });
         });
     }
     group.finish();

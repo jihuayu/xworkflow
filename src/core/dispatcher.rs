@@ -183,7 +183,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   pub fn new_with_debug(
     graph: Graph,
     variable_pool: VariablePool,
-    registry: NodeExecutorRegistry,
+    registry: Arc<NodeExecutorRegistry>,
     event_emitter: EventEmitter,
     config: EngineConfig,
     context: Arc<RuntimeContext>,
@@ -197,7 +197,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     WorkflowDispatcher {
       graph: Arc::new(RwLock::new(graph)),
       variable_pool: Arc::new(RwLock::new(variable_pool)),
-      registry: Arc::new(registry),
+      registry,
       event_emitter,
       config,
       exceptions_count: 0,
