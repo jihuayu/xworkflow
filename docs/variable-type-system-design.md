@@ -984,6 +984,407 @@ let actual = match actual {
 
 这需要 `evaluate_condition` 变为 async。如果不希望改变条件评估器的同步签名，可以在调用前预先 resolve 所有 Stream 变量。
 
+### 3.9 流感知节点执行模式
+
+Stream 作为 Segment 的一等变体，下游节点被调度器立即调度后即可拿到 `Segment::Stream` 句柄。但 Code 节点和 Template Transform 节点当前的变量消费路径是同步的（`pool.get() → to_value()` 一次性转换），无法增量消费流数据。本节设计这两类节点的流感知执行模式，使它们在输入 Stream 尚未结束时就能开始处理并向下游输出自己的 Stream。
+
+#### 3.9.1 通用：流感知检测
+
+节点执行时，在构建输入变量阶段检查是否存在正在运行的 Stream：
+
+```
+构建输入变量时:
+  any_stream_running = false
+  stream_inputs  = []   // (var_name, SegmentStream)
+  static_inputs  = {}   // var_name → Value
+
+  for each variable mapping (var_name, selector):
+    seg = pool.get(selector)
+    match seg:
+      Stream(s) if s.status() == Running →
+        any_stream_running = true
+        stream_inputs.push((var_name, s))
+      Stream(s) if s.status() == Completed →
+        // 已完成的 stream 透明降级为 final_value
+        static_inputs[var_name] = s.collect().to_value()
+      other →
+        static_inputs[var_name] = seg.to_value()
+
+  if any_stream_running:
+    进入 **流式执行模式**
+  else:
+    正常执行（所有输入都是 Value，行为不变）
+```
+
+**向后兼容**：如果所有 Stream 都已 Completed 或没有 Stream 输入，节点以正常模式执行，行为完全不变。
+
+#### 3.9.2 Code 节点流式执行
+
+##### JS API：StreamProxy 对象
+
+在 JS 沙箱中，Running 状态的 Stream 变量被表示为 `StreamProxy` 对象（而非普通 JSON Value）：
+
+```javascript
+function main(inputs) {
+    // inputs.prefix = "AI says: "     ← 普通变量，正常 JSON Value
+    // inputs.llm_text                 ← StreamProxy 对象
+
+    // 注册 chunk 回调
+    inputs.llm_text.on_chunk(function(chunk) {
+        // chunk: 每个流数据块的值（string/number/object 等，取决于上游 emit 的类型）
+        // return 的值作为输出流的一个 chunk emit 出去
+        return { text: inputs.prefix + chunk };
+    });
+
+    // 注册结束回调（可选）
+    inputs.llm_text.on_end(function(final_value) {
+        // final_value: 流结束时的完整值
+        // return 的值作为输出流的 final_value
+        return { text: "COMPLETE: " + final_value };
+    });
+
+    // 注册错误回调（可选）
+    inputs.llm_text.on_error(function(error_message) {
+        // error_message: 错误信息字符串
+        return { text: "ERROR: " + error_message };
+    });
+
+    // main 的返回值作为节点的 initial outputs（写入普通 outputs）
+    return {};
+}
+```
+
+**API 特性**：
+- `on_chunk(fn)` / `on_end(fn)` / `on_error(fn)` 返回 `this`，支持链式调用
+- 如果未注册 `on_chunk`，该 Stream 变量退化为 auto-collect（等待完成后用 final_value）
+- `on_end` 和 `on_error` 可选；未注册时使用默认行为
+- 回调函数中可以通过闭包访问 `inputs` 中的其他变量（包括其他 StreamProxy 的累积状态）
+
+##### Rust 侧 StreamProxy 实现
+
+```rust
+/// JS 沙箱中 Stream 变量的代理对象
+/// 在 boa_engine 中注册为自定义 JS 对象，带有 on_chunk/on_end/on_error 方法
+struct StreamProxy {
+    variable_name: String,
+    /// 用户注册的回调（boa JsFunction 引用，保持在 Context 中存活）
+    on_chunk_fn: Option<JsFunction>,
+    on_end_fn: Option<JsFunction>,
+    on_error_fn: Option<JsFunction>,
+}
+```
+
+当 JS 代码调用 `inputs.llm_text.on_chunk(fn)` 时：
+1. boa 侧将 `fn` 存储为 `JsFunction` 引用
+2. 返回 StreamProxy 自身（支持链式调用）
+3. `main()` 返回后，Rust 侧提取所有 StreamProxy 上注册的回调
+
+##### 执行流程
+
+```
+CodeNodeExecutor::execute()
+│
+├─ 1. 检测输入变量中的 Stream（见 3.9.1）
+│     stream_inputs: Vec<(var_name, SegmentStream)>
+│     static_inputs: Map<String, Value>
+│
+├─ 2. 构建 JS 输入对象
+│     对于 static_inputs → 正常 JSON value
+│     对于 stream_inputs → 创建 StreamProxy JS 对象
+│
+├─ 3. 在 boa Context 中调用 main(inputs)
+│     - 用户代码注册 on_chunk/on_end/on_error 回调
+│     - main() 返回 initial outputs
+│     - 从各 StreamProxy 提取注册的回调函数
+│
+├─ 4. 检查回调注册情况
+│     if 没有任何 stream 变量注册了 on_chunk:
+│       → 退化：auto-collect 所有 stream，用 final_value 替换对应输入
+│       → 在同一 Context 中重新调用 main(resolved_inputs)
+│       → 返回普通 NodeRunResult（行为等价于等流结束后执行）
+│
+├─ 5. 有回调 → 创建输出流，立即返回
+│     let (output_stream, writer) = SegmentStream::channel()
+│     返回 NodeRunResult {
+│       outputs: main() 的返回值（initial outputs）,
+│       stream_outputs: { "output": output_stream },
+│     }
+│
+└─ 6. tokio::spawn 后台任务（保持 boa Context 存活）
+      │
+      ├─ 按 stream_inputs 声明顺序，逐个消费 stream：
+      │   for (var_name, stream) in stream_inputs:
+      │     let callback = stream_proxies[var_name].on_chunk_fn
+      │     let reader = stream.reader()
+      │     loop:
+      │       match reader.next().await:
+      │         Chunk(seg) →
+      │           // 在保持存活的 boa Context 中调用回调
+      │           chunk_val = seg.to_value()
+      │           result = context.call(callback, chunk_val)  // spawn_blocking
+      │           writer.send(Segment::from_value(&result)).await
+      │
+      │         End(final_seg) →
+      │           if on_end_fn registered:
+      │             result = context.call(on_end_fn, final_seg.to_value())
+      │             // on_end 的 result 作为这个 stream 阶段的终结 chunk
+      │             writer.send(Segment::from_value(&result)).await
+      │           break → 进入下一个 stream
+      │
+      │         Error(msg) →
+      │           if on_error_fn registered:
+      │             result = context.call(on_error_fn, msg)
+      │             writer.send(Segment::from_value(&result)).await
+      │           else:
+      │             writer.error(msg).await
+      │           break
+      │
+      └─ 所有 stream 消费完毕
+          // 最后一个 on_end 的返回值（或最后一个 chunk 的返回值）作为 final_value
+          writer.end(last_result).await
+          // 销毁 boa Context，释放资源
+```
+
+##### 沙箱上下文保持（方案 A）
+
+选择保持 boa Context 存活而非无状态回调，原因：
+
+| 方面 | 保持 Context 存活 | 无状态回调 |
+|------|-----------------|----------|
+| 回调间状态共享 | ✅ 闭包变量天然共享 | ❌ 每次新 Context，无法共享 |
+| 使用场景 | 累加器、计数器、缓冲区 | 纯转换（如 toUpperCase） |
+| 内存 | 需要手动销毁 | 自动释放 |
+| 实现复杂度 | 中等（需管理生命周期） | 低 |
+
+**选择**：保持 Context 存活。流处理中保持状态是常见需求（如"将前 3 个 chunk 聚合后再 emit"），无状态模式限制太大。
+
+**生命周期管理**：
+- boa Context 在 `tokio::task::spawn_blocking` 中创建
+- 后台任务持有 Context 的所有权
+- 所有 stream 消费完毕后，任务结束，Context 自动 drop
+- 超时保护：通过 `tokio::time::timeout` 包装整个后台任务
+
+```rust
+// 示例：带状态的流处理
+function main(inputs) {
+    var count = 0;
+    var buffer = [];
+
+    inputs.llm_text.on_chunk(function(chunk) {
+        count++;
+        buffer.push(chunk);
+
+        // 每 3 个 chunk 聚合一次 emit
+        if (buffer.length >= 3) {
+            var merged = buffer.join("");
+            buffer = [];
+            return { text: merged, chunk_count: count };
+        }
+        // 返回 null/undefined → 不 emit（跳过这个 chunk）
+        return null;
+    });
+
+    inputs.llm_text.on_end(function(final_value) {
+        // flush 剩余 buffer
+        if (buffer.length > 0) {
+            return { text: buffer.join(""), chunk_count: count };
+        }
+        return null;
+    });
+
+    return {};
+}
+```
+
+**on_chunk 返回 null/undefined 的行为**：不 emit 到输出流（跳过），这允许用户实现 filter/batch 等模式。
+
+##### 多 Stream 输入处理
+
+```
+stream_inputs 按 variables config 中的声明顺序排列:
+  stream_inputs = [(var_a, stream_a), (var_b, stream_b)]
+
+时间线:
+──────────────────────────────────────────────────────────►
+
+stream_a:    [chunk] [chunk] [chunk] [end]
+stream_b:    [chunk] [chunk] [chunk] [chunk] [chunk] [end]
+                                                ↑
+                                      后台自动缓冲中
+
+消费阶段 1（stream_a 活跃）:
+  - stream_a: 实时逐 chunk 消费（reader.next().await）
+  - stream_b: 上游持续写入，chunks 自动缓存在 Arc<RwLock<Vec>> 中
+  - 每个 stream_a chunk → 调用 var_a 的 on_chunk 回调
+
+消费阶段 2（stream_a 结束，轮到 stream_b）:
+  - 创建 stream_b 的 reader（cursor = 0）
+  - reader.next() 立即返回已缓冲的 chunks（快速追赶）
+  - 追完缓冲后，如果 stream_b 还在 Running，继续等待新 chunks
+  - 每个 stream_b chunk → 调用 var_b 的 on_chunk 回调
+  - 效果：先一口气输入所有已缓冲数据，然后切换为实时消费
+```
+
+这个行为是 `StreamReader` cursor 机制的自然结果——已有的 chunks 在 `Vec<Segment>` 中，新 reader 从 0 开始读，全部是即时返回。
+
+##### 每个 stream 可以有自己的回调
+
+```javascript
+function main(inputs) {
+    // 两个不同 LLM 的流，分别注册不同的回调
+    inputs.llm1_text.on_chunk(function(chunk) {
+        return { source: "llm1", text: chunk };
+    });
+
+    inputs.llm2_text.on_chunk(function(chunk) {
+        return { source: "llm2", text: chunk };
+    });
+
+    return {};
+}
+```
+
+消费顺序：先消费 `llm1_text` 的所有 chunks，再消费 `llm2_text` 的所有 chunks。两个回调在同一个 boa Context 中执行，可以共享闭包状态。
+
+#### 3.9.3 Template Transform 节点流式执行
+
+Template 节点没有 JS 回调机制。当检测到输入变量包含 Running Stream 时，Rust 侧自动进入流式渲染模式。
+
+##### 执行流程
+
+```
+TemplateTransformExecutor::execute()
+│
+├─ 1. 检测输入变量中的 Stream（见 3.9.1）
+│     stream_vars: Vec<(var_name, SegmentStream)>
+│     static_vars: HashMap<String, Value>
+│
+├─ 2. 无 Running Stream → 正常执行（行为不变）
+│
+├─ 3. 有 Running Stream → 创建输出流，立即返回
+│     let (output_stream, writer) = SegmentStream::channel()
+│     返回 NodeRunResult {
+│       stream_outputs: { "output": output_stream },
+│     }
+│
+└─ 4. tokio::spawn 后台任务
+      │
+      ├─ accumulated: HashMap<String, String>  // 每个 stream 变量的已累积显示字符串
+      ├─ last_rendered: String = ""             // 上次完整渲染结果（用于计算增量）
+      │
+      ├─ 按 stream_vars 声明顺序，逐个消费 stream：
+      │   for (var_name, stream) in stream_vars:
+      │     let reader = stream.reader()
+      │     loop:
+      │       match reader.next().await:
+      │         Chunk(seg) →
+      │           // 累积 stream 变量的显示值
+      │           accumulated[var_name] += seg.to_display_string()
+      │
+      │           // 构建完整的 jinja_vars（静态变量 + 所有 stream 的当前累积值）
+      │           let mut jinja_vars = static_vars.clone()
+      │           for (name, acc) in &accumulated:
+      │             jinja_vars[name] = Value::String(acc.clone())
+      │
+      │           // 渲染完整模板
+      │           let rendered = render_jinja2(template, &jinja_vars)?
+      │
+      │           // 计算增量并 emit
+      │           if rendered.len() > last_rendered.len()
+      │              && rendered.starts_with(&last_rendered):
+      │             // 简单后缀追加（常见场景优化）
+      │             let delta = &rendered[last_rendered.len()..]
+      │             writer.send(Segment::String(delta)).await
+      │           else if rendered != last_rendered:
+      │             // 模板结构变化，发送全量
+      │             writer.send(Segment::String(rendered.clone())).await
+      │
+      │           last_rendered = rendered
+      │
+      │         End(final_seg) →
+      │           accumulated[var_name] = final_seg.to_display_string()
+      │           // 最终渲染（同上逻辑）
+      │           ...
+      │           break → 进入下一个 stream
+      │
+      │         Error(msg) →
+      │           writer.error(msg).await
+      │           return
+      │
+      └─ 所有 stream 消费完毕
+          writer.end(Segment::String(last_rendered)).await
+```
+
+##### 增量计算
+
+模板增量基于一个常见假设：**流式文本追加时，模板输出也是追加的**。
+
+```
+模板: "AI says: {{ llm_text }}"
+
+Chunk 1: "Hello"
+  accumulated["llm_text"] = "Hello"
+  rendered = "AI says: Hello"
+  delta = "AI says: Hello"          (首次，全量)
+  emit: "AI says: Hello"
+
+Chunk 2: " World"
+  accumulated["llm_text"] = "Hello World"
+  rendered = "AI says: Hello World"
+  delta = " World"                  (后缀追加)
+  emit: " World"
+
+最终 stream output final_value = "AI says: Hello World"
+```
+
+**边界情况：模板变量在中间**
+
+```
+模板: ">> {{ llm_text }} <<"
+
+Chunk 1: "Hi"
+  rendered = ">> Hi <<"
+  emit: ">> Hi <<"                  (全量)
+
+Chunk 2: " there"
+  rendered = ">> Hi there <<"
+  starts_with(">> Hi <<") = false   (后缀不匹配！)
+  → 发送全量 ">> Hi there <<"
+```
+
+对于这种情况，每个 chunk 都发送全量渲染结果。消费端需自行处理（替换而非追加）。实际场景中，绝大多数流式模板是 `前缀 + {{ stream_var }}` 形式，后缀追加模式可以覆盖。
+
+#### 3.9.4 Answer 节点（补充多 Stream 场景）
+
+Answer 节点使用 `{{#node.var#}}` 语法引用变量。单个 Stream 的消费已在 3.8.7 设计（StreamReader 逐 chunk 消费）。
+
+**多 Stream 补充**：当模板引用多个流变量时（如 `{{#llm1.text#}} vs {{#llm2.text#}}`），适用与 Template 节点相同的规则：
+- 按模板中出现的顺序串行消费
+- 先消费的流实时推送，后消费的流后台缓冲
+- 增量计算逻辑相同（累积 + 重渲染 + diff）
+
+#### 3.9.5 节点输出类型更新
+
+当节点检测到 Running Stream 输入并进入流式模式时，输出从普通 Value 变为 Stream：
+
+| 节点类型 | 普通模式输出 | 流式模式输出 |
+|---------|------------|------------|
+| code | `outputs: { key: Value }` | `outputs: main() 返回值` + `stream_outputs: { "output": Stream }` |
+| template-transform | `outputs: { "output": String }` | `stream_outputs: { "output": Stream }` |
+| answer | `outputs: { "answer": String }` | `stream_outputs: { "answer": Stream }` |
+
+流式模式下，`stream_outputs` 中的 Stream 在流结束后 `final_value` 等于普通模式下的完整输出值。
+
+#### 3.9.6 向后兼容
+
+| 场景 | 行为 | 理由 |
+|------|------|------|
+| 无 Stream 输入 | 完全不变 | 不触发流式检测 |
+| Stream 已 Completed | 完全不变 | `snapshot_segment()` 返回 final_value，走正常 `to_value()` 路径 |
+| Code 有 Running Stream 但未注册 on_chunk | 等价于等流结束 | auto-collect 所有 stream，用 final_value 重新调 main() |
+| Template 有 Running Stream | 自动进入流式渲染 | 对用户透明，模板写法不变，最终结果相同 |
+| 下游节点不支持 Stream | 自动 collect | 下游节点 `to_value()` 调用 `snapshot_segment()`，Completed 的流返回 final_value |
+
 ---
 
 ## 四、各场景的变量类型总览
@@ -997,11 +1398,14 @@ let actual = match actual {
 | start | `sys.files` | Array（内含 Object） | 系统变量，每个 Object 是文件元数据 |
 | end | `{variable}` | 透传上游类型 | 通过 value_selector 引用 |
 | answer | `answer` | String | 模板渲染后的字符串 |
+| answer (流式模式) | `answer` | **Stream** | 输入含 Running Stream 时，逐 chunk 渲染推送（3.9.4） |
 | if-else | `selected_case` | String | case_id 或 "false" |
 | template-transform | `output` | String | Jinja2 渲染结果 |
+| template-transform (流式模式) | `output` | **Stream** | 输入含 Running Stream 时，逐 chunk 增量渲染（3.9.3） |
 | variable-aggregator | `output` | 透传上游类型 | 第一个非 null 值 |
 | variable-assigner | `output` | 透传上游类型 | 加 write_mode 和 selector 元数据 |
 | code (JS) | `{key}` | 任意 | 沙箱代码返回的 JSON |
+| code (JS 流式模式) | `output` | **Stream** | 输入含 Running Stream 且注册了 on_chunk 回调（3.9.2） |
 | code (WASM) | `{key}` | 任意 | WASM 执行结果 |
 | http-request | `status_code` | Integer | HTTP 状态码 |
 | http-request | `body` | String | 响应体文本 |
@@ -1122,6 +1526,9 @@ let actual = match actual {
 | `src/dsl/schema.rs` | `NodeRunResult` 新增 `stream_outputs: HashMap<String, SegmentStream>` 字段（3.8.8） |
 | `src/evaluator/condition.rs` | `eval_contains` 和 `eval_all_of` 中 ArrayString 路径不变；移除对已删变体的隐式匹配；新增 Stream auto-collect 预处理（3.8.11） |
 | `src/llm/executor.rs` | `extract_image_urls` 中 ArrayString 路径不变；流式模式改为创建 `SegmentStream` 并通过 `stream_outputs` 返回（3.8.6） |
+| `src/nodes/data_transform.rs` | CodeNodeExecutor：新增流式检测、StreamProxy 构建、boa Context 保持、后台 chunk 回调执行（3.9.2）；TemplateTransformExecutor：新增流式检测、后台增量渲染（3.9.3） |
+| `src/nodes/control_flow.rs` | AnswerNodeExecutor：新增多 Stream 串行消费（3.9.4） |
+| `src/sandbox/builtin.rs` | 新增 StreamProxy JS 对象注册、回调函数提取、Context 保持模式的 API（3.9.2） |
 | `src/lib.rs` | 新增导出 `SegmentType` |
 
 ### 不修改的部分
@@ -1130,7 +1537,7 @@ let actual = match actual {
 |------|------|
 | `VariablePool` 存储结构 | `(node_id, var_name) → Segment` 模型合理，Stream 作为 Segment 变体自然融入 |
 | 条件评估器的比较逻辑 | 隐式转换行为与 Dify 兼容，不宜改变（Stream 通过预处理 auto-collect 适配） |
-| 模板引擎的变量解析 | `to_display_string()` 行为合理（Stream 通过 to_display_string 适配） |
+| 模板引擎 (`src/template/engine.rs`) | `render_template()` 和 `render_jinja2()` 本身不变；流式渲染在节点执行器层处理，模板引擎仍是无状态的纯函数调用 |
 | DSL 的 `var_type` 字符串列表 | `"file"` 和 `"array[file]"` 在 DSL 层仍有效；Stream 不需要 DSL 声明 |
 
 ---
@@ -1346,6 +1753,151 @@ async fn test_stream_to_value_completed() {
 }
 ```
 
-### 7.6 现有 E2E 测试回归
+### 7.6 流感知节点测试
+
+```rust
+// Code 节点：on_chunk 回调基本流程
+#[tokio::test]
+async fn test_code_node_stream_on_chunk() {
+    // 构造一个 Running Stream 作为输入
+    let (stream, writer) = SegmentStream::channel();
+    let mut pool = VariablePool::new();
+    pool.set(&["llm1".into(), "text".into()], Segment::Stream(stream));
+
+    // Code 节点配置：注册 on_chunk 回调
+    let config = json!({
+        "code": r#"
+            function main(inputs) {
+                inputs.llm_text.on_chunk(function(chunk) {
+                    return { text: chunk.toUpperCase() };
+                });
+                return {};
+            }
+        "#,
+        "language": "javascript",
+        "variables": [{ "variable": "llm_text", "value_selector": ["llm1", "text"] }]
+    });
+
+    // 后台 emit chunks
+    tokio::spawn(async move {
+        writer.send(Segment::String("hello".into())).await;
+        writer.send(Segment::String(" world".into())).await;
+        writer.end(Segment::String("hello world".into())).await;
+    });
+
+    let result = executor.execute("code1", &config, &pool, &ctx).await.unwrap();
+    // 应返回 stream_outputs
+    assert!(result.stream_outputs.contains_key("output"));
+
+    // 消费输出流，验证每个 chunk 已被 toUpperCase 处理
+    let output_stream = result.stream_outputs.get("output").unwrap();
+    let mut reader = output_stream.reader();
+    match reader.next().await {
+        Some(StreamEvent::Chunk(seg)) => {
+            let val = seg.to_value();
+            assert_eq!(val["text"], "HELLO");
+        }
+        _ => panic!("Expected chunk"),
+    }
+}
+
+// Code 节点：无 on_chunk 注册时 auto-collect 退化
+#[tokio::test]
+async fn test_code_node_stream_no_callback_fallback() {
+    let (stream, writer) = SegmentStream::channel();
+    // 立即结束流
+    writer.end(Segment::String("done".into())).await;
+
+    let mut pool = VariablePool::new();
+    pool.set(&["llm1".into(), "text".into()], Segment::Stream(stream));
+
+    let config = json!({
+        "code": r#"
+            function main(inputs) {
+                // 没有调用 on_chunk，直接用值
+                return { text: inputs.llm_text + "!" };
+            }
+        "#,
+        "language": "javascript",
+        "variables": [{ "variable": "llm_text", "value_selector": ["llm1", "text"] }]
+    });
+
+    let result = executor.execute("code1", &config, &pool, &ctx).await.unwrap();
+    // 无 stream_outputs，退化为普通模式
+    assert!(result.stream_outputs.is_empty());
+    assert_eq!(result.outputs["text"], "done!");
+}
+
+// Code 节点：on_chunk 中保持状态（方案 A 验证）
+#[tokio::test]
+async fn test_code_node_stream_stateful_callback() {
+    // 验证闭包中的 count 变量在多次 on_chunk 调用之间保持
+    let config = json!({
+        "code": r#"
+            function main(inputs) {
+                var count = 0;
+                inputs.stream_var.on_chunk(function(chunk) {
+                    count++;
+                    return { text: chunk, index: count };
+                });
+                return {};
+            }
+        "#,
+        // ...
+    });
+    // 第一个 chunk → index: 1
+    // 第二个 chunk → index: 2（count 被保持了）
+}
+
+// Template 节点：流式增量渲染
+#[tokio::test]
+async fn test_template_stream_incremental() {
+    let (stream, writer) = SegmentStream::channel();
+    let mut pool = VariablePool::new();
+    pool.set(&["llm1".into(), "text".into()], Segment::Stream(stream));
+    pool.set(&["start".into(), "name".into()], Segment::String("Alice".into()));
+
+    let config = json!({
+        "template": "Hello {{ name }}, {{ llm_text }}",
+        "variables": [
+            { "variable": "name", "value_selector": ["start", "name"] },
+            { "variable": "llm_text", "value_selector": ["llm1", "text"] }
+        ]
+    });
+
+    tokio::spawn(async move {
+        writer.send(Segment::String("how".into())).await;
+        writer.send(Segment::String(" are you".into())).await;
+        writer.end(Segment::String("how are you".into())).await;
+    });
+
+    let result = executor.execute("tpl1", &config, &pool, &ctx).await.unwrap();
+    assert!(result.stream_outputs.contains_key("output"));
+
+    let output_stream = result.stream_outputs.get("output").unwrap();
+    let final_val = output_stream.collect().await.unwrap();
+    // final_value 应为完整渲染结果
+    assert_eq!(final_val.to_display_string(), "Hello Alice, how are you");
+}
+
+// Template 节点：无 stream 输入时正常执行（向后兼容）
+#[tokio::test]
+async fn test_template_no_stream_unchanged() {
+    let mut pool = VariablePool::new();
+    pool.set(&["n1".into(), "val".into()], Segment::String("world".into()));
+
+    let config = json!({
+        "template": "Hello {{ x }}!",
+        "variables": [{ "variable": "x", "value_selector": ["n1", "val"] }]
+    });
+
+    let result = executor.execute("tpl1", &config, &pool, &ctx).await.unwrap();
+    // 普通模式，无 stream_outputs
+    assert!(result.stream_outputs.is_empty());
+    assert_eq!(result.outputs["output"], "Hello world!");
+}
+```
+
+### 7.7 现有 E2E 测试回归
 
 所有 `tests/e2e/cases/` 中的测试用例应通过。改动不影响已有的值转换结果——移除的变体从未在运行时被创建过，因此不会改变任何现有行为。

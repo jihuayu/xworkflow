@@ -13,7 +13,7 @@ use crate::dsl::schema::{
 };
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
-use crate::template::render_template;
+use crate::template::render_template_async;
 
 use super::types::{
     ChatCompletionRequest, ChatContent, ChatMessage, ChatRole, ContentPart, ImageUrlDetail,
@@ -45,11 +45,11 @@ impl NodeExecutor for LlmNodeExecutor {
 
         let mut messages = Vec::new();
         if let Some(memory) = &data.memory {
-            append_memory_messages(&mut messages, memory, variable_pool)?;
+            append_memory_messages(&mut messages, memory, variable_pool).await?;
         }
 
         for msg in &data.prompt_template {
-            let rendered = render_template(&msg.text, variable_pool);
+            let rendered = render_template_async(&msg.text, variable_pool).await;
             let role = map_role(&msg.role)?;
             messages.push(ChatMessage {
                 role,
@@ -60,7 +60,7 @@ impl NodeExecutor for LlmNodeExecutor {
         if let Some(ctx) = &data.context {
             if ctx.enabled {
                 if let Some(sel) = &ctx.variable_selector {
-                    let seg = variable_pool.get(sel);
+                    let seg = variable_pool.get_resolved(sel).await;
                     let ctx_text = seg.to_display_string();
                     if !ctx_text.is_empty() {
                         inject_context(&mut messages, ctx_text);
@@ -72,7 +72,7 @@ impl NodeExecutor for LlmNodeExecutor {
         if let Some(vision) = &data.vision {
             if vision.enabled {
                 if let Some(sel) = &vision.variable_selector {
-                    let seg = variable_pool.get(sel);
+                    let seg = variable_pool.get_resolved(sel).await;
                     let urls = extract_image_urls(&seg);
                     if !urls.is_empty() {
                         let parts = urls
@@ -260,7 +260,7 @@ fn extract_image_urls(seg: &Segment) -> Vec<String> {
     }
 }
 
-fn append_memory_messages(
+async fn append_memory_messages(
     messages: &mut Vec<ChatMessage>,
     memory: &MemoryConfig,
     pool: &VariablePool,
@@ -272,7 +272,7 @@ fn append_memory_messages(
         Some(sel) => sel,
         None => return Ok(()),
     };
-    let seg = pool.get(selector);
+    let seg = pool.get_resolved(selector).await;
     let value = seg.to_value();
     if let Value::Array(arr) = value {
         let start_index = memory

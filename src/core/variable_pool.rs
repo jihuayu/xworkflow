@@ -59,7 +59,7 @@ impl FileSegment {
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     Chunk(Segment),
-    End(Option<Segment>),
+    End(Segment),
     Error(String),
 }
 
@@ -142,7 +142,40 @@ impl SegmentStream {
     }
 
     pub fn snapshot_segment(&self) -> Segment {
-        let snapshot = self.state.blocking_read();
+        match self.state.try_read() {
+            Ok(snapshot) => match snapshot.status {
+                StreamStatus::Completed => snapshot.final_value.clone().unwrap_or(Segment::None),
+                StreamStatus::Failed => Segment::None,
+                StreamStatus::Running => Segment::Array(snapshot.chunks.clone()),
+            },
+            Err(_) => Segment::None,
+        }
+    }
+
+    pub fn status(&self) -> StreamStatus {
+        self.state
+            .try_read()
+            .map(|s| s.status.clone())
+            .unwrap_or(StreamStatus::Running)
+    }
+
+    pub async fn status_async(&self) -> StreamStatus {
+        self.state.read().await.status.clone()
+    }
+
+    pub fn chunks(&self) -> Vec<Segment> {
+        self.state
+            .try_read()
+            .map(|s| s.chunks.clone())
+            .unwrap_or_default()
+    }
+
+    pub async fn chunks_async(&self) -> Vec<Segment> {
+        self.state.read().await.chunks.clone()
+    }
+
+    pub async fn snapshot_segment_async(&self) -> Segment {
+        let snapshot = self.state.read().await;
         match snapshot.status {
             StreamStatus::Completed => snapshot.final_value.clone().unwrap_or(Segment::None),
             StreamStatus::Failed => Segment::None,
@@ -151,18 +184,27 @@ impl SegmentStream {
     }
 
     fn snapshot_status(&self) -> (StreamStatus, Vec<Segment>, Option<Segment>, Option<String>) {
-        let snapshot = self.state.blocking_read();
-        (
-            snapshot.status.clone(),
-            snapshot.chunks.clone(),
-            snapshot.final_value.clone(),
-            snapshot.error.clone(),
-        )
+        match self.state.try_read() {
+            Ok(snapshot) => (
+                snapshot.status.clone(),
+                snapshot.chunks.clone(),
+                snapshot.final_value.clone(),
+                snapshot.error.clone(),
+            ),
+            Err(_) => (
+                StreamStatus::Running,
+                Vec::new(),
+                None,
+                None,
+            ),
+        }
     }
 
     fn is_empty(&self) -> bool {
-        let snapshot = self.state.blocking_read();
-        snapshot.chunks.is_empty() && snapshot.final_value.is_none()
+        match self.state.try_read() {
+            Ok(snapshot) => snapshot.chunks.is_empty() && snapshot.final_value.is_none(),
+            Err(_) => false,
+        }
     }
 }
 
@@ -218,7 +260,7 @@ impl StreamReader {
                     self.stream.notify.notified().await;
                 }
                 StreamStatus::Completed => {
-                    return Some(StreamEvent::End(final_value));
+                    return Some(StreamEvent::End(final_value.unwrap_or(Segment::None)));
                 }
                 StreamStatus::Failed => {
                     return Some(StreamEvent::Error(error.unwrap_or_else(|| "stream failed".into())));
@@ -484,6 +526,19 @@ impl VariablePool {
         self.variables.get(&key).cloned().unwrap_or(Segment::None)
     }
 
+    /// Get variable and resolve Stream by collecting it.
+    pub async fn get_resolved(&self, selector: &[String]) -> Segment {
+        match self.get(selector) {
+            Segment::Stream(stream) => stream.collect().await.unwrap_or(Segment::None),
+            other => other,
+        }
+    }
+
+    /// Get variable and resolve Stream, returning serde_json::Value.
+    pub async fn get_resolved_value(&self, selector: &[String]) -> Value {
+        self.get_resolved(selector).await.to_value()
+    }
+
     /// Set a single variable
     pub fn set(&mut self, selector: &[String], value: Segment) {
         if selector.len() >= 2 {
@@ -737,5 +792,25 @@ mod tests {
         writer.error("timeout".into()).await;
         let err = stream.collect().await.unwrap_err();
         assert!(err.contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn test_get_resolved_stream() {
+        let (stream, writer) = SegmentStream::channel();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &["n1".to_string(), "text".to_string()],
+            Segment::Stream(stream),
+        );
+
+        tokio::spawn(async move {
+            writer.send(Segment::String("hello".into())).await;
+            writer.end(Segment::String("hello".into())).await;
+        });
+
+        let resolved = pool
+            .get_resolved(&["n1".to_string(), "text".to_string()])
+            .await;
+        assert_eq!(resolved.to_display_string(), "hello");
     }
 }

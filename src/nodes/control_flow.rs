@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::VariablePool;
+use crate::core::variable_pool::{Segment, SegmentStream, StreamEvent, StreamStatus, VariablePool};
 use crate::dsl::schema::{
     Case, NodeRunResult, OutputVariable, StartVariable, WorkflowNodeExecutionStatus,
 };
@@ -11,7 +11,8 @@ use crate::error::NodeError;
 use crate::evaluator::evaluate_cases;
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
-use crate::template::render_template;
+// render_template_async no longer used in this module
+use regex::Regex;
 
 // ================================
 // Start Node
@@ -83,7 +84,7 @@ impl NodeExecutor for EndNodeExecutor {
 
                     if !variable.is_empty() {
                         if let Some(sel) = selector {
-                            let val = variable_pool.get(&sel);
+                            let val = variable_pool.get_resolved(&sel).await;
                             let json_val = val.to_value();
                             outputs.insert(variable.to_string(), json_val.clone());
                             inputs.insert(variable.to_string(), json_val);
@@ -92,7 +93,7 @@ impl NodeExecutor for EndNodeExecutor {
                 }
             } else if let Ok(output_vars) = serde_json::from_value::<Vec<OutputVariable>>(outputs_val.clone()) {
                 for ov in &output_vars {
-                    let val = variable_pool.get(&ov.value_selector);
+                    let val = variable_pool.get_resolved(&ov.value_selector).await;
                     let json_val = val.to_value();
                     outputs.insert(ov.variable.clone(), json_val.clone());
                     inputs.insert(ov.variable.clone(), json_val);
@@ -130,18 +131,120 @@ impl NodeExecutor for AnswerNodeExecutor {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let rendered = render_template(answer_template, variable_pool);
+        let re = Regex::new(r"\{\{#([^#]+)#\}\}").unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let mut static_values: HashMap<String, String> = HashMap::new();
+        let mut stream_vars: Vec<(String, SegmentStream)> = Vec::new();
 
-        let mut outputs = HashMap::new();
-        outputs.insert("answer".to_string(), Value::String(rendered));
+        for caps in re.captures_iter(answer_template) {
+            let selector_str = &caps[1];
+            if !seen.insert(selector_str.to_string()) {
+                continue;
+            }
+            let parts: Vec<String> = selector_str.split('.').map(|s| s.to_string()).collect();
+            let seg = variable_pool.get(&parts);
+            match seg {
+                Segment::Stream(stream) => {
+                    if stream.status_async().await == StreamStatus::Running {
+                        stream_vars.push((selector_str.to_string(), stream));
+                        static_values.insert(selector_str.to_string(), String::new());
+                    } else {
+                        let snap = stream.snapshot_segment_async().await;
+                        static_values.insert(selector_str.to_string(), snap.to_display_string());
+                    }
+                }
+                other => {
+                    static_values.insert(selector_str.to_string(), other.to_display_string());
+                }
+            }
+        }
+
+        if stream_vars.is_empty() {
+            let rendered = render_answer_with_map(answer_template, &static_values);
+            let mut outputs = HashMap::new();
+            outputs.insert("answer".to_string(), Value::String(rendered));
+            return Ok(NodeRunResult {
+                status: WorkflowNodeExecutionStatus::Succeeded,
+                outputs,
+                edge_source_handle: "source".to_string(),
+                ..Default::default()
+            });
+        }
+
+        let template_str = answer_template.to_string();
+        let (answer_stream, writer) = SegmentStream::channel();
+
+        tokio::spawn(async move {
+            let mut values = static_values;
+            let mut last_rendered = String::new();
+
+            for (selector, stream) in stream_vars {
+                let mut reader = stream.reader();
+                loop {
+                    match reader.next().await {
+                        Some(StreamEvent::Chunk(seg)) => {
+                            let entry = values.entry(selector.clone()).or_default();
+                            entry.push_str(&seg.to_display_string());
+                            let rendered = render_answer_with_map(&template_str, &values);
+                            let delta = if rendered.starts_with(&last_rendered) {
+                                rendered[last_rendered.len()..].to_string()
+                            } else if rendered != last_rendered {
+                                rendered.clone()
+                            } else {
+                                String::new()
+                            };
+                            last_rendered = rendered;
+                            if !delta.is_empty() {
+                                writer.send(Segment::String(delta)).await;
+                            }
+                        }
+                        Some(StreamEvent::End(final_seg)) => {
+                            values.insert(selector.clone(), final_seg.to_display_string());
+                            let rendered = render_answer_with_map(&template_str, &values);
+                            let delta = if rendered.starts_with(&last_rendered) {
+                                rendered[last_rendered.len()..].to_string()
+                            } else if rendered != last_rendered {
+                                rendered.clone()
+                            } else {
+                                String::new()
+                            };
+                            last_rendered = rendered;
+                            if !delta.is_empty() {
+                                writer.send(Segment::String(delta)).await;
+                            }
+                            break;
+                        }
+                        Some(StreamEvent::Error(err)) => {
+                            writer.error(err).await;
+                            return;
+                        }
+                        None => break,
+                    }
+                }
+            }
+
+            writer.end(Segment::String(last_rendered)).await;
+        });
+
+        let mut stream_outputs = HashMap::new();
+        stream_outputs.insert("answer".to_string(), answer_stream);
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
-            outputs,
+            stream_outputs,
             edge_source_handle: "source".to_string(),
             ..Default::default()
         })
     }
+}
+
+fn render_answer_with_map(template: &str, values: &HashMap<String, String>) -> String {
+    let re = Regex::new(r"\{\{#([^#]+)#\}\}").unwrap();
+    re.replace_all(template, |caps: &regex::Captures| {
+        let selector_str = &caps[1];
+        values.get(selector_str).cloned().unwrap_or_default()
+    })
+    .into_owned()
 }
 
 // ================================
@@ -241,6 +344,32 @@ mod tests {
         let context = RuntimeContext::default();
         let result = executor.execute("ans1", &config, &pool, &context).await.unwrap();
         assert_eq!(result.outputs.get("answer"), Some(&Value::String("Hello Alice!".into())));
+    }
+
+    #[tokio::test]
+    async fn test_answer_node_with_stream() {
+        let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &["n1".to_string(), "name".to_string()],
+            Segment::Stream(stream),
+        );
+
+        tokio::spawn(async move {
+            writer.send(Segment::String("Bob".into())).await;
+            writer.end(Segment::String("Bob".into())).await;
+        });
+
+        let config = serde_json::json!({
+            "answer": "Hello {{#n1.name#}}!"
+        });
+
+        let executor = AnswerNodeExecutor;
+        let context = RuntimeContext::default();
+        let result = executor.execute("ans_stream", &config, &pool, &context).await.unwrap();
+        let stream = result.stream_outputs.get("answer").cloned().expect("missing answer stream");
+        let final_seg = stream.collect().await.unwrap_or(Segment::None);
+        assert_eq!(final_seg.to_display_string(), "Hello Bob!");
     }
 
     #[tokio::test]

@@ -14,6 +14,26 @@ pub fn render_template(template: &str, pool: &VariablePool) -> String {
     .into_owned()
 }
 
+/// Async render template with stream resolution.
+pub async fn render_template_async(template: &str, pool: &VariablePool) -> String {
+    let re = Regex::new(r"\{\{#([^#]+)#\}\}").unwrap();
+    let mut result = String::new();
+    let mut last_index = 0;
+
+    for caps in re.captures_iter(template) {
+        let mat = caps.get(0).unwrap();
+        result.push_str(&template[last_index..mat.start()]);
+        let selector_str = &caps[1];
+        let parts: Vec<String> = selector_str.split('.').map(|s| s.to_string()).collect();
+        let val = pool.get_resolved(&parts).await;
+        result.push_str(&val.to_display_string());
+        last_index = mat.end();
+    }
+
+    result.push_str(&template[last_index..]);
+    result
+}
+
 /// Render a Jinja2 template using minijinja with provided variables
 pub fn render_jinja2(
     template: &str,
@@ -77,6 +97,24 @@ mod tests {
         );
         let result = render_template("Q: {{#sys.query#}}", &pool);
         assert_eq!(result, "Q: test");
+    }
+
+    #[tokio::test]
+    async fn test_render_template_async_stream() {
+        let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &["n1".to_string(), "text".to_string()],
+            Segment::Stream(stream),
+        );
+
+        tokio::spawn(async move {
+            writer.send(Segment::String("hi".into())).await;
+            writer.end(Segment::String("hi".into())).await;
+        });
+
+        let result = render_template_async("Say {{#n1.text#}}", &pool).await;
+        assert_eq!(result, "Say hi");
     }
 
     #[test]
