@@ -339,7 +339,7 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "      type: if-else").ok();
     writeln!(&mut yaml, "      title: Check").ok();
     writeln!(&mut yaml, "      cases:").ok();
-    writeln!(&mut yaml, "        - case_id: yes").ok();
+    writeln!(&mut yaml, "        - case_id: \"yes\"").ok();
     writeln!(&mut yaml, "          logical_operator: and").ok();
     writeln!(&mut yaml, "          conditions:").ok();
     writeln!(&mut yaml, "            - variable_selector: [\"start\", \"flag\"]").ok();
@@ -399,7 +399,7 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "    target: if1").ok();
     writeln!(&mut yaml, "  - source: if1").ok();
     writeln!(&mut yaml, "    target: code_yes").ok();
-    writeln!(&mut yaml, "    sourceHandle: yes").ok();
+    writeln!(&mut yaml, "    sourceHandle: \"yes\"").ok();
     writeln!(&mut yaml, "  - source: if1").ok();
     writeln!(&mut yaml, "    target: code_no").ok();
     writeln!(&mut yaml, "    sourceHandle: \"false\"").ok();

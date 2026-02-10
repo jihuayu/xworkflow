@@ -10,7 +10,7 @@ pub enum DslFormat {
 /// Parse DSL content into WorkflowSchema
 pub fn parse_dsl(content: &str, format: DslFormat) -> Result<WorkflowSchema, WorkflowError> {
     match format {
-        DslFormat::Yaml => serde_yaml::from_str(content)
+        DslFormat::Yaml => serde_saphyr::from_str(content)
             .map_err(|e| WorkflowError::DslParseError(e.to_string())),
         DslFormat::Json => serde_json::from_str(content)
             .map_err(|e| WorkflowError::DslParseError(e.to_string())),

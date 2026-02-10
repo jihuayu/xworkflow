@@ -1264,7 +1264,7 @@ nodes:
       type: if-else
       title: Check
       cases:
-        - case_id: yes
+        - case_id: "yes"
           logical_operator: and
           conditions:
             - variable_selector: ["start", "n"]
@@ -1289,7 +1289,7 @@ edges:
     target: if1
   - source: if1
     target: end_a
-    sourceHandle: yes
+    sourceHandle: "yes"
   - source: if1
     target: end_b
     sourceHandle: "false"
