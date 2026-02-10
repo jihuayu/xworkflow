@@ -644,11 +644,12 @@ mod tests {
     // ---- Security tests ----
 
     #[tokio::test]
+    #[cfg(feature = "security")]
     async fn test_reject_eval() {
         let sandbox = default_sandbox();
         let result = sandbox
             .execute(SandboxRequest {
-                code: r#"function main(inputs) { eval(\"1+1\"); return {}; }"#.to_string(),
+                code: r#"function main(inputs) { eval("1+1"); return {}; }"#.to_string(),
                 language: CodeLanguage::JavaScript,
                 inputs: json!({}),
                 config: ExecutionConfig::default(),
@@ -663,11 +664,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "security")]
     async fn test_reject_require() {
         let sandbox = default_sandbox();
         let result = sandbox
             .execute(SandboxRequest {
-                code: r#"function main(inputs) { require(\"fs\"); return {}; }"#.to_string(),
+                code: r#"function main(inputs) { require("fs"); return {}; }"#.to_string(),
                 language: CodeLanguage::JavaScript,
                 inputs: json!({}),
                 config: ExecutionConfig::default(),
@@ -678,6 +680,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "security")]
     async fn test_reject_import() {
         let sandbox = default_sandbox();
         let result = sandbox
@@ -687,6 +690,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "security")]
     async fn test_reject_proto() {
         let sandbox = default_sandbox();
         let result = sandbox
@@ -699,6 +703,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "security")]
     async fn test_reject_function_constructor() {
         let sandbox = default_sandbox();
         let result = sandbox

@@ -158,7 +158,7 @@ fn register_random(context: &mut Context) -> JsResult<()> {
 }
 
 fn datetime_now(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(Utc::now().timestamp()))
+    Ok(JsValue::from(Utc::now().timestamp_millis()))
 }
 
 fn datetime_timestamp(
