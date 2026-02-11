@@ -181,7 +181,7 @@ impl PluginRegistry {
         self.inner.custom_id_generator.clone()
     }
 
-    pub async fn shutdown_all(&mut self) -> Result<(), PluginError> {
+    pub async fn shutdown_all(&self) -> Result<(), PluginError> {
         for plugin_id in self.normal_plugin_ids.iter().rev() {
             if let Some(plugin) = self.plugins.get(plugin_id) {
                 plugin.shutdown().await?;

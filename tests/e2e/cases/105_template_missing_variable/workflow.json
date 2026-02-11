@@ -1,0 +1,28 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    { "id": "start", "data": { "type": "start", "title": "Start", "variables": [] } },
+    {
+      "id": "tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "Missing Var",
+        "template": "Hello {{ missing }}"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["tmpl", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "tmpl" },
+    { "source": "tmpl", "target": "end" }
+  ]
+}

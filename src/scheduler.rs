@@ -43,6 +43,7 @@ pub enum ExecutionStatus {
 pub struct WorkflowHandle {
     status_rx: watch::Receiver<ExecutionStatus>,
   events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
+  event_active: Arc<AtomicBool>,
 }
 
 impl WorkflowHandle {
@@ -70,6 +71,10 @@ impl WorkflowHandle {
           _ => return status,
         }
       }
+    }
+
+    pub fn events_active(&self) -> bool {
+      self.event_active.load(Ordering::Relaxed)
     }
 }
 
@@ -449,6 +454,8 @@ impl WorkflowRunnerBuilder {
 
     #[cfg(feature = "plugin-system")]
     let plugin_registry = builder.plugin_gate.take_plugin_registry_arc();
+    #[cfg(feature = "plugin-system")]
+    let plugin_registry_for_shutdown = plugin_registry.clone();
 
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
@@ -566,9 +573,14 @@ impl WorkflowRunnerBuilder {
       security_gate
         .record_workflow_end(context.as_ref(), workflow_id_for_end.as_deref())
         .await;
+
+      #[cfg(feature = "plugin-system")]
+      if let Some(registry) = plugin_registry_for_shutdown {
+        let _ = registry.shutdown_all().await;
+      }
     });
 
-    Ok(WorkflowHandle { status_rx, events })
+    Ok(WorkflowHandle { status_rx, events, event_active })
   }
 
   #[allow(unused_mut)]
@@ -672,6 +684,8 @@ impl WorkflowRunnerBuilder {
 
     #[cfg(feature = "plugin-system")]
     let plugin_registry = builder.plugin_gate.take_plugin_registry_arc();
+    #[cfg(feature = "plugin-system")]
+    let plugin_registry_for_shutdown = plugin_registry.clone();
 
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
@@ -794,9 +808,14 @@ impl WorkflowRunnerBuilder {
       security_gate
         .record_workflow_end(context.as_ref(), workflow_id_for_end.as_deref())
         .await;
+
+      #[cfg(feature = "plugin-system")]
+      if let Some(registry) = plugin_registry_for_shutdown {
+        let _ = registry.shutdown_all().await;
+      }
     });
 
-    let workflow_handle = WorkflowHandle { status_rx, events };
+    let workflow_handle = WorkflowHandle { status_rx, events, event_active };
     let debug_handle = DebugHandle::new(cmd_tx, debug_evt_rx);
 
     Ok((workflow_handle, debug_handle))

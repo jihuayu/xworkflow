@@ -156,6 +156,9 @@ struct MockEndpoint {
     /// Expected request body substring (optional, for matching)
     #[serde(default)]
     match_body: Option<String>,
+    /// Expected number of calls (optional, for sequential responses)
+    #[serde(default)]
+    expect: Option<usize>,
 }
 
 fn default_status() -> usize {
@@ -1098,6 +1101,9 @@ async fn setup_mock_server(state: &mut StateFile) -> Option<MockServerGuard> {
         }
         if let Some(body_pattern) = &ep.match_body {
             mock = mock.match_body(mockito::Matcher::Regex(body_pattern.clone()));
+        }
+        if let Some(expect) = ep.expect {
+            mock = mock.expect(expect);
         }
 
         // Set up response

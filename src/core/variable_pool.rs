@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use tokio::sync::{Notify, RwLock};
 
 pub const SCOPE_NODE_ID: &str = "__scope__";
@@ -319,17 +319,34 @@ pub struct SegmentStream {
     readers: Arc<AtomicUsize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StreamWriter {
     state: Arc<RwLock<StreamState>>,
     notify: Arc<Notify>,
     readers: Arc<AtomicUsize>,
+    writers: Arc<AtomicUsize>,
 }
 
 #[derive(Debug)]
 pub struct StreamReader {
     stream: SegmentStream,
     cursor: usize,
+}
+
+#[derive(Clone, Debug)]
+#[doc(hidden)]
+pub struct StreamStateWeak {
+    inner: Weak<RwLock<StreamState>>,
+}
+
+impl StreamStateWeak {
+    pub fn is_dropped(&self) -> bool {
+        self.inner.upgrade().is_none()
+    }
+
+    pub fn strong_count(&self) -> usize {
+        self.inner.strong_count()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -355,6 +372,7 @@ impl SegmentStream {
         let shared = Arc::new(RwLock::new(state));
         let notify = Arc::new(Notify::new());
         let readers = Arc::new(AtomicUsize::new(0));
+        let writers = Arc::new(AtomicUsize::new(1));
         let stream = SegmentStream {
             state: shared.clone(),
             notify: notify.clone(),
@@ -364,6 +382,7 @@ impl SegmentStream {
             state: shared,
             notify,
             readers,
+            writers,
         };
         (stream, writer)
     }
@@ -374,6 +393,18 @@ impl SegmentStream {
             stream: self.clone(),
             cursor: 0,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn debug_state_weak(&self) -> StreamStateWeak {
+        StreamStateWeak {
+            inner: Arc::downgrade(&self.state),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn debug_readers_count(&self) -> usize {
+        self.readers.load(Ordering::Relaxed)
     }
 
     pub async fn collect(&self) -> Result<Segment, String> {
@@ -521,6 +552,33 @@ impl StreamWriter {
         } else {
             self.notify.notify_waiters();
         }
+    }
+}
+
+impl Clone for StreamWriter {
+    fn clone(&self) -> Self {
+        self.writers.fetch_add(1, Ordering::Relaxed);
+        StreamWriter {
+            state: self.state.clone(),
+            notify: self.notify.clone(),
+            readers: self.readers.clone(),
+            writers: self.writers.clone(),
+        }
+    }
+}
+
+impl Drop for StreamWriter {
+    fn drop(&mut self) {
+        if self.writers.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+        if let Ok(mut state) = self.state.try_write() {
+            if state.status == StreamStatus::Running {
+                state.status = StreamStatus::Failed;
+                state.error = Some("stream writer dropped without calling end()".to_string());
+            }
+        }
+        self.notify.notify_waiters();
     }
 }
 

@@ -74,6 +74,7 @@ tokio-test = "0.4"
 mockito = "1.2"
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+dhat = "0.3"
 
 [features]
 default = [

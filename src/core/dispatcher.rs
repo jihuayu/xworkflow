@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 use parking_lot::RwLock;
 
@@ -41,7 +41,8 @@ impl EventEmitter {
     &self.tx
   }
 
-  pub(crate) async fn emit(&self, event: GraphEngineEvent) {
+  #[doc(hidden)]
+  pub async fn emit(&self, event: GraphEngineEvent) {
     if self.is_active() {
       let _ = self.tx.send(event).await;
     }
@@ -100,6 +101,33 @@ pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> 
     security_gate: Arc<dyn SecurityGate>,
     debug_gate: G,
     debug_hook: H,
+}
+
+#[derive(Clone, Debug)]
+#[doc(hidden)]
+pub struct DispatcherResourceWeak {
+  graph: Weak<RwLock<Graph>>,
+  variable_pool: Weak<RwLock<VariablePool>>,
+  registry: Weak<NodeExecutorRegistry>,
+  context: Weak<RuntimeContext>,
+}
+
+impl DispatcherResourceWeak {
+  pub fn graph_dropped(&self) -> bool {
+    self.graph.upgrade().is_none()
+  }
+
+  pub fn pool_dropped(&self) -> bool {
+    self.variable_pool.upgrade().is_none()
+  }
+
+  pub fn registry_dropped(&self) -> bool {
+    self.registry.upgrade().is_none()
+  }
+
+  pub fn context_dropped(&self) -> bool {
+    self.context.upgrade().is_none()
+  }
 }
 
 impl WorkflowDispatcher<NoopGate, NoopHook> {
@@ -201,6 +229,15 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
 
 
 impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
+  #[doc(hidden)]
+  pub fn debug_resources(&self) -> DispatcherResourceWeak {
+    DispatcherResourceWeak {
+      graph: Arc::downgrade(&self.graph),
+      variable_pool: Arc::downgrade(&self.variable_pool),
+      registry: Arc::downgrade(&self.registry),
+      context: Arc::downgrade(&self.context),
+    }
+  }
   pub fn new_with_debug(
     graph: Graph,
     variable_pool: VariablePool,

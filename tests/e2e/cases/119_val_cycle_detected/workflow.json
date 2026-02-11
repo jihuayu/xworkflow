@@ -1,0 +1,30 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    { "id": "start", "data": { "type": "start", "title": "Start", "variables": [] } },
+    {
+      "id": "code1",
+      "data": {
+        "type": "code",
+        "title": "Code",
+        "code": "function main(inputs) { return { result: 1 }; }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["code1", "result"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "code1" },
+    { "source": "code1", "target": "end" },
+    { "source": "end", "target": "code1" }
+  ]
+}

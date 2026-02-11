@@ -1,0 +1,33 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    { "id": "start", "data": { "type": "start", "title": "Start" } },
+    {
+      "id": "assign1",
+      "data": {
+        "type": "assigner",
+        "title": "Append",
+        "assigned_variable_selector": ["conversation", "items"],
+        "value": "c",
+        "write_mode": "append"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "items", "value_selector": ["conversation", "items"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "assign1" },
+    { "source": "assign1", "target": "end" }
+  ],
+  "conversation_variables": [
+    { "name": "items", "type": "array[string]" }
+  ]
+}

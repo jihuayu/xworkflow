@@ -5,6 +5,8 @@ use boa_engine::{Context, Source};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "builtin-sandbox-js")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::core::runtime_context::RuntimeContext;
@@ -985,7 +987,8 @@ enum RuntimeCommand {
 
 #[cfg(feature = "builtin-sandbox-js")]
 #[derive(Clone, Debug)]
-struct JsStreamRuntime {
+#[doc(hidden)]
+pub struct JsStreamRuntime {
     tx: mpsc::Sender<RuntimeCommand>,
 }
 
@@ -1008,8 +1011,15 @@ impl JsStreamRuntime {
         resp_rx.await.map_err(|_| "runtime dropped".to_string())?
     }
 
-    async fn shutdown(&self) {
+    pub async fn shutdown(&self) {
         let _ = self.tx.send(RuntimeCommand::Shutdown).await;
+    }
+}
+
+#[cfg(feature = "builtin-sandbox-js")]
+impl Drop for JsStreamRuntime {
+    fn drop(&mut self) {
+        let _ = self.tx.try_send(RuntimeCommand::Shutdown);
     }
 }
 
@@ -1044,13 +1054,16 @@ fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
 }
 
 #[cfg(feature = "builtin-sandbox-js")]
-async fn spawn_js_stream_runtime(
+async fn spawn_js_stream_runtime_inner(
     code: String,
     inputs: Value,
     stream_vars: Vec<String>,
+    exit_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(Value, bool, JsStreamRuntime), NodeError> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<RuntimeCommand>(64);
     let (ready_tx, ready_rx) = oneshot::channel::<Result<(Value, bool), String>>();
+
+    let exit_flag_for_thread = exit_flag.clone();
 
     tokio::task::spawn_blocking(move || {
         let mut context = Context::default();
@@ -1167,6 +1180,10 @@ async fn spawn_js_stream_runtime(
                 Some(RuntimeCommand::Shutdown) | None => break,
             }
         }
+
+        if let Some(flag) = exit_flag_for_thread {
+            flag.store(true, Ordering::SeqCst);
+        }
     });
 
     let (initial_output, has_callbacks) = ready_rx
@@ -1175,6 +1192,28 @@ async fn spawn_js_stream_runtime(
         .map_err(NodeError::ExecutionError)?;
 
     Ok((initial_output, has_callbacks, JsStreamRuntime { tx: cmd_tx }))
+}
+
+#[cfg(feature = "builtin-sandbox-js")]
+async fn spawn_js_stream_runtime(
+    code: String,
+    inputs: Value,
+    stream_vars: Vec<String>,
+) -> Result<(Value, bool, JsStreamRuntime), NodeError> {
+    spawn_js_stream_runtime_inner(code, inputs, stream_vars, None).await
+}
+
+#[cfg(feature = "builtin-sandbox-js")]
+#[doc(hidden)]
+pub async fn spawn_js_stream_runtime_with_exit_flag(
+    code: String,
+    inputs: Value,
+    stream_vars: Vec<String>,
+) -> Result<(Value, bool, JsStreamRuntime, Arc<AtomicBool>), NodeError> {
+    let exit_flag = Arc::new(AtomicBool::new(false));
+    let (initial_output, has_callbacks, runtime) =
+        spawn_js_stream_runtime_inner(code, inputs, stream_vars, Some(exit_flag.clone())).await?;
+    Ok((initial_output, has_callbacks, runtime, exit_flag))
 }
 
 pub struct CodeNodeExecutor {
@@ -1245,7 +1284,10 @@ impl NodeExecutor for CodeNodeExecutor {
                     let val = variable_pool.get(&m.value_selector);
                     match val {
                         Segment::Stream(stream) => {
-                            if stream.status_async().await == StreamStatus::Running {
+                            if language == crate::sandbox::CodeLanguage::JavaScript {
+                                inputs_map.insert(m.variable.clone(), Value::Null);
+                                push_stream(m.variable.clone(), stream);
+                            } else if stream.status_async().await == StreamStatus::Running {
                                 inputs_map.insert(m.variable.clone(), Value::Null);
                                 push_stream(m.variable.clone(), stream);
                             } else {
@@ -1270,7 +1312,10 @@ impl NodeExecutor for CodeNodeExecutor {
                         let val = variable_pool.get(&selector);
                         match val {
                             Segment::Stream(stream) => {
-                                if stream.status_async().await == StreamStatus::Running {
+                                if language == crate::sandbox::CodeLanguage::JavaScript {
+                                    inputs_map.insert(var.clone(), Value::Null);
+                                    push_stream(var.clone(), stream);
+                                } else if stream.status_async().await == StreamStatus::Running {
                                     inputs_map.insert(var.clone(), Value::Null);
                                     push_stream(var.clone(), stream);
                                 } else {
@@ -1374,15 +1419,15 @@ impl NodeExecutor for CodeNodeExecutor {
             }
 
             let (output_stream, writer) = SegmentStream::channel();
-            let runtime_clone = runtime.clone();
             tokio::spawn(async move {
+                let runtime = runtime;
                 let mut last_result: Option<Segment> = None;
                 for (name, stream) in stream_inputs {
                     let mut reader = stream.reader();
                     loop {
                         match reader.next().await {
                             Some(StreamEvent::Chunk(seg)) => {
-                                match runtime_clone
+                                match runtime
                                     .invoke(name.clone(), "on_chunk", Some(seg.to_value()))
                                     .await
                                 {
@@ -1394,13 +1439,13 @@ impl NodeExecutor for CodeNodeExecutor {
                                     Ok(None) => {}
                                     Err(err) => {
                                         writer.error(err).await;
-                                        runtime_clone.shutdown().await;
+                                        runtime.shutdown().await;
                                         return;
                                     }
                                 }
                             }
                             Some(StreamEvent::End(final_seg)) => {
-                                match runtime_clone
+                                match runtime
                                     .invoke(name.clone(), "on_end", Some(final_seg.to_value()))
                                     .await
                                 {
@@ -1412,14 +1457,14 @@ impl NodeExecutor for CodeNodeExecutor {
                                     Ok(None) => {}
                                     Err(err) => {
                                         writer.error(err).await;
-                                        runtime_clone.shutdown().await;
+                                        runtime.shutdown().await;
                                         return;
                                     }
                                 }
                                 break;
                             }
                             Some(StreamEvent::Error(err)) => {
-                                match runtime_clone
+                                match runtime
                                     .invoke(name.clone(), "on_error", Some(Value::String(err.clone())))
                                     .await
                                 {
@@ -1430,12 +1475,12 @@ impl NodeExecutor for CodeNodeExecutor {
                                     }
                                     Ok(None) => {
                                         writer.error(err).await;
-                                        runtime_clone.shutdown().await;
+                                        runtime.shutdown().await;
                                         return;
                                     }
                                     Err(e) => {
                                         writer.error(e).await;
-                                        runtime_clone.shutdown().await;
+                                        runtime.shutdown().await;
                                         return;
                                     }
                                 }
@@ -1447,7 +1492,7 @@ impl NodeExecutor for CodeNodeExecutor {
                 }
 
                 writer.end(last_result.unwrap_or(Segment::None)).await;
-                runtime_clone.shutdown().await;
+                runtime.shutdown().await;
             });
 
             let mut stream_outputs = HashMap::new();

@@ -1,0 +1,5 @@
+{
+  "status": "completed",
+  "outputs": { "items": ["a", "b", "c"] },
+  "partial_match": false
+}

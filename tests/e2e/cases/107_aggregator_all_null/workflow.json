@@ -1,0 +1,31 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    { "id": "start", "data": { "type": "start", "title": "Start", "variables": [] } },
+    {
+      "id": "agg1",
+      "data": {
+        "type": "variable-aggregator",
+        "title": "Aggregate",
+        "variables": [
+          ["start", "a"],
+          ["start", "b"]
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["agg1", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "agg1" },
+    { "source": "agg1", "target": "end" }
+  ]
+}
