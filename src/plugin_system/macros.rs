@@ -27,6 +27,9 @@ macro_rules! xworkflow_declare_rust_plugin {
         pub static XWORKFLOW_RUST_PLUGIN: bool = true;
 
         #[no_mangle]
+        pub static XWORKFLOW_RUST_ABI_VERSION: u32 = 1;
+
+        #[no_mangle]
         pub fn xworkflow_rust_plugin_create() -> Box<dyn $crate::plugin_system::Plugin> {
             Box::new(<$plugin_type>::default())
         }

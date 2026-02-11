@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
+use xworkflow::core::variable_pool::{Segment, SegmentArray, SegmentObject, Selector, VariablePool};
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::evaluator::{evaluate_case, evaluate_cases, evaluate_condition};
 use xworkflow::graph::build_graph;
@@ -163,7 +164,10 @@ fn bench_data_ops(c: &mut Criterion) {
     group.bench_function("append_array", |b| {
         let mut pool = VariablePool::new();
         let selector = Selector::new("n", "arr");
-        pool.set(&selector, Segment::Array(vec![]));
+        pool.set(
+            &selector,
+            Segment::Array(Arc::new(SegmentArray::new(Vec::new()))),
+        );
         b.iter(|| {
             pool.append(&selector, Segment::Integer(1));
         });
@@ -346,25 +350,27 @@ fn bench_data_ops(c: &mut Criterion) {
     });
 
     group.bench_function("nested_object", |b| {
-        let seg = Segment::Object({
+        let seg = Segment::Object(Arc::new(SegmentObject::new({
             let mut map = std::collections::HashMap::new();
             map.insert(
                 "level1".into(),
-                Segment::Object({
+                Segment::Object(Arc::new(SegmentObject::new({
                     let mut inner = std::collections::HashMap::new();
                     inner.insert("level2".into(), Segment::String("value".into()));
                     inner
-                }),
+                }))),
             );
             map
-        });
+        })));
         b.iter(|| {
             let _ = black_box(seg.to_value());
         });
     });
 
     group.bench_function("array_1000", |b| {
-        let seg = Segment::Array((0..1000).map(|i| Segment::Integer(i)).collect());
+        let seg = Segment::Array(Arc::new(SegmentArray::new(
+            (0..1000).map(|i| Segment::Integer(i)).collect(),
+        )));
         b.iter(|| {
             let _ = black_box(seg.to_value());
         });

@@ -38,6 +38,7 @@ anyhow = "1.0"
 # Concurrency
 dashmap = "5.5"
 parking_lot = "0.12"
+arc-swap = "1.7"
 
 # Utilities
 uuid = { version = "1.6", features = ["v4", "serde"] }
@@ -49,6 +50,8 @@ base64 = "0.22"
 libloading = { version = "0.8", optional = true }
 url = "2.5"
 boa_engine = { version = "0.20", optional = true }
+compact_str = "0.8"
+im = "15"
 
 # WASM runtime (used by plugin system and WASM plugins)
 wasmtime = "27"

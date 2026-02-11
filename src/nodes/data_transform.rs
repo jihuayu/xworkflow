@@ -88,12 +88,12 @@ impl NodeExecutor for TemplateTransformExecutor {
                             } else {
                                 static_vars.insert(
                                     m.variable.clone(),
-                                    stream.snapshot_segment_async().await.to_value(),
+                                    stream.snapshot_segment_async().await.into_value(),
                                 );
                             }
                         }
                         other => {
-                            static_vars.insert(m.variable.clone(), other.to_value());
+                            static_vars.insert(m.variable.clone(), other.into_value());
                         }
                     }
                 }
@@ -163,16 +163,19 @@ impl NodeExecutor for TemplateTransformExecutor {
                         rendered
                     }
                     Err(e) => {
-                        if is_template_anomaly_error(&e) {
-                            audit_security_event(
-                                context,
-                                SecurityEventType::TemplateRenderingAnomaly {
-                                    template_length: template_len,
-                                },
-                                EventSeverity::Warning,
-                                Some(node_id.to_string()),
-                            )
-                            .await;
+                        #[cfg(feature = "security")]
+                        {
+                            if is_template_anomaly_error(&e) {
+                                audit_security_event(
+                                    context,
+                                    SecurityEventType::TemplateRenderingAnomaly {
+                                        template_length: template_len,
+                                    },
+                                    EventSeverity::Warning,
+                                    Some(node_id.to_string()),
+                                )
+                                .await;
+                            }
                         }
                         return Err(NodeError::TemplateError(e));
                     }
@@ -221,7 +224,7 @@ impl NodeExecutor for TemplateTransformExecutor {
         }
 
         let template_str = template.to_string();
-        let base_vars = static_vars.clone();
+        let base_vars = static_vars;
         let (output_stream, writer) = SegmentStream::channel();
 
         let tmpl_functions: Option<Arc<HashMap<String, Arc<dyn TemplateFunction>>>> = {
@@ -329,20 +332,26 @@ impl NodeExecutor for TemplateTransformExecutor {
         #[cfg(feature = "security")]
         let template_len_for_stream = template_len;
         tokio::spawn(async move {
-            let mut accumulated: HashMap<String, String> = HashMap::new();
             let mut last_rendered = String::new();
-            let mut vars = base_vars.clone();
+            let mut vars = base_vars;
 
             for (name, stream) in stream_vars {
+                // 预先占位：将该变量强制为 String accumulator，避免 chunk 热路径里 clone+insert
+                vars.insert(name.clone(), Value::String(String::new()));
+
                 let mut reader = stream.reader();
                 loop {
                     match reader.next().await {
                         Some(StreamEvent::Chunk(seg)) => {
-                            let entry = accumulated.entry(name.clone()).or_default();
-                            entry.push_str(&seg.to_display_string());
-                            for (k, v) in &accumulated {
-                                vars.insert(k.clone(), Value::String(v.clone()));
+                            let seg_text = seg.to_display_string();
+                            match vars
+                                .get_mut(&name)
+                                .expect("vars entry should exist")
+                            {
+                                Value::String(s) => s.push_str(&seg_text),
+                                other => *other = Value::String(seg_text),
                             }
+
                             match render_fn(&vars) {
                                 Ok(rendered) => {
                                     let delta = if rendered.starts_with(&last_rendered) {
@@ -376,9 +385,17 @@ impl NodeExecutor for TemplateTransformExecutor {
                             }
                         }
                         Some(StreamEvent::End(final_seg)) => {
-                            accumulated.insert(name.clone(), final_seg.to_display_string());
-                            for (k, v) in &accumulated {
-                                vars.insert(k.clone(), Value::String(v.clone()));
+                            let final_text = final_seg.to_display_string();
+
+                            match vars
+                                .get_mut(&name)
+                                .expect("vars entry should exist")
+                            {
+                                Value::String(s) => {
+                                    s.clear();
+                                    s.push_str(&final_text);
+                                }
+                                other => *other = Value::String(final_text),
                             }
                             match render_fn(&vars) {
                                 Ok(rendered) => {
@@ -1234,12 +1251,12 @@ impl NodeExecutor for CodeNodeExecutor {
                             } else {
                                 inputs_map.insert(
                                     m.variable.clone(),
-                                    stream.snapshot_segment_async().await.to_value(),
+                                    stream.snapshot_segment_async().await.into_value(),
                                 );
                             }
                         }
                         other => {
-                            inputs_map.insert(m.variable.clone(), other.to_value());
+                            inputs_map.insert(m.variable.clone(), other.into_value());
                         }
                     }
                 }
@@ -1259,12 +1276,12 @@ impl NodeExecutor for CodeNodeExecutor {
                                 } else {
                                     inputs_map.insert(
                                         var.clone(),
-                                        stream.snapshot_segment_async().await.to_value(),
+                                        stream.snapshot_segment_async().await.into_value(),
                                     );
                                 }
                             }
                             other => {
-                                inputs_map.insert(var.clone(), other.to_value());
+                                inputs_map.insert(var.clone(), other.into_value());
                             }
                         }
                     }
@@ -1543,6 +1560,7 @@ mod tests {
     use super::*;
     use crate::core::variable_pool::{Segment, Selector};
 
+    #[cfg(feature = "builtin-template-jinja")]
     #[tokio::test]
     async fn test_template_transform() {
         let mut pool = VariablePool::new();
@@ -1623,6 +1641,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_code_node_javascript() {
         let pool = VariablePool::new();
@@ -1640,6 +1659,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_code_node_with_variables() {
         let mut pool = VariablePool::new();
@@ -1660,6 +1680,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "builtin-template-jinja")]
     #[tokio::test]
     async fn test_template_transform_with_stream() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
@@ -1688,6 +1709,7 @@ mod tests {
         assert_eq!(final_seg.to_display_string(), "Hello World!");
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_code_node_with_stream_input() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
@@ -1714,6 +1736,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "builtin-sandbox-js")]
     #[tokio::test]
     async fn test_code_node_stream_on_chunk() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();

@@ -212,6 +212,7 @@ fn eval_all_of(actual: &Segment, expected: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn make_pool(vars: Vec<(&str, &str, Segment)>) -> VariablePool {
         let mut pool = VariablePool::new();
@@ -348,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_of() {
-        let pool = make_pool(vec![("n", "x", Segment::ArrayString(vec!["a".into(), "b".into(), "c".into()]))]);
+        let pool = make_pool(vec![("n", "x", Segment::ArrayString(Arc::new(vec!["a".into(), "b".into(), "c".into()]))) ]);
         let cond = make_condition("n", "x", ComparisonOperator::AllOf, serde_json::json!(["a", "b"]));
         assert_true(evaluate_condition(&cond, &pool).await);
     }

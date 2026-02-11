@@ -360,7 +360,7 @@ fn inject_context(messages: &mut Vec<ChatMessage>, ctx: String) {
 fn extract_image_urls(seg: &Segment) -> Vec<String> {
     match seg {
         Segment::String(s) => vec![s.clone()],
-        Segment::ArrayString(arr) => arr.clone(),
+        Segment::ArrayString(arr) => arr.as_ref().clone(),
         Segment::Array(arr) => arr
             .iter()
             .filter_map(|s| s.as_string())

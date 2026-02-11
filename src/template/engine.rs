@@ -328,6 +328,7 @@ mod tests {
         assert_eq!(result, "Say hi");
     }
 
+    #[cfg(feature = "builtin-template-jinja")]
     #[test]
     fn test_render_jinja2() {
         let mut vars = std::collections::HashMap::new();
@@ -336,6 +337,7 @@ mod tests {
         assert_eq!(result, "Hello World!");
     }
 
+    #[cfg(feature = "builtin-template-jinja")]
     #[test]
     fn test_render_jinja2_loop() {
         let mut vars = std::collections::HashMap::new();
@@ -344,6 +346,7 @@ mod tests {
         assert_eq!(result.trim(), "a b c");
     }
 
+    #[cfg(feature = "builtin-template-jinja")]
     #[test]
     fn test_compiled_template_render() {
         let mut vars = std::collections::HashMap::new();

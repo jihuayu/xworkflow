@@ -4,6 +4,8 @@ pub mod dispatcher;
 pub mod runtime_context;
 pub mod sub_graph_runner;
 pub mod debug;
+pub mod security_gate;
+pub mod plugin_gate;
 
 pub use variable_pool::{
 	FileSegment,

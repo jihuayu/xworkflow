@@ -23,6 +23,9 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
             config,
             version: ns.data.version.clone().unwrap_or_else(|| "1".to_string()),
             state: EdgeTraversalState::Pending,
+          error_strategy: ns.data.error_strategy.clone(),
+          retry_config: ns.data.retry_config.clone(),
+          timeout_secs: ns.data.timeout_secs,
         };
 
         if ns.data.node_type == "start" {

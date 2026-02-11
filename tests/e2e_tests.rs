@@ -1,3 +1,16 @@
+#![cfg(all(
+    feature = "plugin-system",
+    feature = "builtin-sandbox-js",
+    feature = "builtin-sandbox-wasm",
+    feature = "builtin-template-jinja",
+    feature = "builtin-core-nodes",
+    feature = "builtin-transform-nodes",
+    feature = "builtin-http-node",
+    feature = "builtin-code-node",
+    feature = "builtin-subgraph-nodes",
+    feature = "builtin-llm-node",
+))]
+
 mod e2e;
 
 e2e::e2e_test_cases!(

@@ -148,6 +148,9 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
             config: Value::Object(config),
             version: "1".to_string(),
             state: EdgeTraversalState::Pending,
+            error_strategy: None,
+            retry_config: None,
+            timeout_secs: None,
         };
 
         if node_type == "start" {

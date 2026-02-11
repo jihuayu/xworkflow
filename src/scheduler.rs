@@ -2,7 +2,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, watch, Mutex, RwLock};
+
+mod plugin_gate;
+mod security_gate;
+
+use plugin_gate::{new_scheduler_plugin_gate, SchedulerPluginGate};
+use security_gate::{new_scheduler_security_gate, SchedulerSecurityGate};
 
 use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
@@ -20,92 +26,6 @@ use crate::nodes::executor::NodeExecutorRegistry;
 use crate::llm::LlmProviderRegistry;
 #[cfg(feature = "security")]
 use crate::security::{AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, SecurityPolicy};
-#[cfg(feature = "security")]
-use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
-#[cfg(feature = "plugin-system")]
-use crate::dsl::validation::DiagnosticLevel;
-#[cfg(feature = "plugin-system")]
-use crate::plugin_system::{
-  Plugin,
-  PluginCategory,
-  HookPayload,
-  HookPoint,
-  PluginLoadSource,
-  PluginRegistry,
-  PluginSystemConfig,
-};
-#[cfg(feature = "plugin-system")]
-use crate::plugin_system::loaders::{DllPluginLoader, HostPluginLoader};
-
-#[cfg(feature = "plugin-system")]
-async fn execute_registry_hooks(
-  registry: &PluginRegistry,
-  hook_point: HookPoint,
-  data: Value,
-) -> Result<(), WorkflowError> {
-  let mut handlers = registry.hooks(&hook_point);
-  if handlers.is_empty() {
-    return Ok(());
-  }
-
-  handlers.sort_by_key(|h| h.priority());
-  let payload = HookPayload {
-    hook_point,
-    data,
-    variable_pool: None,
-    event_tx: None,
-  };
-
-  for handler in handlers {
-    if let Err(err) = handler.handle(&payload).await {
-      tracing::warn!(
-        plugin_id = %handler.name(),
-        error = %err,
-        "plugin hook failed"
-      );
-    }
-  }
-
-  Ok(())
-}
-
-#[cfg(feature = "security")]
-async fn audit_dsl_validation_failed(
-  context: &RuntimeContext,
-  report: &ValidationReport,
-) {
-  let logger = match context.audit_logger() {
-    Some(l) => l,
-    None => return,
-  };
-  let group_id = match context.resource_group() {
-    Some(g) => g.group_id.clone(),
-    None => return,
-  };
-
-  let errors = report
-    .diagnostics
-    .iter()
-    .filter(|d| d.level == crate::dsl::validation::DiagnosticLevel::Error)
-    .map(|d| d.message.clone())
-    .collect::<Vec<_>>();
-
-  if errors.is_empty() {
-    return;
-  }
-
-  let event = SecurityEvent {
-    timestamp: context.time_provider.now_timestamp(),
-    group_id,
-    workflow_id: None,
-    node_id: None,
-    event_type: SecurityEventType::DslValidationFailed { errors },
-    details: serde_json::Value::Null,
-    severity: EventSeverity::Warning,
-  };
-
-  logger.log_event(event).await;
-}
 
 /// Execution status of a workflow
 #[derive(Debug, Clone)]
@@ -121,13 +41,13 @@ pub enum ExecutionStatus {
 
 /// Handle to a running or completed workflow
 pub struct WorkflowHandle {
-    status: Arc<Mutex<ExecutionStatus>>,
+    status_rx: watch::Receiver<ExecutionStatus>,
   events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
 }
 
 impl WorkflowHandle {
     pub async fn status(&self) -> ExecutionStatus {
-        self.status.lock().await.clone()
+      self.status_rx.borrow().clone()
     }
 
     pub async fn events(&self) -> Vec<GraphEngineEvent> {
@@ -138,15 +58,18 @@ impl WorkflowHandle {
     }
 
     pub async fn wait(&self) -> ExecutionStatus {
-        loop {
-            let status = self.status.lock().await.clone();
-            match &status {
-                ExecutionStatus::Running => {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-                _ => return status,
+      let mut rx = self.status_rx.clone();
+      loop {
+        let status = rx.borrow().clone();
+        match status {
+          ExecutionStatus::Running => {
+            if rx.changed().await.is_err() {
+              return rx.borrow().clone();
             }
+          }
+          _ => return status,
         }
+      }
     }
 }
 
@@ -160,14 +83,8 @@ pub struct WorkflowRunner {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
-  #[cfg(feature = "plugin-system")]
-  plugin_system_config: Option<PluginSystemConfig>,
-  #[cfg(feature = "plugin-system")]
-  host_bootstrap_plugins: Vec<Box<dyn Plugin>>,
-  #[cfg(feature = "plugin-system")]
-  host_normal_plugins: Vec<Box<dyn Plugin>>,
-  #[cfg(feature = "plugin-system")]
-  plugin_registry: Option<PluginRegistry>,
+  plugin_gate: Box<dyn SchedulerPluginGate>,
+  security_gate: Arc<dyn SchedulerSecurityGate>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
   collect_events: bool,
 }
@@ -182,14 +99,8 @@ impl WorkflowRunner {
       conversation_vars: HashMap::new(),
       config: EngineConfig::default(),
       context: RuntimeContext::default(),
-      #[cfg(feature = "plugin-system")]
-      plugin_system_config: None,
-      #[cfg(feature = "plugin-system")]
-      host_bootstrap_plugins: Vec::new(),
-      #[cfg(feature = "plugin-system")]
-      host_normal_plugins: Vec::new(),
-      #[cfg(feature = "plugin-system")]
-      plugin_registry: None,
+      plugin_gate: new_scheduler_plugin_gate(),
+      security_gate: new_scheduler_security_gate(),
       llm_provider_registry: None,
       debug_config: None,
       collect_events: true,
@@ -309,14 +220,8 @@ pub struct WorkflowRunnerBuilder {
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
   context: RuntimeContext,
-  #[cfg(feature = "plugin-system")]
-  plugin_system_config: Option<PluginSystemConfig>,
-  #[cfg(feature = "plugin-system")]
-  host_bootstrap_plugins: Vec<Box<dyn Plugin>>,
-  #[cfg(feature = "plugin-system")]
-  host_normal_plugins: Vec<Box<dyn Plugin>>,
-  #[cfg(feature = "plugin-system")]
-  plugin_registry: Option<PluginRegistry>,
+  plugin_gate: Box<dyn SchedulerPluginGate>,
+  security_gate: Arc<dyn SchedulerSecurityGate>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
   debug_config: Option<DebugConfig>,
   collect_events: bool,
@@ -417,22 +322,20 @@ impl WorkflowRunnerBuilder {
   }
 
   #[cfg(feature = "plugin-system")]
-  pub fn plugin_config(mut self, config: PluginSystemConfig) -> Self {
-    self.plugin_system_config = Some(config);
+  pub fn plugin_config(mut self, config: crate::plugin_system::PluginSystemConfig) -> Self {
+    self.plugin_gate.set_plugin_config(config);
     self
   }
 
   #[cfg(feature = "plugin-system")]
-  pub fn bootstrap_plugin(mut self, plugin: Box<dyn Plugin>) -> Self {
-    assert_eq!(plugin.metadata().category, PluginCategory::Bootstrap);
-    self.host_bootstrap_plugins.push(plugin);
+  pub fn bootstrap_plugin(mut self, plugin: Box<dyn crate::plugin_system::Plugin>) -> Self {
+    self.plugin_gate.add_bootstrap_plugin(plugin);
     self
   }
 
   #[cfg(feature = "plugin-system")]
-  pub fn plugin(mut self, plugin: Box<dyn Plugin>) -> Self {
-    assert_eq!(plugin.metadata().category, PluginCategory::Normal);
-    self.host_normal_plugins.push(plugin);
+  pub fn plugin(mut self, plugin: Box<dyn crate::plugin_system::Plugin>) -> Self {
+    self.plugin_gate.add_plugin(plugin);
     self
   }
 
@@ -446,88 +349,6 @@ impl WorkflowRunnerBuilder {
     self
   }
 
-  #[cfg(feature = "plugin-system")]
-  async fn init_plugins(&mut self) -> Result<(), crate::plugin_system::PluginError> {
-    let mut registry = PluginRegistry::new();
-    registry.register_loader(Arc::new(DllPluginLoader::new()));
-    registry.register_loader(Arc::new(HostPluginLoader));
-
-    let bootstrap_sources = self.collect_bootstrap_sources();
-    let mut bootstrap_plugins: Vec<Box<dyn Plugin>> = Vec::new();
-
-    #[cfg(feature = "builtin-sandbox-js")]
-    {
-      let (boot, lang) = crate::plugin_system::builtins::create_js_sandbox_plugins(
-        crate::sandbox::BuiltinSandboxConfig::default(),
-      );
-      bootstrap_plugins.push(Box::new(boot));
-      self.host_normal_plugins.insert(0, Box::new(lang));
-    }
-
-    #[cfg(feature = "builtin-sandbox-wasm")]
-    {
-      let (boot, lang) = crate::plugin_system::builtins::create_wasm_sandbox_plugins(
-        crate::sandbox::WasmSandboxConfig::default(),
-      );
-      bootstrap_plugins.push(Box::new(boot));
-      self.host_normal_plugins.insert(0, Box::new(lang));
-    }
-
-    #[cfg(feature = "builtin-template-jinja")]
-    {
-      bootstrap_plugins.push(Box::new(
-        crate::plugin_system::builtins::JinjaTemplatePlugin::new(),
-      ));
-    }
-
-    bootstrap_plugins.extend(std::mem::take(&mut self.host_bootstrap_plugins));
-    registry
-      .run_bootstrap_phase(bootstrap_sources, bootstrap_plugins)
-      .await?;
-
-    let normal_sources = self.collect_normal_sources();
-    let normal_plugins = std::mem::take(&mut self.host_normal_plugins);
-    registry
-      .run_normal_phase(normal_sources, normal_plugins)
-      .await?;
-
-    self.plugin_registry = Some(registry);
-    Ok(())
-  }
-
-  #[cfg(feature = "plugin-system")]
-  fn collect_bootstrap_sources(&self) -> Vec<PluginLoadSource> {
-    let mut sources = Vec::new();
-    if let Some(config) = &self.plugin_system_config {
-      for path in &config.bootstrap_dll_paths {
-        sources.push(PluginLoadSource {
-          loader_type: "dll".into(),
-          params: [("path".into(), path.to_string_lossy().into_owned())]
-            .into_iter()
-            .collect(),
-        });
-      }
-    }
-    sources
-  }
-
-  #[cfg(feature = "plugin-system")]
-  fn collect_normal_sources(&self) -> Vec<PluginLoadSource> {
-    let mut sources = Vec::new();
-    if let Some(config) = &self.plugin_system_config {
-      for path in &config.normal_dll_paths {
-        sources.push(PluginLoadSource {
-          loader_type: "dll".into(),
-          params: [("path".into(), path.to_string_lossy().into_owned())]
-            .into_iter()
-            .collect(),
-        });
-      }
-      sources.extend(config.normal_load_sources.clone());
-    }
-    sources
-  }
-
   pub fn validate(&self) -> ValidationReport {
     validate_schema(&self.schema)
   }
@@ -535,75 +356,28 @@ impl WorkflowRunnerBuilder {
   #[allow(unused_mut)]
   pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
     let mut builder = self;
-    #[cfg(feature = "security")]
-    let mut report = if let Some(policy) = builder
-      .context
-      .security_policy()
-      .and_then(|p| p.dsl_validation.as_ref())
-    {
-      crate::dsl::validation::validate_schema_with_config(&builder.schema, policy)
-    } else {
-      validate_schema(&builder.schema)
-    };
-
-    #[cfg(not(feature = "security"))]
-    let mut report = validate_schema(&builder.schema);
+    let mut report = builder
+      .security_gate
+      .validate_schema(&builder.schema, &builder.context);
     if !report.is_valid {
-      #[cfg(feature = "security")]
-      audit_dsl_validation_failed(&builder.context, &report).await;
+      builder
+        .security_gate
+        .audit_validation_failed(&builder.context, &report)
+        .await;
       return Err(WorkflowError::ValidationFailed(report));
     }
 
-    #[cfg(feature = "plugin-system")]
-    {
-      let should_init = builder.plugin_system_config.is_some()
-        || !builder.host_bootstrap_plugins.is_empty()
-        || !builder.host_normal_plugins.is_empty();
-      if should_init {
-        builder
-          .init_plugins()
-          .await
-          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-        if let Some(reg) = &builder.plugin_registry {
-          let plugin_ids = reg
-            .plugin_metadata()
-            .into_iter()
-            .map(|meta| meta.id)
-            .collect::<Vec<_>>();
-          let payload = serde_json::json!({
-            "event": "after_plugin_loaded",
-            "plugins": plugin_ids,
-          });
-          execute_registry_hooks(reg, HookPoint::AfterPluginLoaded, payload).await?;
-        }
-        if let Some(reg) = &builder.plugin_registry {
-          let mut extra = Vec::new();
-          for validator in reg.dsl_validators() {
-            extra.extend(validator.validate(&builder.schema));
-          }
-          if !extra.is_empty() {
-            report.diagnostics.extend(extra);
-            report.is_valid = report
-              .diagnostics
-              .iter()
-              .all(|d| d.level != DiagnosticLevel::Error);
-          }
-        }
-      }
-    }
-
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = &builder.plugin_registry {
-      let payload = serde_json::json!({
-        "event": "after_dsl_validation",
-        "report": &report,
-      });
-      execute_registry_hooks(reg, HookPoint::AfterDslValidation, payload).await?;
-    }
+    builder
+      .plugin_gate
+      .init_and_extend_validation(&builder.schema, &mut report)
+      .await?;
+    builder.plugin_gate.after_dsl_validation(&report).await?;
 
     if !report.is_valid {
-      #[cfg(feature = "security")]
-      audit_dsl_validation_failed(&builder.context, &report).await;
+      builder
+        .security_gate
+        .audit_validation_failed(&builder.context, &report)
+        .await;
       return Err(WorkflowError::ValidationFailed(report));
     }
 
@@ -613,15 +387,9 @@ impl WorkflowRunnerBuilder {
     let mut pool = VariablePool::new();
     let start_var_types = collect_start_variable_types(&builder.schema);
     let conversation_var_types = collect_conversation_variable_types(&builder.schema);
-    #[cfg(feature = "security")]
-    if let Some(selector_cfg) = builder
-      .context
-      .security_policy()
-      .and_then(|p| p.dsl_validation.as_ref())
-      .and_then(|d| d.selector_validation.clone())
-    {
-      pool.set_selector_validation(Some(selector_cfg));
-    }
+    builder
+      .security_gate
+      .configure_variable_pool(&builder.context, &mut pool);
 
     // Set system variables
     for (k, v) in &builder.system_vars {
@@ -651,22 +419,14 @@ impl WorkflowRunnerBuilder {
     }
 
     let mut registry = NodeExecutorRegistry::new();
-
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = builder.plugin_registry.as_mut() {
-      registry.apply_plugin_executors(reg.take_node_executors());
-    }
+    builder.plugin_gate.apply_node_executors(&mut registry);
 
     let mut llm_registry = if let Some(llm_reg) = &builder.llm_provider_registry {
       llm_reg.clone_registry()
     } else {
       LlmProviderRegistry::new()
     };
-
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = &builder.plugin_registry {
-      llm_registry.apply_plugin_providers(reg.llm_providers());
-    }
+    builder.plugin_gate.apply_llm_providers(&mut llm_registry);
 
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(llm_registry);
@@ -679,63 +439,20 @@ impl WorkflowRunnerBuilder {
     let event_active = Arc::new(AtomicBool::new(builder.collect_events));
     let event_emitter = EventEmitter::new(tx.clone(), event_active.clone());
     let error_event_emitter = event_emitter.clone();
-    #[cfg(feature = "security")]
-    let config = if let Some(group) = builder.context.resource_group() {
-      EngineConfig {
-        max_steps: builder.config.max_steps.min(group.quota.max_steps),
-        max_execution_time_secs: builder
-          .config
-          .max_execution_time_secs
-          .min(group.quota.max_execution_time_secs),
-        strict_template: builder.config.strict_template,
-      }
-    } else {
-      builder.config
-    };
-
-    #[cfg(not(feature = "security"))]
-    let config = builder.config;
-
+    let config = builder
+      .security_gate
+      .effective_engine_config(&builder.context, builder.config);
     builder.context.extensions.strict_template = config.strict_template;
 
-    builder.context.extensions.strict_template = config.strict_template;
-
-    #[cfg(feature = "security")]
-    let workflow_id = builder.context.id_generator.next_id();
-
-    #[cfg(feature = "security")]
-    if let (Some(governor), Some(group)) = (
-      builder.context.resource_governor(),
-      builder.context.resource_group(),
-    ) {
-      governor
-        .check_workflow_start(&group.group_id)
-        .await
-        .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-      governor
-        .record_workflow_start(&group.group_id, &workflow_id)
-        .await;
-    }
+    let workflow_id = builder.security_gate.on_workflow_start(&builder.context).await?;
+    builder.plugin_gate.customize_context(&mut builder.context);
 
     #[cfg(feature = "plugin-system")]
-    {
-      if let Some(reg) = &builder.plugin_registry {
-        if let Some(tp) = reg.custom_time_provider() {
-          builder.context.time_provider = tp;
-        }
-        if let Some(id_gen) = reg.custom_id_generator() {
-          builder.context.id_generator = id_gen;
-        }
-        if !reg.template_functions().is_empty() {
-          builder.context.extensions.template_functions =
-            Some(Arc::new(reg.template_functions().clone()));
-        }
-      }
-    }
+    let plugin_registry = builder.plugin_gate.take_plugin_registry_arc();
 
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
-    let status = Arc::new(Mutex::new(ExecutionStatus::Running));
+    let (status_tx, status_rx) = watch::channel(ExecutionStatus::Running);
     let events = if builder.collect_events {
       Some(Arc::new(Mutex::new(Vec::new())))
     } else {
@@ -757,10 +474,10 @@ impl WorkflowRunnerBuilder {
     }
 
     // Spawn workflow execution
-    let status_exec = status.clone();
-    #[cfg(feature = "plugin-system")]
-    let plugin_registry = builder.plugin_registry.map(Arc::new);
+    let status_exec = status_tx.clone();
     let schema = builder.schema.clone();
+    let security_gate = Arc::clone(&builder.security_gate);
+    let workflow_id_for_end = workflow_id.clone();
     tokio::spawn(async move {
       let mut dispatcher = WorkflowDispatcher::new_with_registry(
         graph,
@@ -774,7 +491,7 @@ impl WorkflowRunnerBuilder {
       );
       match dispatcher.run().await {
         Ok(outputs) => {
-          *status_exec.lock().await = ExecutionStatus::Completed(outputs);
+          let _ = status_exec.send(ExecutionStatus::Completed(outputs));
         }
         Err(e) => {
           if let Some(error_handler) = &schema.error_handler {
@@ -819,13 +536,13 @@ impl WorkflowRunnerBuilder {
 
                 match error_handler.mode {
                   ErrorHandlingMode::Recover => {
-                    *status_exec.lock().await = ExecutionStatus::FailedWithRecovery {
+                    let _ = status_exec.send(ExecutionStatus::FailedWithRecovery {
                       original_error: e.to_string(),
                       recovered_outputs,
-                    };
+                    });
                   }
                   ErrorHandlingMode::Notify => {
-                    *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+                    let _ = status_exec.send(ExecutionStatus::Failed(e.to_string()));
                   }
                 }
               }
@@ -837,96 +554,39 @@ impl WorkflowRunnerBuilder {
                     })
                     .await;
                 }
-                *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+                let _ = status_exec.send(ExecutionStatus::Failed(e.to_string()));
               }
             }
           } else {
-            *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+            let _ = status_exec.send(ExecutionStatus::Failed(e.to_string()));
           }
         }
       }
 
-      #[cfg(feature = "security")]
-      if let (Some(governor), Some(group)) = (
-        context.resource_governor(),
-        context.resource_group(),
-      ) {
-        governor
-          .record_workflow_end(&group.group_id, &workflow_id)
-          .await;
-      }
+      security_gate
+        .record_workflow_end(context.as_ref(), workflow_id_for_end.as_deref())
+        .await;
     });
 
-    Ok(WorkflowHandle { status, events })
+    Ok(WorkflowHandle { status_rx, events })
   }
 
   #[allow(unused_mut)]
   pub async fn run_debug(self) -> Result<(WorkflowHandle, DebugHandle), WorkflowError> {
     let mut builder = self;
     let debug_config = builder.debug_config.clone().unwrap_or_default();
-    #[cfg(feature = "security")]
-    let mut report = if let Some(policy) = builder
-      .context
-      .security_policy()
-      .and_then(|p| p.dsl_validation.as_ref())
-    {
-      crate::dsl::validation::validate_schema_with_config(&builder.schema, policy)
-    } else {
-      validate_schema(&builder.schema)
-    };
-
-    #[cfg(not(feature = "security"))]
-    let mut report = validate_schema(&builder.schema);
+    let mut report = builder
+      .security_gate
+      .validate_schema(&builder.schema, &builder.context);
     if !report.is_valid {
       return Err(WorkflowError::ValidationFailed(report));
     }
 
-    #[cfg(feature = "plugin-system")]
-    {
-      let should_init = builder.plugin_system_config.is_some()
-        || !builder.host_bootstrap_plugins.is_empty()
-        || !builder.host_normal_plugins.is_empty();
-      if should_init {
-        builder
-          .init_plugins()
-          .await
-          .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-        if let Some(reg) = &builder.plugin_registry {
-          let plugin_ids = reg
-            .plugin_metadata()
-            .into_iter()
-            .map(|meta| meta.id)
-            .collect::<Vec<_>>();
-          let payload = serde_json::json!({
-            "event": "after_plugin_loaded",
-            "plugins": plugin_ids,
-          });
-          execute_registry_hooks(reg, HookPoint::AfterPluginLoaded, payload).await?;
-        }
-        if let Some(reg) = &builder.plugin_registry {
-          let mut extra = Vec::new();
-          for validator in reg.dsl_validators() {
-            extra.extend(validator.validate(&builder.schema));
-          }
-          if !extra.is_empty() {
-            report.diagnostics.extend(extra);
-            report.is_valid = report
-              .diagnostics
-              .iter()
-              .all(|d| d.level != DiagnosticLevel::Error);
-          }
-        }
-      }
-    }
-
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = &builder.plugin_registry {
-      let payload = serde_json::json!({
-        "event": "after_dsl_validation",
-        "report": &report,
-      });
-      execute_registry_hooks(reg, HookPoint::AfterDslValidation, payload).await?;
-    }
+    builder
+      .plugin_gate
+      .init_and_extend_validation(&builder.schema, &mut report)
+      .await?;
+    builder.plugin_gate.after_dsl_validation(&report).await?;
 
     if !report.is_valid {
       return Err(WorkflowError::ValidationFailed(report));
@@ -962,22 +622,14 @@ impl WorkflowRunnerBuilder {
     }
 
     let mut registry = NodeExecutorRegistry::new();
-
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = builder.plugin_registry.as_mut() {
-      registry.apply_plugin_executors(reg.take_node_executors());
-    }
+    builder.plugin_gate.apply_node_executors(&mut registry);
 
     let mut llm_registry = if let Some(llm_reg) = &builder.llm_provider_registry {
       llm_reg.clone_registry()
     } else {
       LlmProviderRegistry::new()
     };
-
-    #[cfg(feature = "plugin-system")]
-    if let Some(reg) = &builder.plugin_registry {
-      llm_registry.apply_plugin_providers(reg.llm_providers());
-    }
+    builder.plugin_gate.apply_llm_providers(&mut llm_registry);
 
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(llm_registry);
@@ -1011,59 +663,19 @@ impl WorkflowRunnerBuilder {
     let event_active = Arc::new(AtomicBool::new(builder.collect_events));
     let event_emitter = EventEmitter::new(tx.clone(), event_active.clone());
     let error_event_emitter = event_emitter.clone();
-    #[cfg(feature = "security")]
-    let config = if let Some(group) = builder.context.resource_group() {
-      EngineConfig {
-        max_steps: builder.config.max_steps.min(group.quota.max_steps),
-        max_execution_time_secs: builder
-          .config
-          .max_execution_time_secs
-          .min(group.quota.max_execution_time_secs),
-        strict_template: builder.config.strict_template,
-      }
-    } else {
-      builder.config
-    };
+    let config = builder
+      .security_gate
+      .effective_engine_config(&builder.context, builder.config);
 
-    #[cfg(not(feature = "security"))]
-    let config = builder.config;
-
-    #[cfg(feature = "security")]
-    let workflow_id = builder.context.id_generator.next_id();
-
-    #[cfg(feature = "security")]
-    if let (Some(governor), Some(group)) = (
-      builder.context.resource_governor(),
-      builder.context.resource_group(),
-    ) {
-      governor
-        .check_workflow_start(&group.group_id)
-        .await
-        .map_err(|e| WorkflowError::InternalError(e.to_string()))?;
-      governor
-        .record_workflow_start(&group.group_id, &workflow_id)
-        .await;
-    }
+    let workflow_id = builder.security_gate.on_workflow_start(&builder.context).await?;
+    builder.plugin_gate.customize_context(&mut builder.context);
 
     #[cfg(feature = "plugin-system")]
-    {
-      if let Some(reg) = &builder.plugin_registry {
-        if let Some(tp) = reg.custom_time_provider() {
-          builder.context.time_provider = tp;
-        }
-        if let Some(id_gen) = reg.custom_id_generator() {
-          builder.context.id_generator = id_gen;
-        }
-        if !reg.template_functions().is_empty() {
-          builder.context.extensions.template_functions =
-            Some(Arc::new(reg.template_functions().clone()));
-        }
-      }
-    }
+    let plugin_registry = builder.plugin_gate.take_plugin_registry_arc();
 
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
 
-    let status = Arc::new(Mutex::new(ExecutionStatus::Running));
+    let (status_tx, status_rx) = watch::channel(ExecutionStatus::Running);
     let events = if builder.collect_events {
       Some(Arc::new(Mutex::new(Vec::new())))
     } else {
@@ -1083,14 +695,14 @@ impl WorkflowRunnerBuilder {
       drop(rx);
     }
 
-    let status_exec = status.clone();
-    #[cfg(feature = "plugin-system")]
-    let plugin_registry = builder.plugin_registry.map(Arc::new);
+    let status_exec = status_tx.clone();
     let schema = builder.schema.clone();
     let mut hook = hook;
     hook.graph_event_tx = Some(tx.clone());
 
     let registry = Arc::new(registry);
+    let security_gate = Arc::clone(&builder.security_gate);
+    let workflow_id_for_end = workflow_id.clone();
 
     tokio::spawn(async move {
       let mut dispatcher = WorkflowDispatcher::new_with_debug(
@@ -1107,7 +719,7 @@ impl WorkflowRunnerBuilder {
       );
       match dispatcher.run().await {
         Ok(outputs) => {
-          *status_exec.lock().await = ExecutionStatus::Completed(outputs);
+          let _ = status_exec.send(ExecutionStatus::Completed(outputs));
         }
         Err(e) => {
           if let Some(error_handler) = &schema.error_handler {
@@ -1152,13 +764,13 @@ impl WorkflowRunnerBuilder {
 
                 match error_handler.mode {
                   ErrorHandlingMode::Recover => {
-                    *status_exec.lock().await = ExecutionStatus::FailedWithRecovery {
+                    let _ = status_exec.send(ExecutionStatus::FailedWithRecovery {
                       original_error: e.to_string(),
                       recovered_outputs,
-                    };
+                    });
                   }
                   ErrorHandlingMode::Notify => {
-                    *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+                    let _ = status_exec.send(ExecutionStatus::Failed(e.to_string()));
                   }
                 }
               }
@@ -1170,34 +782,28 @@ impl WorkflowRunnerBuilder {
                     })
                     .await;
                 }
-                *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+                let _ = status_exec.send(ExecutionStatus::Failed(e.to_string()));
               }
             }
           } else {
-            *status_exec.lock().await = ExecutionStatus::Failed(e.to_string());
+            let _ = status_exec.send(ExecutionStatus::Failed(e.to_string()));
           }
         }
       }
 
-      #[cfg(feature = "security")]
-      if let (Some(governor), Some(group)) = (
-        context.resource_governor(),
-        context.resource_group(),
-      ) {
-        governor
-          .record_workflow_end(&group.group_id, &workflow_id)
-          .await;
-      }
+      security_gate
+        .record_workflow_end(context.as_ref(), workflow_id_for_end.as_deref())
+        .await;
     });
 
-    let workflow_handle = WorkflowHandle { status, events };
+    let workflow_handle = WorkflowHandle { status_rx, events };
     let debug_handle = DebugHandle::new(cmd_tx, debug_evt_rx);
 
     Ok((workflow_handle, debug_handle))
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "builtin-core-nodes"))]
 mod tests {
     use super::*;
   use crate::core::debug::{DebugConfig, DebugEvent, PauseLocation, PauseReason as DebugPauseReason};
@@ -1376,7 +982,7 @@ edges:
                 None => panic!("Missing variable snapshot event"),
             }
         };
-        assert!(snapshot.contains_key(&VariablePool::make_key("start", "query")));
+        assert!(snapshot.contains_key(&VariablePool::make_key("start", "query").to_string()));
 
         debug.continue_run().await.unwrap();
     }

@@ -2,11 +2,14 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
+use parking_lot::RwLock;
 
 use crate::core::debug::{DebugAction, DebugGate, DebugHook, NoopGate, NoopHook};
 use crate::core::event_bus::GraphEngineEvent;
+use crate::core::plugin_gate::PluginGate;
 use crate::core::runtime_context::RuntimeContext;
+use crate::core::security_gate::SecurityGate;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{
   BackoffStrategy, ErrorStrategyConfig, ErrorStrategyType, NodeRunResult,
@@ -15,12 +18,8 @@ use crate::dsl::schema::{
 use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
 use crate::graph::types::{EdgeTraversalState, Graph};
 use crate::nodes::executor::NodeExecutorRegistry;
-#[cfg(feature = "security")]
-use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
-#[cfg(feature = "security")]
-use crate::security::governor::QuotaError;
 #[cfg(feature = "plugin-system")]
-use crate::plugin_system::{HookPayload, HookPoint, PluginRegistry};
+use crate::plugin_system::PluginRegistry;
 
 #[derive(Clone)]
 pub struct EventEmitter {
@@ -45,22 +44,6 @@ impl EventEmitter {
   pub(crate) async fn emit(&self, event: GraphEngineEvent) {
     if self.is_active() {
       let _ = self.tx.send(event).await;
-    }
-  }
-}
-
-#[cfg(feature = "plugin-system")]
-struct PoolSnapshotCache {
-  snapshot: Option<Arc<VariablePool>>,
-  dirty: bool,
-}
-
-#[cfg(feature = "plugin-system")]
-impl PoolSnapshotCache {
-  fn new() -> Self {
-    Self {
-      snapshot: None,
-      dirty: true,
     }
   }
 }
@@ -92,6 +75,17 @@ impl Default for EngineConfig {
     }
 }
 
+struct NodeInfo {
+  node_type: String,
+  node_title: String,
+  node_config: Value,
+  is_branch: bool,
+  is_skipped: bool,
+  error_strategy: Option<ErrorStrategyConfig>,
+  retry_config: Option<RetryConfig>,
+  timeout_secs: Option<u64>,
+}
+
 /// The main workflow dispatcher: drives graph execution
 pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> {
     graph: Arc<RwLock<Graph>>,
@@ -102,10 +96,8 @@ pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> 
     exceptions_count: i32,
     final_outputs: HashMap<String, Value>,
     context: Arc<RuntimeContext>,
-  #[cfg(feature = "plugin-system")]
-    pool_snapshot_cache: RwLock<PoolSnapshotCache>,
-  #[cfg(feature = "plugin-system")]
-  plugin_registry: Option<Arc<PluginRegistry>>,
+    plugin_gate: Arc<dyn PluginGate>,
+    security_gate: Arc<dyn SecurityGate>,
     debug_gate: G,
     debug_hook: H,
 }
@@ -121,19 +113,38 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       #[cfg(feature = "plugin-system")]
       plugin_registry: Option<Arc<PluginRegistry>>,
     ) -> Self {
+        let graph = Arc::new(RwLock::new(graph));
+        let variable_pool = Arc::new(RwLock::new(variable_pool));
+        let plugin_gate: Arc<dyn PluginGate> = {
+          #[cfg(feature = "plugin-system")]
+          {
+            crate::core::plugin_gate::new_plugin_gate_with_registry(
+              variable_pool.clone(),
+              event_emitter.clone(),
+              plugin_registry,
+            )
+          }
+
+          #[cfg(not(feature = "plugin-system"))]
+          {
+            crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+          }
+        };
+        let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+          context.clone(),
+          variable_pool.clone(),
+        );
         WorkflowDispatcher {
-            graph: Arc::new(RwLock::new(graph)),
-            variable_pool: Arc::new(RwLock::new(variable_pool)),
+            graph,
+            variable_pool,
             registry: Arc::new(registry),
             event_emitter,
             config,
             exceptions_count: 0,
             final_outputs: HashMap::new(),
             context,
-          #[cfg(feature = "plugin-system")]
-            pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
-        #[cfg(feature = "plugin-system")]
-        plugin_registry,
+            plugin_gate,
+            security_gate,
       debug_gate: NoopGate,
       debug_hook: NoopHook,
         }
@@ -149,19 +160,38 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       #[cfg(feature = "plugin-system")]
       plugin_registry: Option<Arc<PluginRegistry>>,
     ) -> Self {
+        let graph = Arc::new(RwLock::new(graph));
+        let variable_pool = Arc::new(RwLock::new(variable_pool));
+        let plugin_gate: Arc<dyn PluginGate> = {
+          #[cfg(feature = "plugin-system")]
+          {
+            crate::core::plugin_gate::new_plugin_gate_with_registry(
+              variable_pool.clone(),
+              event_emitter.clone(),
+              plugin_registry,
+            )
+          }
+
+          #[cfg(not(feature = "plugin-system"))]
+          {
+            crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+          }
+        };
+        let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+          context.clone(),
+          variable_pool.clone(),
+        );
         WorkflowDispatcher {
-            graph: Arc::new(RwLock::new(graph)),
-            variable_pool: Arc::new(RwLock::new(variable_pool)),
+            graph,
+            variable_pool,
             registry,
             event_emitter,
             config,
             exceptions_count: 0,
             final_outputs: HashMap::new(),
             context,
-          #[cfg(feature = "plugin-system")]
-            pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
-        #[cfg(feature = "plugin-system")]
-        plugin_registry,
+            plugin_gate,
+            security_gate,
       debug_gate: NoopGate,
       debug_hook: NoopHook,
         }
@@ -183,19 +213,38 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     debug_gate: G,
     debug_hook: H,
   ) -> Self {
+    let graph = Arc::new(RwLock::new(graph));
+    let variable_pool = Arc::new(RwLock::new(variable_pool));
+    let plugin_gate: Arc<dyn PluginGate> = {
+      #[cfg(feature = "plugin-system")]
+      {
+        crate::core::plugin_gate::new_plugin_gate_with_registry(
+          variable_pool.clone(),
+          event_emitter.clone(),
+          plugin_registry,
+        )
+      }
+
+      #[cfg(not(feature = "plugin-system"))]
+      {
+        crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+      }
+    };
+    let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+      context.clone(),
+      variable_pool.clone(),
+    );
     WorkflowDispatcher {
-      graph: Arc::new(RwLock::new(graph)),
-      variable_pool: Arc::new(RwLock::new(variable_pool)),
+      graph,
+      variable_pool,
       registry,
       event_emitter,
       config,
       exceptions_count: 0,
       final_outputs: HashMap::new(),
       context,
-      #[cfg(feature = "plugin-system")]
-      pool_snapshot_cache: RwLock::new(PoolSnapshotCache::new()),
-      #[cfg(feature = "plugin-system")]
-      plugin_registry,
+      plugin_gate,
+      security_gate,
       debug_gate,
       debug_hook,
     }
@@ -206,73 +255,529 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   }
 
   pub async fn snapshot_pool(&self) -> VariablePool {
-    self.variable_pool.read().await.clone()
+    self.variable_pool.read().clone()
   }
 
-  #[cfg(feature = "plugin-system")]
-  async fn pool_snapshot(&self) -> Arc<VariablePool> {
-    let mut cache = self.pool_snapshot_cache.write().await;
-    if cache.dirty || cache.snapshot.is_none() {
-      let pool = self.variable_pool.read().await.clone();
-      cache.snapshot = Some(Arc::new(pool));
-      cache.dirty = false;
-    }
-    cache
-      .snapshot
-      .as_ref()
-      .expect("pool snapshot should be set")
-      .clone()
-  }
-
-  #[cfg(feature = "plugin-system")]
-  async fn mark_pool_dirty(&self) {
-    let mut cache = self.pool_snapshot_cache.write().await;
-    cache.dirty = true;
-  }
-
-  #[cfg(feature = "plugin-system")]
-  async fn execute_hooks<F>(
+  async fn check_limits(
     &self,
-    hook_point: HookPoint,
-    payload_fn: F,
-  ) -> WorkflowResult<Vec<Value>>
-  where
-    F: FnOnce() -> Value,
-  {
-    let mut results = Vec::new();
-    if let Some(reg) = &self.plugin_registry {
-      let mut handlers = reg.hooks(&hook_point);
-      if handlers.is_empty() {
-        return Ok(results);
+    step_count: &mut i32,
+    max_steps: i32,
+    start_time: i64,
+    max_exec_time: u64,
+  ) -> WorkflowResult<()> {
+    // Check max steps
+    *step_count += 1;
+    if *step_count > max_steps {
+      if self.event_emitter.is_active() {
+        self
+          .event_emitter
+          .emit(GraphEngineEvent::GraphRunFailed {
+            error: format!("Max steps exceeded: {}", max_steps),
+            exceptions_count: self.exceptions_count,
+          })
+          .await;
+      }
+      return Err(WorkflowError::MaxStepsExceeded(max_steps));
+    }
+
+    // Check max time
+    if self.context.time_provider.elapsed_secs(start_time) > max_exec_time {
+      if self.event_emitter.is_active() {
+        self
+          .event_emitter
+          .emit(GraphEngineEvent::GraphRunFailed {
+            error: "Max execution time exceeded".into(),
+            exceptions_count: self.exceptions_count,
+          })
+          .await;
+      }
+      return Err(WorkflowError::ExecutionTimeout);
+    }
+
+    Ok(())
+  }
+
+  async fn handle_node_success(
+    &mut self,
+    exec_id: &str,
+    node_id: &str,
+    info: &NodeInfo,
+    result: NodeRunResult,
+    queue: &mut Vec<String>,
+  ) -> WorkflowResult<()> {
+    self
+      .emit_after_node_hooks(node_id, &info.node_type, &info.node_title, &result)
+      .await?;
+
+    self.record_llm_usage(&result).await;
+
+    // Store outputs in variable pool
+    let (mut outputs_for_write, stream_outputs) = result.outputs.clone().into_parts();
+    if info.node_type != "end" && info.node_type != "answer" {
+      for (key, value) in outputs_for_write.iter_mut() {
+        let selector = crate::core::variable_pool::Selector::new(node_id.to_string(), key.clone());
+        self
+          .apply_before_variable_write_hooks(node_id, &selector, value)
+          .await?;
+      }
+    }
+
+    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Value)> = None;
+    if info.node_type == "assigner" {
+      let write_mode = outputs_for_write
+        .get("write_mode")
+        .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
+        .unwrap_or(WriteMode::Overwrite);
+      let assigned_sel: crate::core::variable_pool::Selector = outputs_for_write
+        .get("assigned_variable_selector")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_else(|| crate::core::variable_pool::Selector::new("__scope__", "output"));
+      let mut output_val = outputs_for_write.get("output").cloned().unwrap_or(Value::Null);
+
+      self
+        .apply_before_variable_write_hooks(node_id, &assigned_sel, &mut output_val)
+        .await?;
+
+      assigner_meta = Some((write_mode, assigned_sel, output_val));
+    }
+
+    let should_pause_after = self.debug_gate.should_pause_after(node_id);
+    let mut pool_snapshot_after: Option<VariablePool> = None;
+
+    {
+      let mut pool = self.variable_pool.write();
+
+      // Handle variable assigner specially
+      if let Some((write_mode, assigned_sel, output_val)) = assigner_meta {
+        match write_mode {
+          WriteMode::Overwrite => {
+            pool.set(&assigned_sel, Segment::from_value(&output_val));
+          }
+          WriteMode::Append => {
+            pool.append(&assigned_sel, Segment::from_value(&output_val));
+          }
+          WriteMode::Clear => {
+            pool.clear(&assigned_sel);
+          }
+        }
       }
 
-      handlers.sort_by_key(|h| h.priority());
-      let data = payload_fn();
-      let pool_snapshot = self.pool_snapshot().await;
-      let payload = HookPayload {
-        hook_point,
-        data,
-        variable_pool: Some(pool_snapshot),
-        event_tx: Some(self.event_emitter.tx().clone()),
+      pool.set_node_outputs(node_id, &outputs_for_write);
+      for (key, stream) in stream_outputs {
+        let selector = crate::core::variable_pool::Selector::new(node_id.to_string(), key);
+        pool.set(&selector, Segment::Stream(stream));
+      }
+
+      if should_pause_after {
+        pool_snapshot_after = Some(pool.clone());
+      }
+    }
+    self.mark_pool_dirty();
+
+    // Track final outputs for end/answer nodes
+    if info.node_type == "end" || info.node_type == "answer" {
+      for (k, v) in &outputs_for_write {
+        self.final_outputs.insert(k.clone(), v.clone());
+      }
+    }
+
+    // Emit success or exception event
+    match result.status {
+      WorkflowNodeExecutionStatus::Exception => {
+        if self.event_emitter.is_active() {
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::NodeRunException {
+              id: exec_id.to_string(),
+              node_id: node_id.to_string(),
+              node_type: info.node_type.clone(),
+              node_run_result: result.clone(),
+              error: result
+                .error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .unwrap_or_default(),
+            })
+            .await;
+        }
+      }
+      _ => {
+        if self.event_emitter.is_active() {
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::NodeRunSucceeded {
+              id: exec_id.to_string(),
+              node_id: node_id.to_string(),
+              node_type: info.node_type.clone(),
+              node_run_result: result.clone(),
+            })
+            .await;
+        }
+      }
+    }
+
+    let downstream = self.advance_graph_after_success(node_id, info.is_branch, &result.edge_source_handle)?;
+
+    // [DEBUG] Hook after node execute
+    if should_pause_after {
+      let pool_snapshot = pool_snapshot_after.expect("pool snapshot should exist when pause-after is enabled");
+      let action = self
+        .debug_hook
+        .after_node_execute(
+          node_id,
+          &info.node_type,
+          &info.node_title,
+          &result,
+          &pool_snapshot,
+        )
+        .await?;
+
+      match self.apply_debug_action(action).await? {
+        DebugActionResult::Continue => {}
+        DebugActionResult::Abort(reason) => {
+          return Err(WorkflowError::Aborted(reason));
+        }
+        DebugActionResult::SkipNode => {}
+      }
+    }
+
+    queue.extend(downstream);
+    Ok(())
+  }
+
+  async fn handle_node_failure(
+    &self,
+    exec_id: String,
+    node_id: String,
+    info: &NodeInfo,
+    error: NodeError,
+  ) -> WorkflowError {
+    // Node execution failed, abort workflow
+    let error_type = error.error_code();
+    let error_detail = error.to_structured_json();
+    let error_info = crate::dsl::schema::NodeErrorInfo {
+      message: error.to_string(),
+      error_type: Some(error_type),
+      detail: Some(error_detail.clone()),
+    };
+    let err_result = NodeRunResult {
+      status: WorkflowNodeExecutionStatus::Failed,
+      error: Some(error_info),
+      ..Default::default()
+    };
+
+    if self.event_emitter.is_active() {
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::NodeRunFailed {
+          id: exec_id.clone(),
+          node_id: node_id.clone(),
+          node_type: info.node_type.clone(),
+          node_run_result: err_result,
+          error: error.to_string(),
+        })
+        .await;
+
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::GraphRunFailed {
+          error: error.to_string(),
+          exceptions_count: self.exceptions_count,
+        })
+        .await;
+    }
+
+    WorkflowError::NodeExecutionError {
+      node_id,
+      error: error.to_string(),
+      error_detail: Some(error_detail),
+    }
+  }
+
+  fn mark_pool_dirty(&self) {
+    self.plugin_gate.mark_pool_dirty();
+  }
+
+  fn load_node_info(&self, node_id: &str) -> WorkflowResult<NodeInfo> {
+    let g = self.graph.read();
+    let node = g
+      .get_node(node_id)
+      .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
+    Ok(NodeInfo {
+      node_type: node.node_type.clone(),
+      node_title: node.title.clone(),
+      node_config: node.config.clone(),
+      is_branch: g.is_branch_node(node_id),
+      is_skipped: node.state == EdgeTraversalState::Skipped,
+      error_strategy: node.error_strategy.clone(),
+      retry_config: node.retry_config.clone(),
+      timeout_secs: node.timeout_secs,
+    })
+  }
+
+  fn skip_node_and_collect_ready(&self, node_id: &str, is_branch: bool) -> Vec<String> {
+    let mut g = self.graph.write();
+    if let Some(node) = g.nodes.get_mut(node_id) {
+      node.state = EdgeTraversalState::Skipped;
+    }
+    if is_branch {
+      g.process_branch_edges(
+        node_id,
+        &crate::dsl::schema::EdgeHandle::Branch("false".to_string()),
+      );
+    } else {
+      g.process_normal_edges(node_id);
+    }
+
+    g.downstream_node_ids(node_id)
+      .filter(|ds_id| g.is_node_ready(ds_id))
+      .map(|ds_id| ds_id.to_string())
+      .collect()
+  }
+
+  fn advance_graph_after_success(
+    &self,
+    node_id: &str,
+    is_branch: bool,
+    edge_handle: &crate::dsl::schema::EdgeHandle,
+  ) -> WorkflowResult<Vec<String>> {
+    let mut g = self.graph.write();
+
+    if let Some(node) = g.nodes.get_mut(node_id) {
+      node.state = EdgeTraversalState::Taken;
+    }
+
+    if is_branch {
+      match edge_handle {
+        crate::dsl::schema::EdgeHandle::Branch(handle) => {
+          let valid = g
+            .out_edges
+            .get(node_id)
+            .map(|eids| {
+              eids.iter().any(|eid| {
+                g.edges
+                  .get(eid)
+                  .and_then(|e| e.source_handle.as_deref())
+                  == Some(handle.as_str())
+              })
+            })
+            .unwrap_or(false);
+          if !valid {
+            return Err(WorkflowError::GraphValidationError(format!(
+              "Node {} returned branch handle '{}' but no matching edge found",
+              node_id, handle
+            )));
+          }
+          g.process_branch_edges(node_id, edge_handle);
+        }
+        crate::dsl::schema::EdgeHandle::Default => {
+          return Err(WorkflowError::GraphValidationError(format!(
+            "Node {} returned default handle for branch node",
+            node_id
+          )));
+        }
+      }
+    } else {
+      g.process_normal_edges(node_id);
+    }
+
+    Ok(
+      g.downstream_node_ids(node_id)
+        .filter(|ds_id| g.is_node_ready(ds_id))
+        .map(|ds_id| ds_id.to_string())
+        .collect(),
+    )
+  }
+
+  async fn emit_before_workflow_hooks(&self) -> WorkflowResult<()> {
+    self.plugin_gate.emit_before_workflow_hooks().await
+  }
+
+  async fn emit_after_workflow_hooks(&self) -> WorkflowResult<()> {
+    self
+      .plugin_gate
+      .emit_after_workflow_hooks(&self.final_outputs, self.exceptions_count)
+      .await
+  }
+
+  async fn emit_before_node_hooks(
+    &self,
+    node_id: &str,
+    node_type: &str,
+    node_title: &str,
+    node_config: &Value,
+  ) -> WorkflowResult<()> {
+    self
+      .plugin_gate
+      .emit_before_node_hooks(node_id, node_type, node_title, node_config)
+      .await
+  }
+
+  async fn emit_after_node_hooks(
+    &self,
+    node_id: &str,
+    node_type: &str,
+    node_title: &str,
+    result: &NodeRunResult,
+  ) -> WorkflowResult<()> {
+    self
+      .plugin_gate
+      .emit_after_node_hooks(node_id, node_type, node_title, result)
+      .await
+  }
+
+  async fn apply_before_variable_write_hooks(
+    &self,
+    node_id: &str,
+    selector: &crate::core::variable_pool::Selector,
+    value: &mut Value,
+  ) -> WorkflowResult<()> {
+    self
+      .plugin_gate
+      .apply_before_variable_write_hooks(node_id, selector, value)
+      .await
+  }
+
+  async fn execute_node_with_retry(
+    &mut self,
+    exec_id: &str,
+    node_id: &str,
+    node_type: &str,
+    node_title: &str,
+    node_config: &Value,
+    pool_snapshot: &VariablePool,
+    error_strategy: &Option<ErrorStrategyConfig>,
+    retry_config: &Option<RetryConfig>,
+    node_timeout: Option<u64>,
+  ) -> Result<NodeRunResult, NodeError> {
+    let executor = self.registry.get(node_type);
+    if executor.is_none() {
+      return Err(NodeError::ConfigError(format!(
+        "No executor for node type: {}",
+        node_type
+      )));
+    }
+
+    let max_retries = retry_config
+      .as_ref()
+      .map(|rc| rc.max_retries)
+      .unwrap_or(0)
+      .max(0);
+    let retry_on_retryable_only = retry_config
+      .as_ref()
+      .map(|rc| rc.retry_on_retryable_only)
+      .unwrap_or(true);
+
+    let mut last_error: Option<NodeError> = None;
+    let mut result = None;
+
+    for attempt in 0..=max_retries {
+      let exec_future = executor
+        .as_ref()
+        .expect("executor checked")
+        .execute(node_id, node_config, pool_snapshot, &self.context);
+      let exec_result = if let Some(timeout_secs) = node_timeout {
+        match tokio::time::timeout(
+          std::time::Duration::from_secs(timeout_secs),
+          exec_future,
+        )
+        .await
+        {
+          Ok(r) => r,
+          Err(_) => Err(NodeError::Timeout.with_context(ErrorContext::retryable(
+            ErrorCode::Timeout,
+            format!("Node execution timed out after {}s", timeout_secs),
+          ))),
+        }
+      } else {
+        exec_future.await
       };
 
-      for handler in handlers {
-        match handler.handle(&payload).await {
-          Ok(Some(value)) => results.push(value),
-          Ok(None) => {}
-          Err(e) => {
-            self
-              .event_emitter
-              .emit(GraphEngineEvent::PluginError {
-                plugin_id: handler.name().to_string(),
-                error: e.to_string(),
-              })
-              .await;
+      match exec_result {
+        Ok(r) => {
+          result = Some(r);
+          break;
+        }
+        Err(e) => {
+          let should_retry = if attempt < max_retries {
+            if retry_on_retryable_only {
+              e.is_retryable()
+            } else {
+              true
+            }
+          } else {
+            false
+          };
+
+          if should_retry {
+            let interval = calculate_retry_interval(retry_config, attempt, &e);
+            if self.event_emitter.is_active() {
+              self.event_emitter
+                .emit(GraphEngineEvent::NodeRunRetry {
+                  id: exec_id.to_string(),
+                  node_id: node_id.to_string(),
+                  node_type: node_type.to_string(),
+                  node_title: node_title.to_string(),
+                  error: e.to_string(),
+                  retry_index: attempt + 1,
+                })
+                .await;
+            }
+            if interval > 0 {
+              tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+            }
+          }
+
+          last_error = Some(e);
+
+          if !should_retry && attempt < max_retries {
+            break;
           }
         }
       }
     }
-    Ok(results)
+
+    match result {
+      Some(r) => Ok(r),
+      None => {
+        let last_err = last_error
+          .unwrap_or_else(|| NodeError::ExecutionError("Unknown error".to_string()));
+        let error_type = last_err.error_code();
+        let error_detail = last_err.to_structured_json();
+        let error_info = crate::dsl::schema::NodeErrorInfo {
+          message: last_err.to_string(),
+          error_type: Some(error_type),
+          detail: Some(error_detail),
+        };
+
+        match error_strategy.as_ref().map(|es| &es.strategy_type) {
+          Some(ErrorStrategyType::FailBranch) => {
+            self.exceptions_count += 1;
+            Ok(NodeRunResult {
+              status: WorkflowNodeExecutionStatus::Exception,
+              error: Some(error_info),
+              edge_source_handle: crate::dsl::schema::EdgeHandle::Branch("fail-branch".to_string()),
+              ..Default::default()
+            })
+          }
+          Some(ErrorStrategyType::DefaultValue) => {
+            self.exceptions_count += 1;
+            let defaults = error_strategy
+              .as_ref()
+              .and_then(|es| es.default_value.clone())
+              .unwrap_or_default();
+            Ok(NodeRunResult {
+              status: WorkflowNodeExecutionStatus::Exception,
+              outputs: crate::dsl::schema::NodeOutputs::Sync(defaults),
+              error: Some(error_info),
+              edge_source_handle: crate::dsl::schema::EdgeHandle::Default,
+              ..Default::default()
+            })
+          }
+          Some(ErrorStrategyType::None) | None => Err(last_err),
+        }
+      }
+    }
   }
 
   async fn apply_debug_action(&self, action: DebugAction) -> WorkflowResult<DebugActionResult> {
@@ -283,7 +788,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
         DebugAction::Abort { reason } => return Ok(DebugActionResult::Abort(reason)),
         DebugAction::SkipNode => return Ok(DebugActionResult::SkipNode),
         DebugAction::UpdateVariables { variables, then } => {
-          let mut pool = self.variable_pool.write().await;
+          let mut pool = self.variable_pool.write();
           for (key, value) in &variables {
             let parts: Vec<&str> = key.splitn(2, '.').collect();
             if parts.len() == 2 {
@@ -292,865 +797,224 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
             }
           }
           drop(pool);
-          #[cfg(feature = "plugin-system")]
-          self.mark_pool_dirty().await;
+          self.mark_pool_dirty();
           next_action = *then;
         }
       }
     }
   }
 
-  async fn skip_node(&self, node_id: &str, is_branch: bool) {
-    let mut g = self.graph.write().await;
-    if let Some(node) = g.nodes.get_mut(node_id) {
-      node.state = EdgeTraversalState::Skipped;
-    }
-    if is_branch {
-      g.process_branch_edges(node_id, &crate::dsl::schema::EdgeHandle::Branch("false".to_string()));
-    } else {
-      g.process_normal_edges(node_id);
-    }
-  }
-
-  #[cfg(feature = "security")]
   fn effective_limits(&self) -> (i32, u64) {
-    if let Some(group) = self.context.resource_group() {
-      let max_steps = self.config.max_steps.min(group.quota.max_steps);
-      let max_time = self
-        .config
-        .max_execution_time_secs
-        .min(group.quota.max_execution_time_secs);
-      (max_steps, max_time)
-    } else {
-      (self.config.max_steps, self.config.max_execution_time_secs)
-    }
+    self.security_gate.effective_limits(&self.config)
   }
 
-  #[cfg(not(feature = "security"))]
-  fn effective_limits(&self) -> (i32, u64) {
-    (self.config.max_steps, self.config.max_execution_time_secs)
-  }
-
-  #[cfg(feature = "security")]
-  async fn audit_security_event(
-    &self,
-    event_type: SecurityEventType,
-    severity: EventSeverity,
-    node_id: Option<String>,
-  ) {
-    let logger = match self.context.audit_logger() {
-      Some(l) => l,
-      None => return,
-    };
-    let group_id = match self.context.resource_group() {
-      Some(g) => g.group_id.clone(),
-      None => return,
-    };
-    let event = SecurityEvent {
-      timestamp: self.context.time_provider.now_timestamp(),
-      group_id,
-      workflow_id: None,
-      node_id,
-      event_type,
-      details: Value::Null,
-      severity,
-    };
-    logger.log_event(event).await;
-  }
-
-  #[cfg(feature = "security")]
-  async fn handle_quota_error(&self, node_id: &str, err: QuotaError) -> NodeError {
-    let (quota_type, limit, current, message) = match &err {
-      QuotaError::ConcurrentWorkflowLimit { max, current } => (
-        "concurrent_workflows".to_string(),
-        *max as u64,
-        *current as u64,
-        format!("Concurrent workflow limit exceeded: {}/{}", current, max),
-      ),
-      QuotaError::HttpRateLimit { max_per_minute } => (
-        "http_rate".to_string(),
-        *max_per_minute as u64,
-        *max_per_minute as u64,
-        format!("HTTP rate limit exceeded: {} per minute", max_per_minute),
-      ),
-      QuotaError::LlmRateLimit { max_per_minute } => (
-        "llm_rate".to_string(),
-        *max_per_minute as u64,
-        *max_per_minute as u64,
-        format!("LLM rate limit exceeded: {} per minute", max_per_minute),
-      ),
-      QuotaError::LlmTokenBudgetExhausted { budget, used } => (
-        "llm_token_budget".to_string(),
-        *budget,
-        *used,
-        format!("LLM token budget exhausted: {}/{}", used, budget),
-      ),
-      QuotaError::LlmRequestTooLarge { max_tokens, requested } => (
-        "llm_request_tokens".to_string(),
-        *max_tokens as u64,
-        *requested as u64,
-        format!("LLM request tokens too large: {}/{}", requested, max_tokens),
-      ),
-      QuotaError::VariablePoolTooLarge { max_entries, current } => (
-        "variable_pool_entries".to_string(),
-        *max_entries as u64,
-        *current as u64,
-        format!("Variable pool entries exceeded: {}/{}", current, max_entries),
-      ),
-      QuotaError::VariablePoolMemoryExceeded { max_bytes, current } => (
-        "variable_pool_bytes".to_string(),
-        *max_bytes as u64,
-        *current as u64,
-        format!("Variable pool memory exceeded: {}/{}", current, max_bytes),
-      ),
-    };
-
-    self
-      .audit_security_event(
-        SecurityEventType::QuotaExceeded {
-          quota_type,
-          limit,
-          current,
-        },
-        EventSeverity::Warning,
-        Some(node_id.to_string()),
-      )
-      .await;
-
-    NodeError::InputValidationError(message).with_context(ErrorContext::non_retryable(
-      ErrorCode::ResourceLimitExceeded,
-      "resource limit exceeded",
-    ))
-  }
-
-  #[cfg(feature = "security")]
   async fn check_security_before_node(
     &self,
     node_id: &str,
     node_type: &str,
     node_config: &Value,
   ) -> Result<(), NodeError> {
-    let Some(governor) = self.context.resource_governor() else {
-      return Ok(());
-    };
-    let Some(group) = self.context.resource_group() else {
-      return Ok(());
-    };
-
-    let pool_snapshot = self.variable_pool.read().await;
-    if let Err(err) = governor
-      .check_variable_pool_size(
-        &group.group_id,
-        pool_snapshot.len(),
-        pool_snapshot.estimate_total_bytes(),
-      )
+    self
+      .security_gate
+      .check_before_node(node_id, node_type, node_config)
       .await
-    {
-      return Err(self.handle_quota_error(node_id, err).await);
-    }
-
-    match node_type {
-      "http-request" => {
-        if let Err(err) = governor.check_http_rate(&group.group_id).await {
-          return Err(self.handle_quota_error(node_id, err).await);
-        }
-      }
-      "llm" => {
-        let estimated_tokens = node_config
-          .get("model")
-          .and_then(|m| m.get("completion_params"))
-          .and_then(|p| p.get("max_tokens"))
-          .and_then(|v| v.as_u64())
-          .unwrap_or(0) as u32;
-        if let Err(err) = governor
-          .check_llm_request(&group.group_id, estimated_tokens)
-          .await
-        {
-          return Err(self.handle_quota_error(node_id, err).await);
-        }
-      }
-      _ => {}
-    }
-
-    Ok(())
   }
 
-  #[cfg(feature = "security")]
-  fn check_output_size(
+  async fn enforce_output_limits(
     &self,
     node_id: &str,
     node_type: &str,
-    outputs: &crate::dsl::schema::NodeOutputs,
-  ) -> Result<(), NodeError> {
-    let Some(policy) = self.context.security_policy() else {
-      return Ok(());
-    };
-    let Some(limits) = policy.node_limits.get(node_type) else {
-      return Ok(());
-    };
-
-    let output_size: usize = outputs
-      .ready()
-      .values()
-      .map(|v| serde_json::to_vec(v).map(|b| b.len()).unwrap_or(0))
-      .sum();
-
-    if output_size > limits.max_output_bytes {
-      return Err(NodeError::OutputTooLarge {
-        node_id: node_id.to_string(),
-        max: limits.max_output_bytes,
-        actual: output_size,
-      }
-      .with_context(ErrorContext::non_retryable(
-        ErrorCode::OutputTooLarge,
-        "output size exceeded",
-      )));
-    }
-
-    Ok(())
+    result: NodeRunResult,
+  ) -> Result<NodeRunResult, NodeError> {
+    self
+      .security_gate
+      .enforce_output_limits(node_id, node_type, result)
+      .await
   }
-    /// Run the workflow to completion
-    pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
-        // Emit graph started
-        self.event_emitter.emit(GraphEngineEvent::GraphRunStarted).await;
 
-      #[cfg(feature = "plugin-system")]
-      {
-        let _ = self
-          .execute_hooks(HookPoint::BeforeWorkflowRun, || {
-            serde_json::json!({
-              "event": "before_workflow_run",
-            })
-          })
-          .await?;
+  async fn record_llm_usage(&self, result: &NodeRunResult) {
+    self.security_gate.record_llm_usage(result).await
+  }
+  /// Run the workflow to completion
+  pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
+    // Emit graph started
+    self.event_emitter.emit(GraphEngineEvent::GraphRunStarted).await;
+
+    self.emit_before_workflow_hooks().await?;
+
+    let root_id = {
+      let g = self.graph.read();
+      g.root_node_id.clone()
+    };
+
+    let mut queue: Vec<String> = vec![root_id];
+    let mut step_count: i32 = 0;
+    let start_time = self.context.time_provider.now_timestamp();
+    let (max_steps, max_exec_time) = self.effective_limits();
+
+    while let Some(node_id) = queue.pop() {
+      self
+        .check_limits(&mut step_count, max_steps, start_time, max_exec_time)
+        .await?;
+
+      let info = self.load_node_info(&node_id)?;
+      if info.is_skipped {
+        continue;
       }
 
-        let root_id = {
-            let g = self.graph.read().await;
-            g.root_node_id.clone()
-        };
+      // 合并 pool 读取：debug-before 与执行共用一次快照（仅在需要 debug-before 时复用）
+      let mut pool_snapshot_for_exec: Option<VariablePool> = None;
 
-        let mut queue: Vec<String> = vec![root_id];
-        let mut step_count: i32 = 0;
-        let start_time = self.context.time_provider.now_timestamp();
-        let (max_steps, max_exec_time) = self.effective_limits();
+      // [DEBUG] Hook before node execute
+      if self.debug_gate.should_pause_before(&node_id) {
+        let pool_snapshot = self.variable_pool.read().clone();
+        let action = self
+          .debug_hook
+          .before_node_execute(&node_id, &info.node_type, &info.node_title, &pool_snapshot)
+          .await?;
 
-        while let Some(node_id) = queue.pop() {
-            // Check max steps
-            step_count += 1;
-            if step_count > max_steps {
-                if self.event_emitter.is_active() {
-                  self.event_emitter
-                    .emit(GraphEngineEvent::GraphRunFailed {
-                      error: format!("Max steps exceeded: {}", max_steps),
-                      exceptions_count: self.exceptions_count,
-                    })
-                    .await;
-                }
-                return Err(WorkflowError::MaxStepsExceeded(max_steps));
-            }
-
-            // Check max time
-            if self.context.time_provider.elapsed_secs(start_time) > max_exec_time {
-                if self.event_emitter.is_active() {
-                  self.event_emitter
-                    .emit(GraphEngineEvent::GraphRunFailed {
-                      error: "Max execution time exceeded".into(),
-                      exceptions_count: self.exceptions_count,
-                    })
-                    .await;
-                }
-                return Err(WorkflowError::ExecutionTimeout);
-            }
-
-            // Get node info
-            let (node_type, node_title, node_config, is_branch) = {
-                let g = self.graph.read().await;
-                let node = g.get_node(&node_id)
-                    .ok_or_else(|| WorkflowError::NodeNotFound(node_id.clone()))?;
-                (
-                    node.node_type.clone(),
-                    node.title.clone(),
-                    node.config.clone(),
-                    g.is_branch_node(&node_id),
-                )
-            };
-
-            // Check if node is skipped
-            {
-                let g = self.graph.read().await;
-                if let Some(node) = g.get_node(&node_id) {
-                    if node.state == EdgeTraversalState::Skipped {
-                        continue;
-                    }
-                }
-            }
-
-                // [DEBUG] Hook before node execute
-                if self.debug_gate.should_pause_before(&node_id) {
-                  let pool_snapshot = self.variable_pool.read().await;
-                  let action = self
-                    .debug_hook
-                    .before_node_execute(&node_id, &node_type, &node_title, &pool_snapshot)
-                    .await?;
-                  drop(pool_snapshot);
-
-                  match self.apply_debug_action(action).await? {
-                    DebugActionResult::Continue => {}
-                    DebugActionResult::Abort(reason) => {
-                      return Err(WorkflowError::Aborted(reason));
-                    }
-                    DebugActionResult::SkipNode => {
-                      self.skip_node(&node_id, is_branch).await;
-                      let g = self.graph.read().await;
-                      let downstream = g.get_downstream_node_ids(&node_id);
-                      for ds_id in downstream {
-                        if g.is_node_ready(&ds_id) {
-                          queue.push(ds_id);
-                        }
-                      }
-                      continue;
-                    }
-                  }
-                }
-
-            let exec_id = self.context.id_generator.next_id();
-
-            #[cfg(feature = "security")]
-            if let Err(e) = self
-                .check_security_before_node(&node_id, &node_type, &node_config)
-                .await
-            {
-                let error_detail = e.to_structured_json();
-                let error_info = crate::dsl::schema::NodeErrorInfo {
-                  message: e.to_string(),
-                  error_type: Some(e.error_code()),
-                  detail: Some(error_detail.clone()),
-                };
-                if self.event_emitter.is_active() {
-                  self.event_emitter
-                    .emit(GraphEngineEvent::NodeRunFailed {
-                      id: exec_id.clone(),
-                      node_id: node_id.clone(),
-                      node_type: node_type.clone(),
-                      node_run_result: NodeRunResult {
-                        status: WorkflowNodeExecutionStatus::Failed,
-                        error: Some(error_info.clone()),
-                        ..Default::default()
-                      },
-                      error: e.to_string(),
-                    })
-                    .await;
-
-                  self.event_emitter
-                    .emit(GraphEngineEvent::GraphRunFailed {
-                      error: e.to_string(),
-                      exceptions_count: self.exceptions_count,
-                    })
-                    .await;
-                }
-
-                return Err(WorkflowError::NodeExecutionError {
-                  node_id,
-                  error: e.to_string(),
-                  error_detail: Some(error_detail),
-                });
-            }
-
-            // Emit NodeRunStarted
-            if self.event_emitter.is_active() {
-              self.event_emitter
-                .emit(GraphEngineEvent::NodeRunStarted {
-                  id: exec_id.clone(),
-                  node_id: node_id.clone(),
-                  node_type: node_type.clone(),
-                  node_title: node_title.clone(),
-                  predecessor_node_id: None,
-                })
-                .await;
-            }
-
-            #[cfg(feature = "plugin-system")]
-            {
-              let _ = self
-                .execute_hooks(HookPoint::BeforeNodeExecute, || {
-                  serde_json::json!({
-                    "event": "before_node_execute",
-                    "node_id": node_id.clone(),
-                    "node_type": node_type.clone(),
-                    "node_title": node_title.clone(),
-                    "config": node_config.clone(),
-                  })
-                })
-                .await?;
-            }
-
-            // Execute the node
-            let pool_snapshot = {
-                self.variable_pool.read().await.clone()
-            };
-
-            let executor = self.registry.get(&node_type);
-            let run_result = if let Some(exec) = executor {
-                // Check error strategy & retry
-                let error_strategy: Option<ErrorStrategyConfig> = node_config
-                  .get("error_strategy")
-                  .and_then(|v| serde_json::from_value(v.clone()).ok());
-                let retry_config: Option<RetryConfig> = node_config
-                  .get("retry_config")
-                  .and_then(|v| serde_json::from_value(v.clone()).ok());
-                let node_timeout = node_config.get("timeout_secs").and_then(|v| v.as_u64());
-
-                let max_retries = retry_config.as_ref().map(|rc| rc.max_retries).unwrap_or(0).max(0);
-                let retry_on_retryable_only = retry_config
-                  .as_ref()
-                  .map(|rc| rc.retry_on_retryable_only)
-                  .unwrap_or(true);
-
-                let mut last_error: Option<NodeError> = None;
-                let mut result = None;
-
-                for attempt in 0..=max_retries {
-                  let exec_future = exec.execute(&node_id, &node_config, &pool_snapshot, &self.context);
-                  let exec_result = if let Some(timeout_secs) = node_timeout {
-                    match tokio::time::timeout(
-                      std::time::Duration::from_secs(timeout_secs),
-                      exec_future,
-                    )
-                    .await
-                    {
-                      Ok(r) => r,
-                      Err(_) => Err(NodeError::Timeout.with_context(ErrorContext::retryable(
-                        ErrorCode::Timeout,
-                        format!("Node execution timed out after {}s", timeout_secs),
-                      ))),
-                    }
-                  } else {
-                    exec_future.await
-                  };
-
-                  match exec_result {
-                    Ok(r) => {
-                      result = Some(r);
-                      break;
-                    }
-                    Err(e) => {
-                      let should_retry = if attempt < max_retries {
-                        if retry_on_retryable_only {
-                          e.is_retryable()
-                        } else {
-                          true
-                        }
-                      } else {
-                        false
-                      };
-
-                      if should_retry {
-                        let interval = calculate_retry_interval(&retry_config, attempt, &e);
-                        if self.event_emitter.is_active() {
-                          self.event_emitter
-                            .emit(GraphEngineEvent::NodeRunRetry {
-                              id: exec_id.clone(),
-                              node_id: node_id.clone(),
-                              node_type: node_type.clone(),
-                              node_title: node_title.clone(),
-                              error: e.to_string(),
-                              retry_index: attempt + 1,
-                            })
-                            .await;
-                        }
-                        if interval > 0 {
-                          tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
-                        }
-                      }
-
-                      last_error = Some(e);
-
-                      if !should_retry && attempt < max_retries {
-                        break;
-                      }
-                    }
-                  }
-                }
-
-                match result {
-                  Some(r) => Ok(r),
-                  None => {
-                    let last_err = last_error
-                      .unwrap_or_else(|| NodeError::ExecutionError("Unknown error".to_string()));
-                    let error_type = last_err.error_code();
-                    let error_detail = last_err.to_structured_json();
-                    let error_info = crate::dsl::schema::NodeErrorInfo {
-                      message: last_err.to_string(),
-                      error_type: Some(error_type),
-                      detail: Some(error_detail),
-                    };
-
-                    match error_strategy.as_ref().map(|es| &es.strategy_type) {
-                      Some(ErrorStrategyType::FailBranch) => {
-                        self.exceptions_count += 1;
-                        Ok(NodeRunResult {
-                          status: WorkflowNodeExecutionStatus::Exception,
-                          error: Some(error_info),
-                          edge_source_handle: crate::dsl::schema::EdgeHandle::Branch("fail-branch".to_string()),
-                          ..Default::default()
-                        })
-                      }
-                      Some(ErrorStrategyType::DefaultValue) => {
-                        self.exceptions_count += 1;
-                        let defaults = error_strategy
-                          .as_ref()
-                          .and_then(|es| es.default_value.clone())
-                          .unwrap_or_default();
-                        Ok(NodeRunResult {
-                          status: WorkflowNodeExecutionStatus::Exception,
-                          outputs: crate::dsl::schema::NodeOutputs::Sync(defaults),
-                          error: Some(error_info),
-                          edge_source_handle: crate::dsl::schema::EdgeHandle::Default,
-                          ..Default::default()
-                        })
-                      }
-                      Some(ErrorStrategyType::None) | None => Err(last_err),
-                    }
-                  }
-                }
-            } else {
-                Err(NodeError::ConfigError(format!(
-                    "No executor for node type: {}",
-                    node_type
-                )))
-            };
-
-            #[cfg(feature = "security")]
-            let run_result = match run_result {
-              Ok(result) => {
-                if let Err(err) = self.check_output_size(&node_id, &node_type, &result.outputs) {
-                  if let NodeError::OutputTooLarge { max, actual, .. } = &err {
-                    self
-                      .audit_security_event(
-                        SecurityEventType::OutputSizeExceeded {
-                          node_id: node_id.clone(),
-                          max: *max,
-                          actual: *actual,
-                        },
-                        EventSeverity::Warning,
-                        Some(node_id.clone()),
-                      )
-                      .await;
-                  }
-                  Err(err)
-                } else {
-                  Ok(result)
-                }
-              }
-              Err(e) => Err(e),
-            };
-
-            #[cfg(not(feature = "security"))]
-            let run_result = run_result;
-
-            match run_result {
-                Ok(result) => {
-                #[cfg(feature = "plugin-system")]
-                {
-                  let _ = self
-                    .execute_hooks(HookPoint::AfterNodeExecute, || {
-                      serde_json::json!({
-                        "event": "after_node_execute",
-                        "node_id": node_id.clone(),
-                        "node_type": node_type.clone(),
-                        "node_title": node_title.clone(),
-                        "status": format!("{:?}", result.status),
-                        "outputs": result.outputs.ready().clone(),
-                        "error": result.error.as_ref().map(|e| e.message.clone()),
-                      })
-                    })
-                    .await?;
-                }
-
-                #[cfg(feature = "security")]
-                if let (Some(governor), Some(group), Some(usage)) = (
-                  self.context.resource_governor(),
-                  self.context.resource_group(),
-                  result.llm_usage.as_ref(),
-                ) {
-                  governor.record_llm_usage(&group.group_id, usage).await;
-                }
-
-                    // Store outputs in variable pool
-                    let (mut outputs_for_write, stream_outputs) = result.outputs.clone().into_parts();
-                    #[cfg(feature = "plugin-system")]
-                    if node_type != "end" && node_type != "answer" {
-                      for (key, value) in outputs_for_write.iter_mut() {
-                        let selector = crate::core::variable_pool::Selector::new(node_id.clone(), key.clone());
-                        let results = self
-                          .execute_hooks(HookPoint::BeforeVariableWrite, || {
-                            serde_json::json!({
-                              "event": "before_variable_write",
-                              "node_id": node_id.clone(),
-                              "selector": selector,
-                              "value": value.clone(),
-                            })
-                          })
-                          .await?;
-                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
-                          *value = last;
-                        }
-                      }
-                    }
-
-                    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Value)> = None;
-                    if node_type == "assigner" {
-                      let write_mode = outputs_for_write.get("write_mode")
-                        .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
-                        .unwrap_or(WriteMode::Overwrite);
-                      let assigned_sel: crate::core::variable_pool::Selector = outputs_for_write
-                        .get("assigned_variable_selector")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(|| crate::core::variable_pool::Selector::new("__scope__", "output"));
-                      let mut output_val = outputs_for_write
-                        .get("output")
-                        .cloned()
-                        .unwrap_or(Value::Null);
-
-                      #[cfg(feature = "plugin-system")]
-                      {
-                        let results = self
-                          .execute_hooks(HookPoint::BeforeVariableWrite, || {
-                            serde_json::json!({
-                              "event": "before_variable_write",
-                              "node_id": node_id.clone(),
-                              "selector": assigned_sel.clone(),
-                              "value": output_val.clone(),
-                            })
-                          })
-                          .await?;
-                        if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
-                          output_val = last;
-                        }
-                      }
-
-                      assigner_meta = Some((write_mode, assigned_sel, output_val));
-                    }
-
-                    {
-                      let mut pool = self.variable_pool.write().await;
-
-                      // Handle variable assigner specially
-                      if let Some((write_mode, assigned_sel, output_val)) = assigner_meta {
-                        match write_mode {
-                          WriteMode::Overwrite => {
-                            pool.set(&assigned_sel, Segment::from_value(&output_val));
-                          }
-                          WriteMode::Append => {
-                            pool.append(&assigned_sel, Segment::from_value(&output_val));
-                          }
-                          WriteMode::Clear => {
-                            pool.clear(&assigned_sel);
-                          }
-                        }
-                      }
-
-                      pool.set_node_outputs(&node_id, &outputs_for_write);
-                      for (key, stream) in stream_outputs {
-                        let selector = crate::core::variable_pool::Selector::new(node_id.clone(), key);
-                        pool.set(&selector, Segment::Stream(stream));
-                      }
-                    }
-                    #[cfg(feature = "plugin-system")]
-                    self.mark_pool_dirty().await;
-
-                    // Track final outputs for end/answer nodes
-                    if node_type == "end" || node_type == "answer" {
-                      for (k, v) in &outputs_for_write {
-                        self.final_outputs.insert(k.clone(), v.clone());
-                      }
-                    }
-
-                    // Emit success or exception event
-                    match result.status {
-                        WorkflowNodeExecutionStatus::Exception => {
-                        if self.event_emitter.is_active() {
-                          self.event_emitter
-                            .emit(GraphEngineEvent::NodeRunException {
-                              id: exec_id.clone(),
-                              node_id: node_id.clone(),
-                              node_type: node_type.clone(),
-                              node_run_result: result.clone(),
-                              error: result
-                                .error
-                                .as_ref()
-                                .map(|e| e.message.clone())
-                                .unwrap_or_default(),
-                            })
-                            .await;
-                        }
-                        }
-                        _ => {
-                        if self.event_emitter.is_active() {
-                          self.event_emitter
-                            .emit(GraphEngineEvent::NodeRunSucceeded {
-                              id: exec_id.clone(),
-                              node_id: node_id.clone(),
-                              node_type: node_type.clone(),
-                              node_run_result: result.clone(),
-                            })
-                            .await;
-                        }
-                        }
-                    }
-
-                    // Mark node as Taken
-                    {
-                        let mut g = self.graph.write().await;
-                        if let Some(node) = g.nodes.get_mut(&node_id) {
-                          node.state = EdgeTraversalState::Taken;
-                        }
-                    }
-
-                    // Process edges
-                    {
-                        let mut g = self.graph.write().await;
-                        if is_branch {
-                            match &result.edge_source_handle {
-                              crate::dsl::schema::EdgeHandle::Branch(handle) => {
-                                let valid = g
-                                  .out_edges
-                                  .get(&node_id)
-                                  .map(|eids| {
-                                    eids.iter().any(|eid| {
-                                      g.edges
-                                        .get(eid)
-                                        .and_then(|e| e.source_handle.as_deref())
-                                        == Some(handle.as_str())
-                                    })
-                                  })
-                                  .unwrap_or(false);
-                                if !valid {
-                                  return Err(WorkflowError::GraphValidationError(format!(
-                                    "Node {} returned branch handle '{}' but no matching edge found",
-                                    node_id, handle
-                                  )));
-                                }
-                                g.process_branch_edges(&node_id, &result.edge_source_handle);
-                              }
-                              crate::dsl::schema::EdgeHandle::Default => {
-                                return Err(WorkflowError::GraphValidationError(format!(
-                                  "Node {} returned default handle for branch node",
-                                  node_id
-                                )));
-                              }
-                            }
-                        } else {
-                            g.process_normal_edges(&node_id);
-                        }
-                    }
-
-                    // [DEBUG] Hook after node execute
-                    if self.debug_gate.should_pause_after(&node_id) {
-                      let pool_snapshot = self.variable_pool.read().await;
-                      let action = self
-                        .debug_hook
-                        .after_node_execute(&node_id, &node_type, &node_title, &result, &pool_snapshot)
-                        .await?;
-                      drop(pool_snapshot);
-
-                      match self.apply_debug_action(action).await? {
-                        DebugActionResult::Continue => {}
-                        DebugActionResult::Abort(reason) => {
-                          return Err(WorkflowError::Aborted(reason));
-                        }
-                        DebugActionResult::SkipNode => {}
-                      }
-                    }
-
-                    // Find ready downstream nodes
-                    {
-                        let g = self.graph.read().await;
-                        let downstream = g.get_downstream_node_ids(&node_id);
-                        for ds_id in downstream {
-                            if g.is_node_ready(&ds_id) {
-                                queue.push(ds_id);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Node execution failed, abort workflow
-                  let error_type = e.error_code();
-                  let error_detail = e.to_structured_json();
-                  let error_info = crate::dsl::schema::NodeErrorInfo {
-                    message: e.to_string(),
-                    error_type: Some(error_type),
-                    detail: Some(error_detail.clone()),
-                  };
-                  let err_result = NodeRunResult {
-                    status: WorkflowNodeExecutionStatus::Failed,
-                    error: Some(error_info),
-                    ..Default::default()
-                  };
-
-                    if self.event_emitter.is_active() {
-                      self.event_emitter
-                        .emit(GraphEngineEvent::NodeRunFailed {
-                          id: exec_id,
-                          node_id: node_id.clone(),
-                          node_type: node_type.clone(),
-                          node_run_result: err_result,
-                          error: e.to_string(),
-                        })
-                        .await;
-
-                      self.event_emitter
-                        .emit(GraphEngineEvent::GraphRunFailed {
-                          error: e.to_string(),
-                          exceptions_count: self.exceptions_count,
-                        })
-                        .await;
-                    }
-
-                    return Err(WorkflowError::NodeExecutionError {
-                        node_id,
-                        error: e.to_string(),
-                      error_detail: Some(error_detail),
-                    });
-                }
-            }
-        }
-
-        // Emit final event
-        if self.event_emitter.is_active() {
-          if self.exceptions_count > 0 {
-            self.event_emitter
-              .emit(GraphEngineEvent::GraphRunPartialSucceeded {
-                exceptions_count: self.exceptions_count,
-                outputs: self.final_outputs.clone(),
-              })
-              .await;
-          } else {
-            self.event_emitter
-              .emit(GraphEngineEvent::GraphRunSucceeded {
-                outputs: self.final_outputs.clone(),
-              })
-              .await;
+        match self.apply_debug_action(action).await? {
+          DebugActionResult::Continue => {
+            pool_snapshot_for_exec = Some(pool_snapshot);
+          }
+          DebugActionResult::Abort(reason) => {
+            return Err(WorkflowError::Aborted(reason));
+          }
+          DebugActionResult::SkipNode => {
+            let downstream = self.skip_node_and_collect_ready(&node_id, info.is_branch);
+            queue.extend(downstream);
+            continue;
           }
         }
+      }
 
-        #[cfg(feature = "plugin-system")]
-        {
-          let _ = self
-            .execute_hooks(HookPoint::AfterWorkflowRun, || {
-              serde_json::json!({
-                "event": "after_workflow_run",
-                "outputs": self.final_outputs.clone(),
-                "exceptions_count": self.exceptions_count,
-              })
+      let exec_id = self.context.id_generator.next_id();
+
+      if let Err(e) = self
+        .check_security_before_node(&node_id, &info.node_type, &info.node_config)
+        .await
+      {
+        let error_detail = e.to_structured_json();
+        let error_info = crate::dsl::schema::NodeErrorInfo {
+          message: e.to_string(),
+          error_type: Some(e.error_code()),
+          detail: Some(error_detail.clone()),
+        };
+        if self.event_emitter.is_active() {
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::NodeRunFailed {
+              id: exec_id.clone(),
+              node_id: node_id.clone(),
+              node_type: info.node_type.clone(),
+              node_run_result: NodeRunResult {
+                status: WorkflowNodeExecutionStatus::Failed,
+                error: Some(error_info.clone()),
+                ..Default::default()
+              },
+              error: e.to_string(),
             })
-            .await?;
+            .await;
+
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::GraphRunFailed {
+              error: e.to_string(),
+              exceptions_count: self.exceptions_count,
+            })
+            .await;
         }
 
-        Ok(self.final_outputs.clone())
+        return Err(WorkflowError::NodeExecutionError {
+          node_id,
+          error: e.to_string(),
+          error_detail: Some(error_detail),
+        });
+      }
+
+      // Emit NodeRunStarted
+      if self.event_emitter.is_active() {
+        self
+          .event_emitter
+          .emit(GraphEngineEvent::NodeRunStarted {
+            id: exec_id.clone(),
+            node_id: node_id.clone(),
+            node_type: info.node_type.clone(),
+            node_title: info.node_title.clone(),
+            predecessor_node_id: None,
+          })
+          .await;
+      }
+
+      self
+        .emit_before_node_hooks(&node_id, &info.node_type, &info.node_title, &info.node_config)
+        .await?;
+
+      // Execute the node
+      let pool_snapshot = match pool_snapshot_for_exec {
+        Some(s) => s,
+        None => self.variable_pool.read().clone(),
+      };
+      let run_result = self
+        .execute_node_with_retry(
+          &exec_id,
+          &node_id,
+          &info.node_type,
+          &info.node_title,
+          &info.node_config,
+          &pool_snapshot,
+          &info.error_strategy,
+          &info.retry_config,
+          info.timeout_secs,
+        )
+        .await;
+
+      let run_result = match run_result {
+        Ok(result) => self
+          .enforce_output_limits(&node_id, &info.node_type, result)
+          .await,
+        Err(e) => Err(e),
+      };
+
+      match run_result {
+        Ok(result) => {
+          self
+            .handle_node_success(&exec_id, &node_id, &info, result, &mut queue)
+            .await?;
+        }
+        Err(e) => {
+          let err = self
+            .handle_node_failure(exec_id, node_id, &info, e)
+            .await;
+          return Err(err);
+        }
+      }
     }
+
+    // Emit final event
+    if self.event_emitter.is_active() {
+      if self.exceptions_count > 0 {
+        self
+          .event_emitter
+          .emit(GraphEngineEvent::GraphRunPartialSucceeded {
+            exceptions_count: self.exceptions_count,
+            outputs: self.final_outputs.clone(),
+          })
+          .await;
+      } else {
+        self
+          .event_emitter
+          .emit(GraphEngineEvent::GraphRunSucceeded {
+            outputs: self.final_outputs.clone(),
+          })
+          .await;
+      }
+    }
+
+    self.emit_after_workflow_hooks().await?;
+
+    Ok(self.final_outputs.clone())
+  }
 }
 
   fn calculate_retry_interval(
@@ -1186,7 +1050,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     interval.min(rc.max_retry_interval.max(0) as u64)
   }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "builtin-core-nodes"))]
 mod tests {
     use super::*;
     use crate::dsl::{parse_dsl, DslFormat};
@@ -1500,6 +1364,7 @@ edges:
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "builtin-transform-nodes")]
     #[tokio::test]
     async fn test_template_transform_pipeline() {
         let yaml = r#"
@@ -1556,6 +1421,7 @@ edges:
         assert_eq!(result.get("result"), Some(&Value::String("Hello World!".into())));
     }
 
+    #[cfg(all(feature = "builtin-transform-nodes", feature = "builtin-code-node"))]
     #[tokio::test]
     async fn test_variable_aggregator_pipeline() {
         let yaml = r#"

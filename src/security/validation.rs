@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DslValidationConfig {
@@ -51,7 +52,7 @@ impl Default for TemplateSafetyConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectorValidation {
-    pub allowed_prefixes: Vec<String>,
+    pub allowed_prefixes: HashSet<String>,
     pub max_depth: usize,
     pub max_length: usize,
 }
@@ -59,7 +60,7 @@ pub struct SelectorValidation {
 impl Default for SelectorValidation {
     fn default() -> Self {
         Self {
-            allowed_prefixes: vec!["sys".into(), "env".into()],
+            allowed_prefixes: ["sys".into(), "env".into()].into_iter().collect(),
             max_depth: 5,
             max_length: 256,
         }

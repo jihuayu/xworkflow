@@ -214,8 +214,7 @@ fn validate_selector_limits(
     let mut diags = Vec::new();
     let allow_all = selector_cfg
         .allowed_prefixes
-        .iter()
-        .any(|p| p == "*");
+        .contains("*");
 
     for node in &schema.nodes {
         let mut stack = vec![("data".to_string(), Value::Object(
@@ -325,7 +324,7 @@ fn apply_selector_limits(
         } else {
             selector.node_id()
         };
-        if !cfg.allowed_prefixes.iter().any(|p| p == root) {
+        if !cfg.allowed_prefixes.contains(root) {
             diags.push(types::Diagnostic {
                 level: types::DiagnosticLevel::Error,
                 code: "E422".to_string(),

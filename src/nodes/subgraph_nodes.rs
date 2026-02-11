@@ -829,6 +829,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "builtin-core-nodes", feature = "builtin-subgraph-nodes"))]
     async fn test_iteration_sequential() {
         let executor = IterationNodeExecutor::new();
         let context = RuntimeContext::default();
@@ -896,6 +897,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "builtin-core-nodes", feature = "builtin-subgraph-nodes"))]
     async fn test_list_operator_filter() {
         let executor = ListOperatorNodeExecutor::new();
         let context = RuntimeContext::default();

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use serde_json::Value;
 
-use xworkflow::core::variable_pool::{Segment, VariablePool};
+use xworkflow::core::variable_pool::{Segment, SegmentArray, Selector, VariablePool};
 
 mod helpers;
 
@@ -12,7 +13,7 @@ use helpers::pool_factories::{make_pool_with_objects, make_pool_with_strings, ma
 fn bench_variable_pool(c: &mut Criterion) {
     c.bench_function("pool_set_string", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "k".to_string()];
+        let selector = Selector::new("n", "k");
         b.iter(|| {
             pool.set(black_box(&selector), Segment::String("value".into()));
         });
@@ -20,7 +21,7 @@ fn bench_variable_pool(c: &mut Criterion) {
 
     c.bench_function("pool_get_hit", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "k".to_string()];
+        let selector = Selector::new("n", "k");
         pool.set(&selector, Segment::String("value".into()));
         b.iter(|| {
             let _ = black_box(pool.get(&selector));
@@ -29,7 +30,7 @@ fn bench_variable_pool(c: &mut Criterion) {
 
     c.bench_function("pool_get_miss", |b| {
         let pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "missing".to_string()];
+        let selector = Selector::new("n", "missing");
         b.iter(|| {
             let _ = black_box(pool.get(&selector));
         });
@@ -72,13 +73,15 @@ fn bench_variable_pool(c: &mut Criterion) {
     });
 
     c.bench_function("pool_append_array", |b| {
-        let selector = vec!["n".to_string(), "arr".to_string()];
+        let selector = Selector::new("n", "arr");
         b.iter_batched(
             || {
                 let mut pool = VariablePool::new();
                 pool.set(
                     &selector,
-                    Segment::Array(vec![Segment::Integer(1); 100]),
+                    Segment::Array(Arc::new(SegmentArray::new(
+                        vec![Segment::Integer(1); 100],
+                    ))),
                 );
                 pool
             },
@@ -91,7 +94,7 @@ fn bench_variable_pool(c: &mut Criterion) {
 
     c.bench_function("pool_has_check", |b| {
         let mut pool = VariablePool::new();
-        let selector = vec!["n".to_string(), "k".to_string()];
+        let selector = Selector::new("n", "k");
         pool.set(&selector, Segment::String("value".into()));
         b.iter(|| {
             let _ = black_box(pool.has(&selector));

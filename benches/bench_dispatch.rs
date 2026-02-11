@@ -1,8 +1,9 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
+use xworkflow::core::variable_pool::{Segment, SegmentArray, Selector, VariablePool};
 
 mod helpers;
 
@@ -34,7 +35,7 @@ fn build_items_pool(items: usize) -> VariablePool {
         .collect();
     pool.set(
         &Selector::new("start", "items"),
-        Segment::Array(values),
+        Segment::Array(Arc::new(SegmentArray::new(values))),
     );
     pool
 }

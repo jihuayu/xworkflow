@@ -99,6 +99,7 @@ mod tests {
         pool
     }
 
+    #[cfg(all(feature = "builtin-core-nodes", feature = "builtin-subgraph-nodes"))]
     #[tokio::test]
     async fn test_execute_simple_sub_graph() {
         let sub_graph = SubGraphDefinition {

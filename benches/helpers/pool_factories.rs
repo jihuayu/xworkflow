@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
+use xworkflow::core::variable_pool::{Segment, SegmentObject, Selector, VariablePool};
 
 pub fn make_pool_with_strings(count: usize, string_size: usize) -> VariablePool {
     let mut pool = VariablePool::new();
@@ -43,12 +44,12 @@ pub fn make_realistic_pool(node_count: usize) -> VariablePool {
     pool
 }
 
-fn build_object(depth: usize) -> HashMap<String, Segment> {
+fn build_object(depth: usize) -> Arc<SegmentObject> {
     if depth == 0 {
-        return HashMap::new();
+        return Arc::new(SegmentObject::new(HashMap::new()));
     }
     let mut map = HashMap::new();
     map.insert("value".into(), Segment::String("data".into()));
     map.insert("nested".into(), Segment::Object(build_object(depth - 1)));
-    map
+    Arc::new(SegmentObject::new(map))
 }

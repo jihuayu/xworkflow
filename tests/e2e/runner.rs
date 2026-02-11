@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use xworkflow::core::debug::{DebugConfig, DebugEvent, PauseLocation, PauseReason};
-use xworkflow::core::variable_pool::VariablePool;
+use xworkflow::core::Segment;
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::{
     EngineConfig,
@@ -957,7 +957,7 @@ pub async fn run_debug_case(case_dir: &Path) {
                 });
 
                 if step.expect_snapshot {
-                    let snapshot_event = tokio::time::timeout(
+                    let snapshot_event: std::collections::HashMap<String, Segment> = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         async {
                             loop {
@@ -974,11 +974,13 @@ pub async fn run_debug_case(case_dir: &Path) {
                     .await
                     .unwrap_or_else(|_| panic!("Step {}: Timed out waiting for snapshot", i));
 
+                    // snapshot_event 类型为 HashMap<String, Segment>
+
                     if let Some(expected_vars) = &step.expect_snapshot_contains {
                         for (key, expected_val) in expected_vars {
                             let parts: Vec<&str> = key.splitn(2, '.').collect();
                             if parts.len() == 2 {
-                                let pool_key = VariablePool::make_key(parts[0], parts[1]);
+                                let pool_key = format!("{}:{}", parts[0], parts[1]);
                                 let actual = snapshot_event.get(&pool_key);
                                 assert!(
                                     actual.is_some(),

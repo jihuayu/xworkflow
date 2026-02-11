@@ -1,7 +1,11 @@
+use compact_str::CompactString;
+use im::HashMap as ImHashMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{Notify, RwLock};
 
 pub const SCOPE_NODE_ID: &str = "__scope__";
@@ -69,8 +73,8 @@ impl Selector {
         self.node_id.is_empty() || self.variable_name.is_empty()
     }
 
-    pub(crate) fn pool_key(&self) -> String {
-        format!("{}:{}", self.node_id, self.variable_name)
+    pub(crate) fn pool_key(&self) -> CompactString {
+        VariablePool::make_key(&self.node_id, &self.variable_name)
     }
 }
 
@@ -135,10 +139,118 @@ pub enum Segment {
     Integer(i64),
     Float(f64),
     Boolean(bool),
-    Object(HashMap<String, Segment>),
-    ArrayString(Vec<String>),
-    Array(Vec<Segment>),
+    Object(Arc<SegmentObject>),
+    ArrayString(Arc<Vec<String>>),
+    Array(Arc<SegmentArray>),
     Stream(SegmentStream),
+}
+
+#[derive(Debug, Default)]
+pub struct SegmentArray {
+    items: Vec<Segment>,
+    cached_value: OnceLock<Value>,
+}
+
+impl SegmentArray {
+    pub fn new(items: Vec<Segment>) -> Self {
+        Self {
+            items,
+            cached_value: OnceLock::new(),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        self.cached_value
+            .get_or_init(|| Value::Array(self.items.iter().map(|s| s.to_value()).collect()))
+            .clone()
+    }
+
+    fn into_value(self) -> Value {
+        if let Some(v) = self.cached_value.into_inner() {
+            return v;
+        }
+        Value::Array(self.items.into_iter().map(|s| s.into_value()).collect())
+    }
+
+    fn push(&mut self, value: Segment) {
+        self.items.push(value);
+        self.cached_value = OnceLock::new();
+    }
+}
+
+impl Clone for SegmentArray {
+    fn clone(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            cached_value: OnceLock::new(),
+        }
+    }
+}
+
+impl Deref for SegmentArray {
+    type Target = Vec<Segment>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SegmentObject {
+    entries: HashMap<String, Segment>,
+    cached_value: OnceLock<Value>,
+}
+
+impl SegmentObject {
+    pub fn new(entries: HashMap<String, Segment>) -> Self {
+        Self {
+            entries,
+            cached_value: OnceLock::new(),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        self.cached_value
+            .get_or_init(|| {
+                let m: serde_json::Map<std::string::String, Value> = self
+                    .entries
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_value()))
+                    .collect();
+                Value::Object(m)
+            })
+            .clone()
+    }
+
+    fn into_value(self) -> Value {
+        if let Some(v) = self.cached_value.into_inner() {
+            return v;
+        }
+        Value::Object(
+            self
+                .entries
+                .into_iter()
+                .map(|(k, v)| (k, v.into_value()))
+                .collect(),
+        )
+    }
+}
+
+impl Clone for SegmentObject {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            cached_value: OnceLock::new(),
+        }
+    }
+}
+
+impl Deref for SegmentObject {
+    type Target = HashMap<String, Segment>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -192,7 +304,9 @@ pub enum StreamStatus {
 
 #[derive(Debug, Clone)]
 struct StreamState {
-    chunks: Vec<Segment>,
+    chunks: Arc<SegmentArray>,
+    buffer_bytes: usize,
+    limits: StreamLimits,
     status: StreamStatus,
     final_value: Option<Segment>,
     error: Option<String>,
@@ -202,42 +316,60 @@ struct StreamState {
 pub struct SegmentStream {
     state: Arc<RwLock<StreamState>>,
     notify: Arc<Notify>,
+    readers: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StreamWriter {
     state: Arc<RwLock<StreamState>>,
     notify: Arc<Notify>,
+    readers: Arc<AtomicUsize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StreamReader {
     stream: SegmentStream,
     cursor: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct StreamLimits {
+    pub max_chunks: Option<usize>,
+    pub max_buffer_bytes: Option<usize>,
+}
+
 impl SegmentStream {
     pub fn channel() -> (SegmentStream, StreamWriter) {
+        Self::channel_with_limits(StreamLimits::default())
+    }
+
+    pub fn channel_with_limits(limits: StreamLimits) -> (SegmentStream, StreamWriter) {
         let state = StreamState {
-            chunks: Vec::new(),
+            chunks: Arc::new(SegmentArray::new(Vec::new())),
+            buffer_bytes: 0,
+            limits,
             status: StreamStatus::Running,
             final_value: None,
             error: None,
         };
         let shared = Arc::new(RwLock::new(state));
         let notify = Arc::new(Notify::new());
+        let readers = Arc::new(AtomicUsize::new(0));
         let stream = SegmentStream {
             state: shared.clone(),
             notify: notify.clone(),
+            readers: readers.clone(),
         };
         let writer = StreamWriter {
             state: shared,
             notify,
+            readers,
         };
         (stream, writer)
     }
 
     pub fn reader(&self) -> StreamReader {
+        self.readers.fetch_add(1, Ordering::Relaxed);
         StreamReader {
             stream: self.clone(),
             cursor: 0,
@@ -286,12 +418,12 @@ impl SegmentStream {
     pub fn chunks(&self) -> Vec<Segment> {
         self.state
             .try_read()
-            .map(|s| s.chunks.clone())
+            .map(|s| s.chunks.items.clone())
             .unwrap_or_default()
     }
 
     pub async fn chunks_async(&self) -> Vec<Segment> {
-        self.state.read().await.chunks.clone()
+        self.state.read().await.chunks.items.clone()
     }
 
     pub async fn snapshot_segment_async(&self) -> Segment {
@@ -307,7 +439,7 @@ impl SegmentStream {
         match self.state.try_read() {
             Ok(snapshot) => (
                 snapshot.status.clone(),
-                snapshot.chunks.clone(),
+                snapshot.chunks.items.clone(),
                 snapshot.final_value.clone(),
                 snapshot.error.clone(),
             ),
@@ -334,9 +466,31 @@ impl StreamWriter {
         if state.status != StreamStatus::Running {
             return;
         }
-        state.chunks.push(chunk);
+        let chunk_bytes = chunk.estimate_bytes();
+        if let Some(max_chunks) = state.limits.max_chunks {
+            if state.chunks.len() >= max_chunks {
+                state.status = StreamStatus::Failed;
+                state.error = Some("stream buffer exceeded max chunks".to_string());
+                drop(state);
+                self.notify_readers();
+                return;
+            }
+        }
+        if let Some(max_bytes) = state.limits.max_buffer_bytes {
+            if state.buffer_bytes + chunk_bytes > max_bytes {
+                state.status = StreamStatus::Failed;
+                state.error = Some("stream buffer exceeded max bytes".to_string());
+                drop(state);
+                self.notify_readers();
+                return;
+            }
+        }
+
+        let chunks = Arc::make_mut(&mut state.chunks);
+        chunks.push(chunk);
+        state.buffer_bytes += chunk_bytes;
         drop(state);
-        self.notify.notify_waiters();
+        self.notify_readers();
     }
 
     pub async fn end(&self, final_value: Segment) {
@@ -347,7 +501,7 @@ impl StreamWriter {
         state.status = StreamStatus::Completed;
         state.final_value = Some(final_value);
         drop(state);
-        self.notify.notify_waiters();
+        self.notify_readers();
     }
 
     pub async fn error(&self, message: String) {
@@ -358,7 +512,31 @@ impl StreamWriter {
         state.status = StreamStatus::Failed;
         state.error = Some(message);
         drop(state);
-        self.notify.notify_waiters();
+        self.notify_readers();
+    }
+
+    fn notify_readers(&self) {
+        if self.readers.load(Ordering::Relaxed) <= 1 {
+            self.notify.notify_one();
+        } else {
+            self.notify.notify_waiters();
+        }
+    }
+}
+
+impl Drop for StreamReader {
+    fn drop(&mut self) {
+        self.stream.readers.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Clone for StreamReader {
+    fn clone(&self) -> Self {
+        self.stream.readers.fetch_add(1, Ordering::Relaxed);
+        StreamReader {
+            stream: self.stream.clone(),
+            cursor: self.cursor,
+        }
     }
 }
 
@@ -480,7 +658,7 @@ impl<'de> Deserialize<'de> for Segment {
 impl Segment {
     /// Explicitly construct a string array.
     pub fn string_array(items: Vec<String>) -> Self {
-        Segment::ArrayString(items)
+        Segment::ArrayString(Arc::new(items))
     }
 
     /// Convert Segment → serde_json::Value (non-stream only).
@@ -491,17 +669,40 @@ impl Segment {
             Segment::Integer(i) => serde_json::json!(*i),
             Segment::Float(f) => serde_json::json!(*f),
             Segment::Boolean(b) => Value::Bool(*b),
-            Segment::Object(map) => {
-                let m: serde_json::Map<std::string::String, Value> = map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.to_value()))
-                    .collect();
-                Value::Object(m)
-            }
+            Segment::Object(map) => map.to_value(),
             Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
-            Segment::Array(v) => Value::Array(v.iter().map(|s| s.to_value()).collect()),
+            Segment::Array(v) => v.to_value(),
             Segment::Stream(_) => panic!(
                 "Cannot call to_value() on Stream. Use snapshot_to_value() for explicit lossy conversion."
+            ),
+        }
+    }
+
+    /// Convert Segment → serde_json::Value (non-stream only), consuming self.
+    ///
+    /// This can reduce cloning on temporary segments (e.g. stream snapshots) by
+    /// moving keys/items when the underlying `Arc` is uniquely owned.
+    pub fn into_value(self) -> Value {
+        match self {
+            Segment::None => Value::Null,
+            Segment::String(s) => Value::String(s),
+            Segment::Integer(i) => serde_json::json!(i),
+            Segment::Float(f) => serde_json::json!(f),
+            Segment::Boolean(b) => Value::Bool(b),
+            Segment::Object(map) => match Arc::try_unwrap(map) {
+                Ok(obj) => obj.into_value(),
+                Err(arc) => arc.to_value(),
+            },
+            Segment::ArrayString(v) => match Arc::try_unwrap(v) {
+                Ok(items) => Value::Array(items.into_iter().map(Value::String).collect()),
+                Err(arc) => Value::Array(arc.iter().map(|s| Value::String(s.clone())).collect()),
+            },
+            Segment::Array(v) => match Arc::try_unwrap(v) {
+                Ok(arr) => arr.into_value(),
+                Err(arc) => arc.to_value(),
+            },
+            Segment::Stream(_) => panic!(
+                "Cannot call into_value() on Stream. Use snapshot_to_value() for explicit lossy conversion."
             ),
         }
     }
@@ -532,9 +733,11 @@ impl Segment {
             Value::String(s) => Segment::String(s.clone()),
             Value::Array(arr) => {
                 if arr.is_empty() {
-                    Segment::Array(Vec::new())
+                    Segment::Array(Arc::new(SegmentArray::new(Vec::new())))
                 } else {
-                    Segment::Array(arr.iter().map(Segment::from_value).collect())
+                    Segment::Array(Arc::new(SegmentArray::new(
+                        arr.iter().map(Segment::from_value).collect(),
+                    )))
                 }
             }
             Value::Object(map) => {
@@ -542,7 +745,7 @@ impl Segment {
                     .iter()
                     .map(|(k, v)| (k.clone(), Segment::from_value(v)))
                     .collect();
-                Segment::Object(m)
+                Segment::Object(Arc::new(SegmentObject::new(m)))
             }
         }
     }
@@ -648,7 +851,7 @@ impl std::fmt::Display for Segment {
 
 #[derive(Debug, Clone)]
 pub struct VariablePool {
-    variables: HashMap<String, Segment>,
+    variables: ImHashMap<CompactString, Segment>,
     #[cfg(feature = "security")]
     selector_validation: Option<crate::security::validation::SelectorValidation>,
     #[cfg(not(feature = "security"))]
@@ -658,7 +861,7 @@ pub struct VariablePool {
 impl VariablePool {
     pub fn new() -> Self {
         VariablePool {
-            variables: HashMap::new(),
+            variables: ImHashMap::new(),
             #[cfg(feature = "security")]
             selector_validation: None,
             #[cfg(not(feature = "security"))]
@@ -671,7 +874,7 @@ impl VariablePool {
         selector_validation: Option<crate::security::validation::SelectorValidation>,
     ) -> Self {
         VariablePool {
-            variables: HashMap::new(),
+            variables: ImHashMap::new(),
             selector_validation,
         }
     }
@@ -679,7 +882,7 @@ impl VariablePool {
     #[cfg(not(feature = "security"))]
     pub fn new_with_selector_validation(_selector_validation: Option<()>) -> Self {
         VariablePool {
-            variables: HashMap::new(),
+            variables: ImHashMap::new(),
             selector_validation: None,
         }
     }
@@ -704,16 +907,16 @@ impl VariablePool {
     }
 
     /// Build key from node_id and variable name.
-    pub fn make_key(node_id: &str, var_name: &str) -> String {
-        let mut key = String::with_capacity(node_id.len() + 1 + var_name.len());
+    pub fn make_key(node_id: &str, var_name: &str) -> CompactString {
+        let mut key = CompactString::with_capacity(node_id.len() + 1 + var_name.len());
         key.push_str(node_id);
         key.push(':');
         key.push_str(var_name);
         key
     }
 
-    fn key_prefix(node_id: &str) -> String {
-        let mut prefix = String::with_capacity(node_id.len() + 1);
+    fn key_prefix(node_id: &str) -> CompactString {
+        let mut prefix = CompactString::with_capacity(node_id.len() + 1);
         prefix.push_str(node_id);
         prefix.push(':');
         prefix
@@ -733,11 +936,11 @@ impl VariablePool {
             return false;
         }
 
-        if cfg.allowed_prefixes.iter().any(|p| p == "*") {
+        if cfg.allowed_prefixes.contains("*") {
             return true;
         }
         let prefix = selector.node_id();
-        cfg.allowed_prefixes.iter().any(|p| p == prefix)
+        cfg.allowed_prefixes.contains(prefix)
     }
 
     /// Get variable by selector: (node_id, var_name)
@@ -827,7 +1030,7 @@ impl VariablePool {
         let prefix = Self::key_prefix(node_id);
         self.variables
             .iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
+            .filter(|(key, _)| key.as_str().starts_with(prefix.as_str()))
             .filter_map(|(key, val)| {
                 key.split_once(':')
                     .map(|(_, var)| (var.to_string(), val.clone()))
@@ -838,35 +1041,41 @@ impl VariablePool {
     /// Remove all variables for a given node
     pub fn remove_node(&mut self, node_id: &str) {
         let prefix = Self::key_prefix(node_id);
-        self.variables.retain(|key, _| !key.starts_with(&prefix));
+        self.variables.retain(|key, _| !key.as_str().starts_with(prefix.as_str()));
     }
 
     /// Append value to an existing array variable
     pub fn append(&mut self, selector: &Selector, value: Segment) {
         let key = selector.pool_key();
-        let existing = self.variables.entry(key).or_insert(Segment::Array(vec![]));
+        let existing = self
+            .variables
+            .entry(key)
+            .or_insert_with(|| Segment::Array(Arc::new(SegmentArray::new(Vec::new()))));
         match existing {
-            Segment::Array(arr) => arr.push(value),
+            Segment::Array(arr) => {
+                let arr = Arc::make_mut(arr);
+                arr.push(value);
+            }
             Segment::ArrayString(arr) => match value {
-                Segment::String(s) => arr.push(s),
+                Segment::String(s) => {
+                    let arr = Arc::make_mut(arr);
+                    arr.push(s);
+                }
                 other => {
-                    let mut promoted: Vec<Segment> = arr
-                        .drain(..)
-                        .map(Segment::String)
-                        .collect();
+                    let mut promoted: Vec<Segment> = arr.iter().cloned().map(Segment::String).collect();
                     promoted.push(other);
-                    *existing = Segment::Array(promoted);
+                    *existing = Segment::Array(Arc::new(SegmentArray::new(promoted)));
                 }
             },
             Segment::String(s) => {
                 *s += &value.to_display_string();
             }
             Segment::None => {
-                *existing = Segment::Array(vec![value]);
+                *existing = Segment::Array(Arc::new(SegmentArray::new(vec![value])));
             }
             _ => {
                 let old = std::mem::replace(existing, Segment::None);
-                *existing = Segment::Array(vec![old, value]);
+                *existing = Segment::Array(Arc::new(SegmentArray::new(vec![old, value])));
             }
         }
     }
@@ -878,7 +1087,10 @@ impl VariablePool {
 
     /// Snapshot entire pool for serialization
     pub fn snapshot(&self) -> HashMap<String, Segment> {
-        self.variables.clone()
+        self.variables
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 }
 
@@ -948,7 +1160,7 @@ mod tests {
     fn test_append() {
         let mut pool = VariablePool::new();
         let sel = Selector::new("n", "arr");
-        pool.set(&sel, Segment::Array(vec![]));
+        pool.set(&sel, Segment::Array(Arc::new(SegmentArray::new(Vec::new()))));
         pool.append(&sel, Segment::Integer(1));
         pool.append(&sel, Segment::Integer(2));
         match pool.get(&sel) {
@@ -989,7 +1201,7 @@ mod tests {
     fn test_append_array_string_promote() {
         let mut pool = VariablePool::new();
         let sel = Selector::new("n", "arr");
-        pool.set(&sel, Segment::ArrayString(vec!["a".into()]));
+        pool.set(&sel, Segment::ArrayString(Arc::new(vec!["a".into()])));
         pool.append(&sel, Segment::Integer(1));
         match pool.get(&sel) {
             Segment::Array(v) => assert_eq!(v.len(), 2),

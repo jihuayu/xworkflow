@@ -54,6 +54,16 @@ impl DllPluginLoader {
     }
 
     unsafe fn load_rust_abi(&self, library: Library) -> Result<Box<dyn Plugin>, PluginError> {
+        let version = *library
+            .get::<*const u32>(b"XWORKFLOW_RUST_ABI_VERSION\0")
+            .map_err(|e| PluginError::MissingExport(e.to_string()))?;
+        if *version != self.abi_version {
+            return Err(PluginError::AbiVersionMismatch {
+                expected: self.abi_version,
+                actual: *version,
+            });
+        }
+
         let create_fn = library
             .get::<fn() -> Box<dyn Plugin>>(b"xworkflow_rust_plugin_create\0")
             .map_err(|e| PluginError::MissingExport(e.to_string()))?;

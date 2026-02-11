@@ -1,3 +1,5 @@
+#![cfg(feature = "plugin-system")]
+
 use std::fs;
 use std::sync::{Arc, RwLock};
 

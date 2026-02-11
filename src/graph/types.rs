@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::dsl::schema::EdgeHandle;
+use crate::dsl::schema::{EdgeHandle, ErrorStrategyConfig, RetryConfig};
 
 // ================================
 // Edge Traversal State
@@ -26,6 +26,9 @@ pub struct GraphNode {
     pub config: Value,
     pub version: String,
     pub state: EdgeTraversalState,
+    pub error_strategy: Option<ErrorStrategyConfig>,
+    pub retry_config: Option<RetryConfig>,
+    pub timeout_secs: Option<u64>,
 }
 
 // ================================
@@ -58,25 +61,32 @@ impl Graph {
     /// Check if a node is ready (all in-edges resolved, at least one taken)
     pub fn is_node_ready(&self, node_id: &str) -> bool {
         let edge_ids = match self.in_edges.get(node_id) {
-            Some(ids) => ids,
+            Some(ids) if !ids.is_empty() => ids,
             None => return node_id == self.root_node_id, // root has no in-edges
+            _ => return node_id == self.root_node_id,
         };
-        if edge_ids.is_empty() {
-            return node_id == self.root_node_id;
+        let (mut all_resolved, mut any_taken) = (true, false);
+        for eid in edge_ids {
+            if let Some(e) = self.edges.get(eid) {
+                match e.state {
+                    EdgeTraversalState::Pending => {
+                        all_resolved = false;
+                        break;
+                    }
+                    EdgeTraversalState::Taken => {
+                        any_taken = true;
+                    }
+                    EdgeTraversalState::Skipped => {}
+                }
+            }
         }
-        let all_resolved = edge_ids.iter().all(|eid| {
-            self.edges.get(eid).map_or(true, |e| e.state != EdgeTraversalState::Pending)
-        });
-        let any_taken = edge_ids.iter().any(|eid| {
-            self.edges.get(eid).map_or(false, |e| e.state == EdgeTraversalState::Taken)
-        });
         all_resolved && any_taken
     }
 
     /// Process normal (non-branch) edges after node completion: mark all out-edges as Taken
     pub fn process_normal_edges(&mut self, node_id: &str) {
-        if let Some(edge_ids) = self.out_edges.get(node_id).cloned() {
-            for eid in &edge_ids {
+        if let Some(edge_ids) = self.out_edges.get(node_id) {
+            for eid in edge_ids {
                 if let Some(edge) = self.edges.get_mut(eid) {
                     edge.state = EdgeTraversalState::Taken;
                 }
@@ -91,11 +101,11 @@ impl Graph {
             EdgeHandle::Default => "source",
         };
         let edge_ids = match self.out_edges.get(node_id) {
-            Some(ids) => ids.clone(),
+            Some(ids) => ids,
             None => return,
         };
         let mut skipped_targets = Vec::new();
-        for eid in &edge_ids {
+        for eid in edge_ids {
             if let Some(edge) = self.edges.get_mut(eid) {
                 let handle = edge.source_handle.as_deref().unwrap_or("source");
                 if handle == selected_handle {
@@ -131,29 +141,27 @@ impl Graph {
             node.state = EdgeTraversalState::Skipped;
         }
 
-        let out = self.out_edges.get(node_id).cloned().unwrap_or_default();
-        for eid in &out {
-            let target = {
+        if let Some(out) = self.out_edges.get(node_id) {
+            let mut targets = Vec::new();
+            for eid in out {
                 if let Some(edge) = self.edges.get_mut(eid) {
                     edge.state = EdgeTraversalState::Skipped;
-                    edge.target_node_id.clone()
-                } else {
-                    continue;
+                    targets.push(edge.target_node_id.clone());
                 }
-            };
-            self.propagate_skip(&target);
+            }
+            for target in targets {
+                self.propagate_skip(&target);
+            }
         }
     }
 
     /// Get downstream node IDs
-    pub fn get_downstream_node_ids(&self, node_id: &str) -> Vec<String> {
-        self.out_edges.get(node_id)
-            .map(|eids| {
-                eids.iter()
-                    .filter_map(|eid| self.edges.get(eid).map(|e| e.target_node_id.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+    pub fn downstream_node_ids(&self, node_id: &str) -> impl Iterator<Item = &str> {
+        self.out_edges
+            .get(node_id)
+            .into_iter()
+            .flat_map(|eids| eids.iter())
+            .filter_map(|eid| self.edges.get(eid).map(|e| e.target_node_id.as_str()))
     }
 
     /// Get node by ID
@@ -187,10 +195,12 @@ mod tests {
         nodes.insert("start".into(), GraphNode {
             id: "start".into(), node_type: "start".into(), title: "Start".into(),
             config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
+            error_strategy: None, retry_config: None, timeout_secs: None,
         });
         nodes.insert("end".into(), GraphNode {
             id: "end".into(), node_type: "end".into(), title: "End".into(),
             config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
+            error_strategy: None, retry_config: None, timeout_secs: None,
         });
 
         let mut edges = HashMap::new();
@@ -233,14 +243,17 @@ mod tests {
         nodes.insert("if".into(), GraphNode {
             id: "if".into(), node_type: "if-else".into(), title: "IF".into(),
             config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
+            error_strategy: None, retry_config: None, timeout_secs: None,
         });
         nodes.insert("a".into(), GraphNode {
             id: "a".into(), node_type: "code".into(), title: "A".into(),
             config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
+            error_strategy: None, retry_config: None, timeout_secs: None,
         });
         nodes.insert("b".into(), GraphNode {
             id: "b".into(), node_type: "code".into(), title: "B".into(),
             config: Value::Null, version: "1".into(), state: EdgeTraversalState::Pending,
+            error_strategy: None, retry_config: None, timeout_secs: None,
         });
 
         let mut edges = HashMap::new();
