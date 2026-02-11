@@ -8,4 +8,7 @@
 
 pub mod engine;
 
+#[cfg(feature = "builtin-template-jinja")]
+pub mod jinja;
+
 pub use engine::*;

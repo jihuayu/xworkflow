@@ -145,7 +145,7 @@ fn builtin_template_engine() -> Result<&'static Arc<dyn TemplateEngine>, String>
     {
         static ENGINE: OnceLock<Arc<dyn TemplateEngine>> = OnceLock::new();
         Ok(ENGINE.get_or_init(|| {
-            Arc::new(xworkflow_template_jinja::JinjaTemplateEngine::new())
+            Arc::new(crate::template::jinja::JinjaTemplateEngine::new())
                 as Arc<dyn TemplateEngine>
         }))
     }

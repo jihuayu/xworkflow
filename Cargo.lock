@@ -4954,6 +4954,7 @@ dependencies = [
  "futures",
  "im",
  "libloading",
+ "minijinja",
  "mockito",
  "parking_lot",
  "rand 0.8.5",
@@ -4976,7 +4977,6 @@ dependencies = [
  "wat",
  "xworkflow-sandbox-js",
  "xworkflow-sandbox-wasm",
- "xworkflow-template-jinja",
  "xworkflow-types",
 ]
 
@@ -4995,86 +4995,6 @@ version = "0.1.0"
 dependencies = [
  "xworkflow",
  "xworkflow-nodes-code",
-]
-
-[[package]]
-name = "xworkflow-nodes-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "xworkflow",
-]
-
-[[package]]
-name = "xworkflow-nodes-core-dylib"
-version = "0.1.0"
-dependencies = [
- "xworkflow",
- "xworkflow-nodes-core",
-]
-
-[[package]]
-name = "xworkflow-nodes-http"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "xworkflow",
-]
-
-[[package]]
-name = "xworkflow-nodes-http-dylib"
-version = "0.1.0"
-dependencies = [
- "xworkflow",
- "xworkflow-nodes-http",
-]
-
-[[package]]
-name = "xworkflow-nodes-llm"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "xworkflow",
-]
-
-[[package]]
-name = "xworkflow-nodes-llm-dylib"
-version = "0.1.0"
-dependencies = [
- "xworkflow",
- "xworkflow-nodes-llm",
-]
-
-[[package]]
-name = "xworkflow-nodes-subgraph"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "xworkflow",
-]
-
-[[package]]
-name = "xworkflow-nodes-subgraph-dylib"
-version = "0.1.0"
-dependencies = [
- "xworkflow",
- "xworkflow-nodes-subgraph",
-]
-
-[[package]]
-name = "xworkflow-nodes-transform"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "xworkflow",
-]
-
-[[package]]
-name = "xworkflow-nodes-transform-dylib"
-version = "0.1.0"
-dependencies = [
- "xworkflow",
- "xworkflow-nodes-transform",
 ]
 
 [[package]]
@@ -5111,15 +5031,6 @@ dependencies = [
  "tokio",
  "wasmtime",
  "wat",
- "xworkflow-types",
-]
-
-[[package]]
-name = "xworkflow-template-jinja"
-version = "0.1.0"
-dependencies = [
- "minijinja",
- "serde_json",
  "xworkflow-types",
 ]
 

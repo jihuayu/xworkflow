@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::plugin_system::{Plugin, PluginCategory, PluginContext, PluginError, PluginMetadata, PluginSource};
 
-use xworkflow_template_jinja::JinjaTemplateEngine;
+use crate::template::jinja::JinjaTemplateEngine;
 
 pub struct JinjaTemplatePlugin {
     metadata: PluginMetadata,
