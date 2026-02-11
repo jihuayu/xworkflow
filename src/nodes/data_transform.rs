@@ -3,12 +3,13 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 #[cfg(feature = "builtin-sandbox-js")]
-use boa_engine::{Context, Source};
+use xworkflow_sandbox_js::boa_engine::{Context, Source};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "builtin-sandbox-js")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "builtin-sandbox-js")]
 use tokio::sync::{mpsc, oneshot};
 
 use crate::core::runtime_context::RuntimeContext;
@@ -2586,6 +2587,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "builtin-sandbox-js")]
     fn test_escape_js_string_backslash_and_quote() {
         let result = escape_js_string("hello\\world");
         assert!(result.contains("\\\\"));

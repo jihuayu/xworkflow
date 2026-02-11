@@ -1,16 +1,20 @@
-use serde_json::json;
-
 #[cfg(feature = "builtin-sandbox-js")]
 use xworkflow::sandbox::{BuiltinSandbox, BuiltinSandboxConfig};
 #[cfg(feature = "builtin-sandbox-wasm")]
 use xworkflow::sandbox::{WasmSandbox, WasmSandboxConfig};
+#[cfg(any(feature = "builtin-sandbox-js", feature = "builtin-sandbox-wasm"))]
 use xworkflow::sandbox::CodeSandbox;
+#[cfg(any(feature = "builtin-sandbox-js", feature = "builtin-sandbox-wasm"))]
 use xworkflow::sandbox::{CodeLanguage, ExecutionConfig, SandboxRequest};
+#[cfg(any(feature = "builtin-sandbox-js", feature = "builtin-sandbox-wasm"))]
+use serde_json::json;
 
 use super::helpers::dhat_guard;
 
 #[cfg(feature = "builtin-sandbox-wasm")]
 use base64::Engine as _;
+#[cfg(feature = "builtin-sandbox-wasm")]
+use xworkflow_sandbox_wasm::parse_wat;
 
 #[cfg(feature = "builtin-sandbox-wasm")]
 fn basic_wasm_base64() -> String {
@@ -32,7 +36,7 @@ fn basic_wasm_base64() -> String {
     (func (export "main") (param i32 i32) (result i32)
     (i32.const 32))
 )"#;
-    let bytes = wat::parse_str(wat).expect("parse wat");
+    let bytes = parse_wat(wat).expect("parse wat");
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 

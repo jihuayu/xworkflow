@@ -231,7 +231,8 @@ mod tests {
         assert!(registry.get("assigner").is_some());
         // built-in http node
         assert!(registry.get("http-request").is_some());
-        // code node (lazy)
+        // code node (optional, only with builtin-code-node feature)
+        #[cfg(feature = "builtin-code-node")]
         assert!(registry.get("code").is_some());
         // subgraph nodes
         assert!(registry.get("list-operator").is_some());

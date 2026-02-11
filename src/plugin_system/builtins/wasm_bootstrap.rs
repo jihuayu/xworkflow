@@ -1,20 +1,30 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
+use anyhow::{anyhow, Result};
+use tokio::sync::mpsc;
+
+use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::VariablePool;
-use crate::dsl::schema::NodeRunResult;
-use crate::error::NodeError;
+use crate::core::variable_pool::{Segment, Selector, VariablePool};
+use crate::dsl::schema::{EdgeHandle, NodeOutputs, NodeRunResult, WorkflowNodeExecutionStatus};
+use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::plugin_system::wasm::{
+    read_wasm_bytes,
     AllowedCapabilities,
+    EventEmitter,
+    PluginError as WasmPluginError,
     PluginHook,
     PluginHookType,
     PluginManifest,
     PluginNodeType,
     PluginRuntime,
+    PluginState,
+    VariableAccess,
+    WasmEngine,
 };
 
 use super::super::context::PluginContext;
@@ -82,15 +92,13 @@ impl Plugin for WasmBootstrapPlugin {
 }
 
 pub struct WasmPluginLoader {
-    engine: wasmtime::Engine,
+    engine: WasmEngine,
     config: WasmPluginConfig,
 }
 
 impl WasmPluginLoader {
     pub fn new(config: WasmPluginConfig) -> Result<Self, PluginError> {
-        let mut cfg = wasmtime::Config::new();
-        cfg.consume_fuel(true);
-        let engine = wasmtime::Engine::new(&cfg)
+        let engine = WasmEngine::new()
             .map_err(|e| PluginError::LoadError(format!("Failed to create WASM engine: {}", e)))?;
         Ok(Self { engine, config })
     }
@@ -172,10 +180,11 @@ impl PluginLoader for WasmPluginLoader {
         }
 
         let wasm_path = plugin_dir.join(&manifest.wasm_file);
-        let wasm_bytes = read_wasm_bytes(&wasm_path)?;
+        let wasm_bytes = read_wasm_bytes(&wasm_path)
+            .map_err(|e| PluginError::LoadError(e.to_string()))?;
 
         let runtime = PluginRuntime::new_with_engine(
-            self.engine.clone(),
+            &self.engine,
             manifest.clone(),
             &wasm_bytes,
         )
@@ -208,6 +217,7 @@ impl Plugin for WasmPlugin {
             let executor = Box::new(WasmNodeExecutorAdapter {
                 runtime: self.runtime.clone(),
                 node_type: node.clone(),
+                manifest: self.manifest.clone(),
             });
             ctx.register_node_executor(&node.node_type, executor)?;
         }
@@ -217,6 +227,7 @@ impl Plugin for WasmPlugin {
                 let handler = Arc::new(WasmHookHandlerAdapter {
                     runtime: self.runtime.clone(),
                     hook: hook.clone(),
+                    manifest: self.manifest.clone(),
                 });
                 ctx.register_hook(point, handler)?;
             }
@@ -230,9 +241,47 @@ impl Plugin for WasmPlugin {
     }
 }
 
+struct VariablePoolAccess {
+    pool: Arc<RwLock<VariablePool>>,
+}
+
+impl VariableAccess for VariablePoolAccess {
+    fn get(&self, selector: &Value) -> Result<Value> {
+        let selector: Selector = serde_json::from_value(selector.clone())
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let pool = self.pool.read().map_err(|_| anyhow!("Variable pool poisoned"))?;
+        Ok(pool.get(&selector).snapshot_to_value())
+    }
+
+    fn set(&self, selector: &Value, value: &Value) -> Result<()> {
+        let selector: Selector = serde_json::from_value(selector.clone())
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let mut pool = self.pool.write().map_err(|_| anyhow!("Variable pool poisoned"))?;
+        pool.set(&selector, Segment::from_value(value));
+        Ok(())
+    }
+}
+
+struct GraphEventEmitter {
+    tx: mpsc::Sender<GraphEngineEvent>,
+    plugin_id: String,
+}
+
+impl EventEmitter for GraphEventEmitter {
+    fn emit(&self, event_type: &str, data: Value) -> Result<()> {
+        let _ = self.tx.try_send(GraphEngineEvent::PluginEvent {
+            plugin_id: self.plugin_id.clone(),
+            event_type: event_type.to_string(),
+            data,
+        });
+        Ok(())
+    }
+}
+
 struct WasmNodeExecutorAdapter {
     runtime: Arc<PluginRuntime>,
     node_type: PluginNodeType,
+    manifest: PluginManifest,
 }
 
 #[async_trait]
@@ -244,15 +293,35 @@ impl NodeExecutor for WasmNodeExecutorAdapter {
         variable_pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
-        self.runtime
-            .execute_node(&self.node_type, config, variable_pool, context)
-            .await
+        let pool = Arc::new(RwLock::new(variable_pool.clone()));
+        let state = build_state(&self.manifest, Some(pool), context.event_tx().cloned());
+        let output = self
+            .runtime
+            .execute_node(&self.node_type, config, state)
+            .map_err(map_wasm_error)?;
+
+        let mut outputs = std::collections::HashMap::new();
+        if let Value::Object(obj) = &output {
+            for (k, v) in obj {
+                outputs.insert(k.clone(), v.clone());
+            }
+        } else {
+            outputs.insert("result".to_string(), output);
+        }
+
+        Ok(NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
+            ..Default::default()
+        })
     }
 }
 
 struct WasmHookHandlerAdapter {
     runtime: Arc<PluginRuntime>,
     hook: PluginHook,
+    manifest: PluginManifest,
 }
 
 #[async_trait]
@@ -261,16 +330,11 @@ impl HookHandler for WasmHookHandlerAdapter {
         let pool = payload
             .variable_pool
             .as_ref()
-            .map(|p| Arc::new(std::sync::RwLock::new((**p).clone())));
+            .map(|p| Arc::new(RwLock::new((**p).clone())));
+        let state = build_state(&self.manifest, pool, payload.event_tx.clone());
         let output = self
             .runtime
-            .execute_hook(
-                self.hook.hook_type.clone(),
-                &payload.data,
-                pool.unwrap_or_else(|| Arc::new(std::sync::RwLock::new(VariablePool::new()))),
-                payload.event_tx.clone(),
-            )
-            .await
+            .execute_hook(self.hook.hook_type.clone(), &payload.data, state)
             .map_err(|e| PluginError::LoadError(e.to_string()))?;
         Ok(output)
     }
@@ -278,6 +342,27 @@ impl HookHandler for WasmHookHandlerAdapter {
     fn name(&self) -> &str {
         &self.hook.handler
     }
+}
+
+fn build_state(
+    manifest: &PluginManifest,
+    variable_pool: Option<Arc<RwLock<VariablePool>>>,
+    event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
+) -> PluginState {
+    let mut state = PluginState::new(manifest.id.clone(), manifest.capabilities.clone());
+
+    if let Some(pool) = variable_pool {
+        state = state.with_variable_access(Arc::new(VariablePoolAccess { pool }));
+    }
+
+    if let Some(tx) = event_tx {
+        state = state.with_event_emitter(Arc::new(GraphEventEmitter {
+            tx,
+            plugin_id: manifest.id.clone(),
+        }));
+    }
+
+    state
 }
 
 fn map_hook_point(hook_type: &PluginHookType) -> Option<HookPoint> {
@@ -290,15 +375,22 @@ fn map_hook_point(hook_type: &PluginHookType) -> Option<HookPoint> {
     }
 }
 
-fn read_wasm_bytes(path: &Path) -> Result<Vec<u8>, PluginError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| PluginError::LoadError(format!("Failed to read wasm: {}", e)))?;
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if ext.eq_ignore_ascii_case("wat") {
-            let text = String::from_utf8_lossy(&bytes);
-            return wat::parse_str(&text)
-                .map_err(|e| PluginError::LoadError(format!("Failed to parse wat: {}", e)));
+fn map_wasm_error(err: WasmPluginError) -> NodeError {
+    let context = match &err {
+        WasmPluginError::NotFound(_) => {
+            ErrorContext::non_retryable(ErrorCode::PluginNotFound, err.to_string())
         }
-    }
-    Ok(bytes)
+        WasmPluginError::Timeout | WasmPluginError::FuelExhausted => {
+            ErrorContext::retryable(ErrorCode::PluginExecutionError, err.to_string())
+        }
+        WasmPluginError::MemoryLimitExceeded => {
+            ErrorContext::non_retryable(ErrorCode::PluginResourceLimit, err.to_string())
+        }
+        WasmPluginError::CapabilityDenied(_) => {
+            ErrorContext::non_retryable(ErrorCode::PluginCapabilityDenied, err.to_string())
+        }
+        _ => ErrorContext::non_retryable(ErrorCode::PluginExecutionError, err.to_string()),
+    };
+
+    NodeError::ExecutionError(err.to_string()).with_context(context)
 }

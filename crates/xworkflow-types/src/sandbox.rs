@@ -50,6 +50,56 @@ pub trait CodeSandbox: Send + Sync {
 }
 
 // ================================
+// Code analysis and streaming
+// ================================
+
+/// Code security analysis result
+#[derive(Debug, Clone)]
+pub struct CodeAnalysisResult {
+    pub is_safe: bool,
+    pub violations: Vec<CodeViolation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeViolation {
+    pub kind: ViolationKind,
+    pub location: (usize, usize),
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ViolationKind {
+    DynamicExecution,
+    PrototypeTampering,
+    ForbiddenGlobal,
+    InfiniteLoopRisk,
+}
+
+/// Engine-agnostic code analyzer trait
+pub trait CodeAnalyzer: Send + Sync {
+    fn analyze(&self, code: &str) -> Result<CodeAnalysisResult, SandboxError>;
+}
+
+/// Streaming execution handle
+#[async_trait]
+pub trait StreamingSandboxHandle: Send + Sync {
+    async fn send_chunk(&self, var_name: &str, chunk: &str) -> Result<(), SandboxError>;
+    async fn end_stream(&self, var_name: &str) -> Result<(), SandboxError>;
+    async fn error_stream(&self, var_name: &str, error: &str) -> Result<(), SandboxError>;
+    async fn finalize(self: Box<Self>) -> Result<SandboxResult, SandboxError>;
+}
+
+/// Sandbox interface for streaming execution
+#[async_trait]
+pub trait StreamingSandbox: CodeSandbox {
+    async fn execute_streaming(
+        &self,
+        request: SandboxRequest,
+        stream_vars: Vec<String>,
+    ) -> Result<(Value, bool, Box<dyn StreamingSandboxHandle>), SandboxError>;
+}
+
+// ================================
 // Enums
 // ================================
 

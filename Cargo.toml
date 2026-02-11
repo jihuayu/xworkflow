@@ -49,14 +49,8 @@ regex = "1"
 base64 = "0.22"
 libloading = { version = "0.8", optional = true }
 url = "2.5"
-boa_engine = { version = "0.20", optional = true }
 compact_str = "0.8"
 im = "15"
-
-# WASM runtime (used by plugin system and WASM plugins)
-wasmtime = "27"
-wasmtime-wasi = "27"
-wat = "1"
 
 # JavaScript sandbox engine and WASM runtime moved to plugin crates
 rand = "0.8"
@@ -67,6 +61,7 @@ xworkflow-types = { path = "crates/xworkflow-types" }
 # Optional built-in plugin crates
 xworkflow-sandbox-js = { path = "crates/xworkflow-sandbox-js", optional = true }
 xworkflow-sandbox-wasm = { path = "crates/xworkflow-sandbox-wasm", optional = true }
+xworkflow-plugin-wasm = { path = "crates/xworkflow-plugin-wasm", optional = true }
 minijinja = { version = "2.0", features = ["builtins", "fuel"], optional = true }
 
 [dev-dependencies]
@@ -80,19 +75,17 @@ dhat = "0.3"
 default = [
 	"security",
 	"plugin-system",
-	"builtin-sandbox-js",
-	"builtin-sandbox-wasm",
 	"builtin-template-jinja",
 	"builtin-core-nodes",
 	"builtin-transform-nodes",
 	"builtin-http-node",
-	"builtin-code-node",
 	"builtin-subgraph-nodes",
 	"builtin-llm-node",
 ]
 security = ["xworkflow-sandbox-js?/security"]
+wasm-runtime = ["dep:xworkflow-plugin-wasm"]
 plugin-system = ["libloading"]
-builtin-sandbox-js = ["dep:xworkflow-sandbox-js", "dep:boa_engine"]
+builtin-sandbox-js = ["dep:xworkflow-sandbox-js"]
 builtin-sandbox-wasm = ["dep:xworkflow-sandbox-wasm"]
 builtin-template-jinja = ["dep:minijinja"]
 builtin-core-nodes = []
@@ -109,6 +102,7 @@ members = [
 	"crates/xworkflow-types",
 	"crates/xworkflow-sandbox-js",
 	"crates/xworkflow-sandbox-wasm",
+	"crates/xworkflow-plugin-wasm",
 	"crates/xworkflow-nodes-code",
 	"crates/xworkflow-nodes-code-dylib",
 ]
@@ -124,7 +118,59 @@ harness = false
 [[bench]]
 name = "bench_components"
 harness = false
+required-features = ["builtin-code-node", "wasm-runtime"]
 
 [[bench]]
 name = "bench_data_ops"
+harness = false
+
+[[bench]]
+name = "bench_meso_sandbox_wasm"
+harness = false
+required-features = ["builtin-sandbox-wasm"]
+
+[[bench]]
+name = "bench_meso_sandbox_js"
+harness = false
+required-features = ["builtin-sandbox-js"]
+
+[[bench]]
+name = "bench_meso_node_executors"
+harness = false
+required-features = ["builtin-code-node"]
+
+[[bench]]
+name = "bench_meso_dispatcher"
+harness = false
+
+[[bench]]
+name = "bench_macro_iteration"
+harness = false
+
+[[bench]]
+name = "bench_macro_scalability"
+harness = false
+
+[[bench]]
+name = "bench_macro_topology"
+harness = false
+
+[[bench]]
+name = "bench_micro_condition"
+harness = false
+
+[[bench]]
+name = "bench_micro_dsl"
+harness = false
+
+[[bench]]
+name = "bench_micro_segment"
+harness = false
+
+[[bench]]
+name = "bench_micro_template"
+harness = false
+
+[[bench]]
+name = "bench_micro_variable_pool"
 harness = false

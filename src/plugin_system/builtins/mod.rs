@@ -1,3 +1,4 @@
+#[cfg(feature = "wasm-runtime")]
 pub mod wasm_bootstrap;
 
 #[cfg(feature = "builtin-sandbox-js")]
@@ -7,6 +8,7 @@ pub mod sandbox_wasm;
 #[cfg(feature = "builtin-template-jinja")]
 pub mod template_jinja;
 
+#[cfg(feature = "wasm-runtime")]
 pub use wasm_bootstrap::{WasmBootstrapPlugin, WasmPluginConfig, WasmPluginLoader};
 
 #[cfg(feature = "builtin-sandbox-js")]

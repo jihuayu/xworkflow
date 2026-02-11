@@ -6,6 +6,9 @@ pub use lang_provide::{LanguageProvider, LanguageProviderWrapper, LANG_PROVIDE_K
 pub use sandbox::{
     CodeLanguage,
     CodeSandbox,
+    CodeAnalyzer,
+    CodeAnalysisResult,
+    CodeViolation,
     ExecutionConfig,
     HealthStatus,
     SandboxError,
@@ -13,5 +16,8 @@ pub use sandbox::{
     SandboxResult,
     SandboxStats,
     SandboxType,
+    StreamingSandbox,
+    StreamingSandboxHandle,
+    ViolationKind,
 };
 pub use template::{CompiledTemplateHandle, TemplateEngine, TemplateFunction};

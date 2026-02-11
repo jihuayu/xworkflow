@@ -4944,7 +4944,6 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "base64 0.22.1",
- "boa_engine",
  "chrono",
  "compact_str",
  "criterion",
@@ -4972,9 +4971,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "wasmtime",
- "wasmtime-wasi",
- "wat",
+ "xworkflow-plugin-wasm",
  "xworkflow-sandbox-js",
  "xworkflow-sandbox-wasm",
  "xworkflow-types",
@@ -4995,6 +4992,21 @@ version = "0.1.0"
 dependencies = [
  "xworkflow",
  "xworkflow-nodes-code",
+]
+
+[[package]]
+name = "xworkflow-plugin-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wat",
 ]
 
 [[package]]

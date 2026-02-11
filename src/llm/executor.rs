@@ -786,4 +786,43 @@ mod tests {
             Some(&Value::String("hello".into()))
         );
     }
+
+    #[tokio::test]
+    async fn test_llm_stream_task_completes() {
+        let mut registry = LlmProviderRegistry::new();
+        registry.register(Arc::new(MockProvider));
+        let executor = LlmNodeExecutor::new(Arc::new(registry));
+
+        let config = serde_json::json!({
+            "model": { "provider": "mock", "name": "mock" },
+            "prompt_template": [
+                { "role": "user", "text": "hello" }
+            ],
+            "stream": true
+        });
+
+        let pool = VariablePool::new();
+        let context = RuntimeContext::default();
+        let result = executor
+            .execute("llm1", &config, &pool, &context)
+            .await
+            .expect("llm execute");
+
+        let stream = match result.outputs {
+            NodeOutputs::Stream { streams, .. } => streams
+                .get("text")
+                .cloned()
+                .expect("stream output"),
+            other => panic!("expected stream outputs, got {:?}", other),
+        };
+
+        let collected = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.collect(),
+        )
+        .await
+        .expect("llm stream collect timed out");
+
+        assert!(collected.is_ok());
+    }
 }

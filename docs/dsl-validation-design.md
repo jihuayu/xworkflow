@@ -382,4 +382,4 @@ let json = serde_json::to_string_pretty(&report)?;
    - 分支节点边完整性的各种缺失场景
    - 变量选择器引用上游/下游/不存在节点
    - Jinja2 和 Dify 模板语法错误
-4. **集成测试**：使用现有 `tests/e2e/cases/` 中的合法 DSL 文件，确保全部 `is_valid == true`
+4. **集成测试**：使用现有 `tests/integration/cases/` 中的合法 DSL 文件，确保全部 `is_valid == true`

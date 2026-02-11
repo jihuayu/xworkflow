@@ -118,7 +118,7 @@ impl From<serde_json::Error> for NodeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::error_context::{ErrorCode, ErrorRetryability, ErrorSeverity};
+    use crate::error::error_context::ErrorCode;
 
     #[test]
     fn test_node_error_display() {

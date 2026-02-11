@@ -86,17 +86,6 @@ impl LlmProviderRegistry {
         self.providers.values().map(|p| p.info()).collect()
     }
 
-    /// Register a WASM-based provider from a manifest and raw wasm bytes.
-    pub fn register_wasm_provider(
-        &mut self,
-        manifest: provider::WasmProviderManifest,
-        wasm_bytes: &[u8],
-    ) -> Result<(), error::LlmError> {
-        let provider = provider::WasmLlmProvider::new(manifest, wasm_bytes)?;
-        self.register(Arc::new(provider));
-        Ok(())
-    }
-
     /// Create a registry pre-populated from environment variables.
     ///
     /// Currently reads `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_ORG_ID`.
@@ -246,7 +235,7 @@ mod tests {
 
 pub use error::LlmError;
 pub use executor::LlmNodeExecutor;
-pub use provider::{OpenAiConfig, OpenAiProvider, WasmLlmProvider, WasmProviderManifest};
+pub use provider::{OpenAiConfig, OpenAiProvider};
 pub use types::{
     ChatCompletionRequest,
     ChatCompletionResponse,

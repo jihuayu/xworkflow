@@ -20,7 +20,8 @@ pub mod traits;
 pub mod macros;
 pub mod loaders;
 pub mod builtins;
-pub mod wasm;
+#[cfg(feature = "wasm-runtime")]
+pub use xworkflow_plugin_wasm as wasm;
 
 pub use config::PluginSystemConfig;
 pub use context::PluginContext;

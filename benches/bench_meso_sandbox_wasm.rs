@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::Value;
-use wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
+use xworkflow_sandbox_wasm::wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
 
 use xworkflow::sandbox::{CodeLanguage, CodeSandbox, ExecutionConfig, SandboxRequest, WasmSandbox, WasmSandboxConfig};
 
@@ -92,7 +92,7 @@ fn bench_wasm_sandbox(c: &mut Criterion) {
 
     c.bench_function("wasm_instantiate_and_execute", |b| {
         let engine = Engine::default();
-        let bytes = wat::parse_str(BASIC_WAT).unwrap();
+        let bytes = xworkflow_sandbox_wasm::parse_wat(BASIC_WAT).unwrap();
         let module = Module::new(&engine, bytes).unwrap();
         let input = serde_json::json!({"value": 1});
         b.iter(|| {

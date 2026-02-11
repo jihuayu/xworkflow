@@ -92,7 +92,7 @@ fn bench_dsl(c: &mut Criterion) {
         let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
         let mut graph = build_graph(&schema).unwrap();
         b.iter(|| {
-            graph.process_branch_edges("if1", "c0");
+            graph.process_branch_edges("if1", &xworkflow::dsl::schema::EdgeHandle::Branch("c0".to_string()));
         });
     });
 }

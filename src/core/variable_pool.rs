@@ -795,7 +795,7 @@ impl Segment {
         Segment::ArrayString(Arc::new(items))
     }
 
-    /// Convert Segment → serde_json::Value (non-stream only).
+    /// Convert Segment → serde_json::Value, snapshotting streams if needed.
     pub fn to_value(&self) -> Value {
         match self {
             Segment::None => Value::Null,
@@ -806,13 +806,11 @@ impl Segment {
             Segment::Object(map) => map.to_value(),
             Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
             Segment::Array(v) => v.to_value(),
-            Segment::Stream(_) => panic!(
-                "Cannot call to_value() on Stream. Use snapshot_to_value() for explicit lossy conversion."
-            ),
+            Segment::Stream(_) => self.snapshot_to_value(),
         }
     }
 
-    /// Convert Segment → serde_json::Value (non-stream only), consuming self.
+    /// Convert Segment → serde_json::Value, consuming self (streams are snapshotted).
     ///
     /// This can reduce cloning on temporary segments (e.g. stream snapshots) by
     /// moving keys/items when the underlying `Arc` is uniquely owned.
@@ -835,9 +833,10 @@ impl Segment {
                 Ok(arr) => arr.into_value(),
                 Err(arc) => arc.to_value(),
             },
-            Segment::Stream(_) => panic!(
-                "Cannot call into_value() on Stream. Use snapshot_to_value() for explicit lossy conversion."
-            ),
+            Segment::Stream(stream) => {
+                let snapshot = stream.snapshot_segment();
+                snapshot.snapshot_to_value()
+            }
         }
     }
 
@@ -868,6 +867,12 @@ impl Segment {
             Value::Array(arr) => {
                 if arr.is_empty() {
                     Segment::Array(Arc::new(SegmentArray::new(Vec::new())))
+                } else if arr.iter().all(|v| v.is_string()) {
+                    let items = arr
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or_default().to_string())
+                        .collect();
+                    Segment::ArrayString(Arc::new(items))
                 } else {
                     Segment::Array(Arc::new(SegmentArray::new(
                         arr.iter().map(Segment::from_value).collect(),
@@ -974,6 +979,9 @@ impl PartialEq for Segment {
             (Segment::String(a), Segment::String(b)) => a == b,
             (Segment::Integer(a), Segment::Integer(b)) => a == b,
             (Segment::Float(a), Segment::Float(b)) => (a - b).abs() < 1e-10,
+            (Segment::Integer(a), Segment::Float(b)) | (Segment::Float(b), Segment::Integer(a)) => {
+                (*a as f64 - b).abs() < 1e-10
+            }
             (Segment::ArrayString(a), Segment::ArrayString(b)) => a == b,
             _ => self.snapshot_to_value() == other.snapshot_to_value(),
         }
@@ -1322,7 +1330,7 @@ mod tests {
     #[test]
     fn test_from_value_array_inference() {
         let seg = Segment::from_value(&serde_json::json!(["a", "b"]));
-        assert!(matches!(seg, Segment::Array(_)));
+        assert!(matches!(seg, Segment::ArrayString(_)));
 
         let seg = Segment::from_value(&serde_json::json!([1, 2, 3]));
         assert!(matches!(seg, Segment::Array(_)));
@@ -2029,5 +2037,99 @@ mod tests {
         // set_checked with very small memory limit
         let result = pool.set_checked(&sel, Segment::String("a very long string that uses bytes".into()), 100, 1);
         assert!(result.is_err());
+    }
+
+    // ---- Stream memory/lifecycle tests (moved from tests/memory/) ----
+
+    #[tokio::test]
+    async fn test_stream_writer_drop_without_end_collect_fails() {
+        let (stream, writer) = SegmentStream::channel();
+        writer.send(Segment::String("chunk1".into())).await;
+        drop(writer);
+
+        let result = stream.collect().await;
+        assert!(result.is_err(), "expected stream to fail after writer drop");
+    }
+
+    #[tokio::test]
+    async fn test_stream_reader_drop_decrements_count() {
+        let (stream, writer) = SegmentStream::channel();
+        let r1 = stream.reader();
+        let r2 = stream.reader();
+        let r3 = stream.reader();
+
+        assert_eq!(stream.debug_readers_count(), 3);
+
+        drop(r1);
+        assert_eq!(stream.debug_readers_count(), 2);
+        drop(r2);
+        assert_eq!(stream.debug_readers_count(), 1);
+        drop(r3);
+        assert_eq!(stream.debug_readers_count(), 0);
+
+        writer.end(Segment::String("done".into())).await;
+        let result = stream.collect().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_stream_arc_cleanup_after_completion() {
+        let (stream, writer) = SegmentStream::channel();
+        let weak = stream.debug_state_weak();
+
+        writer.end(Segment::String("final".into())).await;
+        let _ = stream.collect().await;
+
+        drop(writer);
+        drop(stream);
+
+        assert!(weak.is_dropped(), "stream state Arc should be released");
+    }
+
+    #[tokio::test]
+    async fn test_stream_multiple_readers_partial_drop() {
+        let (stream, writer) = SegmentStream::channel();
+        let mut r1 = stream.reader();
+        let r2 = stream.reader();
+
+        writer.send(Segment::String("chunk".into())).await;
+        writer.end(Segment::String("done".into())).await;
+
+        let mut events = Vec::new();
+        while let Some(e) = r1.next().await {
+            events.push(e);
+            if matches!(events.last(), Some(StreamEvent::End(_))) {
+                break;
+            }
+        }
+
+        assert_eq!(events.len(), 2);
+
+        drop(r1);
+        drop(r2);
+        assert_eq!(stream.debug_readers_count(), 0);
+    }
+
+    // ---- Pool structural sharing test (moved from tests/memory/) ----
+
+    #[tokio::test]
+    async fn test_pool_clone_structural_sharing() {
+        let mut pool = VariablePool::new();
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("k".to_string(), Segment::String("v".into()));
+        let obj = Arc::new(SegmentObject::new(entries));
+
+        pool.set(&Selector::new("node", "obj"), Segment::Object(obj.clone()));
+        assert_eq!(Arc::strong_count(&obj), 2);
+
+        let mut clone = pool.clone();
+        assert_eq!(Arc::strong_count(&obj), 2);
+
+        clone.set(
+            &Selector::new("node", "obj"),
+            Segment::String("override".into()),
+        );
+
+        assert_eq!(Arc::strong_count(&obj), 2);
     }
 }

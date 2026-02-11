@@ -497,7 +497,7 @@ mod tests {
   #[cfg(feature = "security")]
   #[tokio::test]
   async fn test_real_security_gate_with_governor_variable_pool_ok() {
-    use crate::security::{ResourceGroup, ResourceGovernor};
+    use crate::security::ResourceGroup;
     use crate::security::resource_group::ResourceQuota;
     use crate::security::policy::SecurityLevel;
     use crate::security::governor::InMemoryResourceGovernor;
@@ -603,8 +603,6 @@ mod tests {
   #[cfg(feature = "security")]
   #[tokio::test]
   async fn test_real_security_gate_enforce_output_with_policy_under_limit() {
-    use crate::security::ResourceGroup;
-    use crate::security::resource_group::ResourceQuota;
     use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
     use crate::core::runtime_context::SecurityContext;
     use crate::dsl::schema::{NodeOutputs, NodeRunResult};

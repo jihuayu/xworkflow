@@ -1,12 +1,8 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use tokio::sync::mpsc;
-use wasmtime::{Caller, Linker, Memory, StoreLimits};
-
-use crate::core::event_bus::GraphEngineEvent;
-use crate::core::variable_pool::{Segment, VariablePool};
+use wasmtime::{Caller, Linker, Memory, StoreLimits, StoreLimitsBuilder};
 
 use super::error::PluginError;
 use super::manifest::PluginCapabilities;
@@ -14,15 +10,48 @@ use super::manifest::PluginCapabilities;
 /// Host module name
 pub const HOST_MODULE: &str = "xworkflow";
 
+pub trait VariableAccess: Send + Sync {
+    fn get(&self, selector: &Value) -> Result<Value>;
+    fn set(&self, selector: &Value, value: &Value) -> Result<()>;
+}
+
+pub trait EventEmitter: Send + Sync {
+    fn emit(&self, event_type: &str, data: Value) -> Result<()>;
+}
+
 /// Runtime state for each plugin invocation
 pub struct PluginState {
     pub wasi: wasmtime_wasi::preview1::WasiP1Ctx,
-    pub variable_pool: Option<Arc<RwLock<VariablePool>>>,
-    pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
+    pub variable_access: Option<Arc<dyn VariableAccess>>,
+    pub event_emitter: Option<Arc<dyn EventEmitter>>,
     pub capabilities: PluginCapabilities,
     pub limits: StoreLimits,
     pub plugin_id: String,
     pub host_buffers: Vec<Vec<u8>>,
+}
+
+impl PluginState {
+    pub fn new(plugin_id: String, capabilities: PluginCapabilities) -> Self {
+        Self {
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build_p1(),
+            variable_access: None,
+            event_emitter: None,
+            capabilities,
+            limits: StoreLimitsBuilder::new().build(),
+            plugin_id,
+            host_buffers: Vec::new(),
+        }
+    }
+
+    pub fn with_variable_access(mut self, access: Arc<dyn VariableAccess>) -> Self {
+        self.variable_access = Some(access);
+        self
+    }
+
+    pub fn with_event_emitter(mut self, emitter: Arc<dyn EventEmitter>) -> Self {
+        self.event_emitter = Some(emitter);
+        self
+    }
 }
 
 /// Register host functions into linker
@@ -99,18 +128,14 @@ fn var_get_impl(
         return Err(anyhow!("Capability denied: read_variables"));
     }
     let selector_bytes = read_bytes(&mut caller, selector_ptr, selector_len)?;
-    let selector: crate::core::variable_pool::Selector = serde_json::from_slice(&selector_bytes)
+    let selector: Value = serde_json::from_slice(&selector_bytes)
         .map_err(|e| anyhow!(e.to_string()))?;
-    let pool = caller
+    let access = caller
         .data()
-        .variable_pool
+        .variable_access
         .as_ref()
-        .ok_or_else(|| anyhow!("Variable pool not available"))?;
-    let value = pool
-        .read()
-        .map_err(|_| anyhow!("Variable pool poisoned"))?
-        .get(&selector)
-        .snapshot_to_value();
+        .ok_or_else(|| anyhow!("Variable access not available"))?;
+    let value = access.get(&selector)?;
     write_json_to_guest(&mut caller, &value)
 }
 
@@ -125,19 +150,17 @@ fn var_set_impl(
         return Ok(-1);
     }
     let selector_bytes = read_bytes(&mut caller, selector_ptr, selector_len)?;
-    let selector: crate::core::variable_pool::Selector = serde_json::from_slice(&selector_bytes)
+    let selector: Value = serde_json::from_slice(&selector_bytes)
         .map_err(|e| anyhow!(e.to_string()))?;
     let value_bytes = read_bytes(&mut caller, value_ptr, value_len)?;
     let value: Value = serde_json::from_slice(&value_bytes)
         .map_err(|e| anyhow!(e.to_string()))?;
-    let pool = caller
+    let access = caller
         .data()
-        .variable_pool
+        .variable_access
         .as_ref()
-        .ok_or_else(|| anyhow!("Variable pool not available"))?;
-    pool.write()
-        .map_err(|_| anyhow!("Variable pool poisoned"))?
-        .set(&selector, Segment::from_value(&value));
+        .ok_or_else(|| anyhow!("Variable access not available"))?;
+    access.set(&selector, &value)?;
     Ok(0)
 }
 
@@ -172,12 +195,8 @@ fn emit_event_impl(
         .unwrap_or("unknown")
         .to_string();
     let data = payload.get("data").cloned().unwrap_or(Value::Null);
-    if let Some(tx) = &caller.data().event_tx {
-        let _ = tx.try_send(GraphEngineEvent::PluginEvent {
-            plugin_id: caller.data().plugin_id.clone(),
-            event_type,
-            data,
-        });
+    if let Some(emitter) = &caller.data().event_emitter {
+        emitter.emit(&event_type, data)?;
         return Ok(0);
     }
     Ok(-1)

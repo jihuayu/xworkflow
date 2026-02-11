@@ -1836,7 +1836,7 @@ edges:
 
     #[test]
     fn test_dispatcher_resource_weak_dropped() {
-        use std::sync::Weak;
+
         let graph = Arc::new(RwLock::new(
             crate::graph::build_graph(&crate::dsl::parse_dsl(
                 r#"version: "0.1.0"
@@ -1982,4 +1982,50 @@ enum DebugActionResult {
   Continue,
   Abort(String),
   SkipNode,
+}
+
+#[cfg(test)]
+mod emitter_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_event_emitter_send_after_rx_drop() {
+        let (tx, rx) = mpsc::channel(8);
+        drop(rx);
+
+        let active = Arc::new(AtomicBool::new(true));
+        let emitter = EventEmitter::new(tx, active);
+
+        // emit should not panic even when receiver is dropped
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            emitter.emit(GraphEngineEvent::GraphRunStarted),
+        )
+        .await
+        .expect("emit after drop should complete quickly");
+    }
+
+    #[tokio::test]
+    async fn test_event_collector_exits_on_channel_close() {
+        let (tx, mut rx) = mpsc::channel::<()>(256);
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_clone = exited.clone();
+
+        tokio::spawn(async move {
+            while let Some(_event) = rx.recv().await {}
+            exited_clone.store(true, Ordering::SeqCst);
+        });
+
+        drop(tx);
+
+        let start = tokio::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(2);
+        let interval = std::time::Duration::from_millis(50);
+        while !exited.load(Ordering::SeqCst) {
+            if start.elapsed() > timeout {
+                panic!("condition 'collector exit' not met within {:?}", timeout);
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
 }

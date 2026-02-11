@@ -48,6 +48,7 @@ pub struct SandboxManager {
 
 impl SandboxManager {
     /// Create a new sandbox manager
+    #[allow(unused_mut)]
     pub fn new(config: SandboxManagerConfig) -> Self {
         let mut manager = Self::new_empty(config);
 

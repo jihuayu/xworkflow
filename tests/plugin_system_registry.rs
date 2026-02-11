@@ -1,4 +1,4 @@
-#![cfg(feature = "plugin-system")]
+#![cfg(feature = "wasm-runtime")]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,7 +10,10 @@ use xworkflow::dsl::schema::{NodeRunResult, WorkflowNodeExecutionStatus};
 use xworkflow::error::NodeError;
 use xworkflow::nodes::executor::NodeExecutor;
 use xworkflow::plugin_system::wasm::{
-    PluginCapabilities, PluginManifest, PluginNodeType,
+    parse_wat_str,
+    PluginCapabilities,
+    PluginManifest,
+    PluginNodeType,
 };
 use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
 use xworkflow::plugin_system::loaders::{DllPluginLoader, HostPluginLoader};
@@ -191,7 +194,7 @@ async fn test_wasm_bootstrap_loader() {
     let plugin_dir = temp.path().join("com.example.echo");
     std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
 
-    let wasm_bytes = wat::parse_str(basic_plugin_wat()).expect("parse wat");
+    let wasm_bytes = parse_wat_str(basic_plugin_wat()).expect("parse wat");
     std::fs::write(plugin_dir.join("plugin.wasm"), wasm_bytes).expect("write wasm");
 
     let manifest = PluginManifest {
