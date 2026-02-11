@@ -7,6 +7,8 @@ use xworkflow::sandbox::{WasmSandbox, WasmSandboxConfig};
 use xworkflow::sandbox::CodeSandbox;
 use xworkflow::sandbox::{CodeLanguage, ExecutionConfig, SandboxRequest};
 
+use super::helpers::dhat_guard;
+
 #[cfg(feature = "builtin-sandbox-wasm")]
 use base64::Engine as _;
 
@@ -37,7 +39,7 @@ fn basic_wasm_base64() -> String {
 #[tokio::test]
 #[cfg(feature = "builtin-sandbox-wasm")]
 async fn test_wasm_store_cleanup_after_execution() {
-    let _profiler = dhat::Profiler::new_heap();
+    let _guard = dhat_guard();
     let sandbox = WasmSandbox::new(WasmSandboxConfig::default());
     let request = SandboxRequest {
         code: basic_wasm_base64(),
@@ -57,7 +59,7 @@ async fn test_wasm_store_cleanup_after_execution() {
 #[tokio::test]
 #[cfg(feature = "builtin-sandbox-wasm")]
 async fn test_wasm_repeated_execution_memory() {
-    let _profiler = dhat::Profiler::new_heap();
+    let _guard = dhat_guard();
     let sandbox = WasmSandbox::new(WasmSandboxConfig::default());
 
     for _ in 0..5 {
@@ -90,7 +92,7 @@ async fn test_wasm_repeated_execution_memory() {
 #[tokio::test]
 #[cfg(feature = "builtin-sandbox-js")]
 async fn test_js_context_cleanup_after_execution() {
-    let _profiler = dhat::Profiler::new_heap();
+    let _guard = dhat_guard();
     let sandbox = BuiltinSandbox::new(BuiltinSandboxConfig::default());
 
     let request = SandboxRequest {
@@ -111,7 +113,7 @@ async fn test_js_context_cleanup_after_execution() {
 #[tokio::test]
 #[cfg(feature = "builtin-sandbox-js")]
 async fn test_js_repeated_execution_memory() {
-    let _profiler = dhat::Profiler::new_heap();
+    let _guard = dhat_guard();
     let sandbox = BuiltinSandbox::new(BuiltinSandboxConfig::default());
 
     for _ in 0..5 {

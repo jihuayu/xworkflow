@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use xworkflow::{ExecutionStatus, WorkflowRunner};
 
-use super::helpers::simple_workflow_schema;
+use super::helpers::{dhat_guard, simple_workflow_schema};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -21,7 +21,7 @@ async fn run_simple_workflow() {
 
 #[test]
 fn test_repeated_workflow_execution_memory_stable() {
-    let _profiler = dhat::Profiler::new_heap();
+    let _guard = dhat_guard();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -51,7 +51,7 @@ fn test_repeated_workflow_execution_memory_stable() {
 
 #[test]
 fn test_concurrent_workflow_execution_memory_stable() {
-    let _profiler = dhat::Profiler::new_heap();
+    let _guard = dhat_guard();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

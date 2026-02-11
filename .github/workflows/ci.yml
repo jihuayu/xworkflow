@@ -24,8 +24,20 @@ jobs:
           shared-key: ci-build
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Run tests
-        run: cargo test --no-fail-fast --workspace
+      - name: Run unit tests
+        run: cargo test --no-fail-fast --workspace --lib --bins
+
+      - name: Run doc tests
+        run: cargo test --no-fail-fast --workspace --doc
+
+      - name: Run integration tests
+        run: |
+          cargo test --no-fail-fast --workspace --test e2e_tests
+          cargo test --no-fail-fast --workspace --test plugin_system_registry
+          cargo test --no-fail-fast --workspace --test plugin_system_tests
+
+      - name: Run memory tests (single-thread)
+        run: cargo test --no-fail-fast --workspace --test memory_tests -- --test-threads=1
 
   bench:
     name: Benchmark

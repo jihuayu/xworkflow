@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -64,6 +64,21 @@ pub fn assert_arc_dropped<T>(weak: &Weak<T>, label: &str) {
         "{} still alive (strong_count > 0)",
         label
     );
+}
+
+pub struct DhatGuard<'a> {
+    _profiler: dhat::Profiler,
+    _lock: MutexGuard<'a, ()>,
+}
+
+pub fn dhat_guard() -> DhatGuard<'static> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let profiler = dhat::Profiler::new_heap();
+    DhatGuard {
+        _profiler: profiler,
+        _lock: lock,
+    }
 }
 
 #[test]
