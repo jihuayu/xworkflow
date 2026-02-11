@@ -36,9 +36,9 @@
 
 | 类型 | 文件 | 用例数 |
 |------|------|--------|
-| E2E 常规 | `tests/e2e_tests.rs` | 74 个 case (001-074) |
-| E2E 调试 | `tests/e2e_tests.rs` | 7 个 case (050-056) |
-| E2E 插件 | `tests/e2e_tests.rs` | 5 个 case (plugin-system feature) |
+| E2E 常规 | `tests/integration_tests.rs` | 74 个 case (001-074) |
+| E2E 调试 | `tests/integration_tests.rs` | 7 个 case (050-056) |
+| E2E 插件 | `tests/integration_tests.rs` | 5 个 case (plugin-system feature) |
 | 插件系统 | `tests/plugin_system_tests.rs` | 6 个测试 |
 | 插件注册表 | `tests/plugin_system_registry.rs` | 2 个测试 |
 

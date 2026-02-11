@@ -1900,4 +1900,4 @@ async fn test_template_no_stream_unchanged() {
 
 ### 7.7 现有 E2E 测试回归
 
-所有 `tests/e2e/cases/` 中的测试用例应通过。改动不影响已有的值转换结果——移除的变体从未在运行时被创建过，因此不会改变任何现有行为。
+所有 `tests/integration/cases/` 中的测试用例应通过。改动不影响已有的值转换结果——移除的变体从未在运行时被创建过，因此不会改变任何现有行为。

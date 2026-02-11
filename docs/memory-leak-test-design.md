@@ -620,7 +620,7 @@ pub async fn wait_for_condition(
 | `benches/helpers/mod.rs` — `DispatcherSetup`, `bench_context()` | 构造 Dispatcher 实例 |
 | `benches/helpers/pool_factories.rs` — `make_realistic_pool()` 等 | 创建测试用 VariablePool |
 | `benches/helpers/workflow_builders.rs` — `build_linear_workflow()` 等 | 构造测试工作流图 |
-| `tests/e2e/runner.rs` — `run_case()` 模式 | 参考 WorkflowRunner 构建模式 |
+| `tests/integration/runner.rs` — `run_case()` 模式 | 参考 WorkflowRunner 构建模式 |
 
 ### 4.5 CI 集成
 

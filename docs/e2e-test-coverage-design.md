@@ -25,10 +25,10 @@
 
 ### 目录结构
 
-每个测试用例是 `tests/e2e/cases/` 下的一个目录，包含 4 个 JSON 文件：
+每个测试用例是 `tests/integration/cases/` 下的一个目录，包含 4 个 JSON 文件：
 
 ```
-tests/e2e/cases/079_iteration_sequential/
+tests/integration/cases/079_iteration_sequential/
 ├── workflow.json   # 工作流 DSL 定义
 ├── in.json         # 用户输入变量
 ├── out.json        # 预期输出（status, outputs, partial_match, error_contains）
@@ -37,7 +37,7 @@ tests/e2e/cases/079_iteration_sequential/
 
 ### 注册测试
 
-在 `tests/e2e_tests.rs` 的 `e2e_test_cases!` 宏中添加条目：
+在 `tests/integration_tests.rs` 的 `e2e_test_cases!` 宏中添加条目：
 
 ```rust
 // 在现有 case_074 之后添加
@@ -1440,11 +1440,11 @@ function main(inputs) { return { value: inputs.accumulator + inputs.item }; }
 
 ```bash
 # 运行所有 e2e 测试
-cargo test --test e2e_tests
+cargo test --test integration_tests
 
 # 查看覆盖率
-cargo llvm-cov --test e2e_tests
+cargo llvm-cov --test integration_tests
 
 # 单独运行某个测试
-cargo test --test e2e_tests case_079_iteration_sequential
+cargo test --test integration_tests case_079_iteration_sequential
 ```

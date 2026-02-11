@@ -112,7 +112,7 @@ impl WorkflowRunnerBuilder {
 
 ```
 tests/
-  e2e/
+  integration/
     mod.rs                   # 模块声明
     runner.rs                # TestCase 加载/执行/比较逻辑
     macros.rs                # 宏：为每个用例文件夹生成独立 #[tokio::test]
@@ -127,7 +127,7 @@ tests/
       003_template_transform/
         ...
 tests/
-  e2e_tests.rs              # 集成测试入口，调用宏展开
+  integration_tests.rs      # 集成测试入口，调用宏展开
 ```
 
 ---
@@ -180,7 +180,7 @@ tests/
 
 ## 四、测试运行器实现
 
-### 4.1 宏生成独立测试（`tests/e2e/macros.rs`）
+### 4.1 宏生成独立测试（`tests/integration/macros.rs`）
 
 ```rust
 /// 为指定目录下每个子文件夹生成一个独立的 #[tokio::test]
@@ -192,19 +192,19 @@ macro_rules! e2e_test_cases {
                 let case_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join($dir)
                     .join(stringify!($name));
-                crate::e2e::runner::run_case(&case_dir).await;
+                crate::integration::runner::run_case(&case_dir).await;
             }
         )*
     };
 }
 ```
 
-### 4.2 `tests/e2e_tests.rs` 入口
+### 4.2 `tests/integration_tests.rs` 入口
 
 ```rust
-mod e2e;
+mod integration;
 
-e2e::e2e_test_cases!("tests/e2e/cases",
+integration::e2e_test_cases!("tests/integration/cases",
     001_simple_passthrough,
     002_ifelse_true_branch,
     003_template_transform,
@@ -213,7 +213,7 @@ e2e::e2e_test_cases!("tests/e2e/cases",
 
 每新增一个用例文件夹，只需在宏调用中加一行。每个用例是独立的 `#[tokio::test]`，可并行运行，失败定位精确。
 
-### 4.3 `tests/e2e/runner.rs` 核心逻辑
+### 4.3 `tests/integration/runner.rs` 核心逻辑
 
 ```rust
 pub async fn run_case(case_dir: &Path) {
@@ -257,10 +257,10 @@ pub async fn run_case(case_dir: &Path) {
 5. **重写 `src/scheduler.rs`**：删除 WorkflowScheduler，实现 WorkflowRunner builder
 6. **更新 `src/core/mod.rs` 和 `src/lib.rs`**：导出新类型
 7. **迁移 `src/main.rs` 和 `examples/scheduler_demo.rs`**：使用新 API
-8. **新增 `tests/e2e/` 目录**：runner.rs + macros.rs + 3 个初始用例
-9. **新增 `tests/e2e_tests.rs`**：宏展开入口
+8. **新增 `tests/integration/` 目录**：runner.rs + macros.rs + 3 个初始用例
+9. **新增 `tests/integration_tests.rs`**：宏展开入口
 10. **运行验证**：`cargo test` 确保现有单元测试不受影响
-11. **运行验证**：`cargo test --test e2e_tests` 确保 3 个 e2e 用例通过
+11. **运行验证**：`cargo test --test integration_tests` 确保 3 个 e2e 用例通过
 
 ---
 
@@ -271,8 +271,8 @@ pub async fn run_case(case_dir: &Path) {
 cargo test
 
 # 仅 e2e
-cargo test --test e2e_tests
+cargo test --test integration_tests
 
 # 单个用例
-cargo test --test e2e_tests 001_simple_passthrough
+cargo test --test integration_tests 001_simple_passthrough
 ```

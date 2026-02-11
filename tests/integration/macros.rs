@@ -8,7 +8,7 @@ macro_rules! e2e_test_cases {
                 let case_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join($dir)
                     .join($folder);
-                crate::e2e::runner::run_case(&case_dir).await;
+                crate::integration::runner::run_case(&case_dir).await;
             }
         )*
     };
@@ -24,7 +24,7 @@ macro_rules! e2e_debug_test_cases {
                 let case_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join($dir)
                     .join($folder);
-                crate::e2e::runner::run_debug_case(&case_dir).await;
+                crate::integration::runner::run_debug_case(&case_dir).await;
             }
         )*
     };
