@@ -245,7 +245,7 @@ fn base_metadata(id: &str, name: &str, category: PluginCategory) -> PluginMetada
         name: name.to_string(),
         version: "0.1.0".to_string(),
         category,
-        description: format!("e2e plugin {}", name),
+        description: format!("integration plugin {}", name),
         source: PluginSource::Host,
         capabilities: None,
     }
@@ -720,7 +720,7 @@ struct MockServerGuard {
 }
 
 // =====================================================================
-// Debug mode e2e test support
+// Debug mode integration test support
 // =====================================================================
 
 /// Debug test configuration loaded from `debug.json`

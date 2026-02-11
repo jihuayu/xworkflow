@@ -1,6 +1,6 @@
 /// Generate a #[tokio::test] for each case directory
 #[macro_export]
-macro_rules! e2e_test_cases {
+macro_rules! integration_test_cases {
     ($dir:expr, $( $name:ident => $folder:expr ),* $(,)?) => {
         $(
             #[tokio::test]
@@ -16,7 +16,7 @@ macro_rules! e2e_test_cases {
 
 /// Generate a #[tokio::test] for each debug-mode case directory
 #[macro_export]
-macro_rules! e2e_debug_test_cases {
+macro_rules! integration_debug_test_cases {
     ($dir:expr, $( $name:ident => $folder:expr ),* $(,)?) => {
         $(
             #[tokio::test]

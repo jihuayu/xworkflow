@@ -2,7 +2,7 @@
   "id": "com.example.echo",
   "version": "1.0.0",
   "name": "Echo Plugin",
-  "description": "Basic echo plugin for e2e",
+  "description": "Basic echo plugin for integration testing.",
   "author": "tests",
   "wasm_file": "plugin.wat",
   "capabilities": {

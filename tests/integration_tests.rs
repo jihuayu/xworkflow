@@ -13,7 +13,7 @@
 
 mod integration;
 
-integration::e2e_test_cases!(
+integration::integration_test_cases!(
     "tests/integration/cases",
     case_001_simple_passthrough => "001_simple_passthrough",
     case_002_ifelse_true_branch => "002_ifelse_true_branch",
@@ -126,7 +126,7 @@ integration::e2e_test_cases!(
 );
 
 #[cfg(feature = "plugin-system")]
-integration::e2e_test_cases!(
+integration::integration_test_cases!(
     "tests/integration/cases",
     case_047_plugin_node_basic => "047_plugin_node_basic",
     case_075_plugin_host_node_basic => "075_plugin_host_node_basic",
@@ -134,7 +134,7 @@ integration::e2e_test_cases!(
     case_078_plugin_hook_modifier => "078_plugin_hook_modifier",
 );
 
-integration::e2e_debug_test_cases!(
+integration::integration_debug_test_cases!(
     "tests/integration/cases",
     case_050_debug_break_on_start => "050_debug_break_on_start",
     case_051_debug_step_through => "051_debug_step_through",
