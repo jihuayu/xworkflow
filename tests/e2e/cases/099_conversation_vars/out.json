@@ -1,0 +1,8 @@
+{
+  "status": "completed",
+  "outputs": {
+    "greeting": "Hello Alice, count=6",
+    "new_count": 6
+  },
+  "partial_match": false
+}

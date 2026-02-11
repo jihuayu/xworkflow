@@ -1,0 +1,75 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          {
+            "variable": "items",
+            "label": "Items",
+            "type": "array[number]",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "op_filter",
+      "data": {
+        "type": "list-operator",
+        "title": "Filter",
+        "operation": "filter",
+        "input_selector": ["start", "items"],
+        "sub_graph": {
+          "nodes": [
+            { "id": "sg_start", "type": "start", "title": "SG Start", "data": {} },
+            {
+              "id": "sg_code",
+              "type": "code",
+              "title": "Check",
+              "data": {
+                "code": "function main(inputs) { return { keep: inputs.item > 2 }; }",
+                "language": "javascript",
+                "variables": [
+                  { "variable": "item", "value_selector": ["__scope__", "item"] }
+                ]
+              }
+            },
+            {
+              "id": "sg_end",
+              "type": "end",
+              "title": "SG End",
+              "data": {
+                "outputs": [
+                  { "variable": "keep", "value_selector": ["sg_code", "keep"] }
+                ]
+              }
+            }
+          ],
+          "edges": [
+            { "source": "sg_start", "target": "sg_code" },
+            { "source": "sg_code", "target": "sg_end" }
+          ]
+        },
+        "output_variable": "filtered"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["op_filter", "filtered"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "op_filter" },
+    { "source": "op_filter", "target": "end" }
+  ]
+}

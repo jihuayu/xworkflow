@@ -1,0 +1,42 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          { "variable": "input_val", "label": "Val", "type": "string", "required": true }
+        ]
+      }
+    },
+    {
+      "id": "assign1",
+      "data": {
+        "type": "assigner",
+        "title": "Assign Overwrite",
+        "assigned_variable_selector": ["conversation", "stored"],
+        "input_variable_selector": ["start", "input_val"],
+        "write_mode": "overwrite"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "stored", "value_selector": ["conversation", "stored"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "assign1" },
+    { "source": "assign1", "target": "end" }
+  ],
+  "conversation_variables": [
+    { "name": "stored", "type": "string", "default": "initial" }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": { "type": "start", "title": "Start" }
+    },
+    {
+      "id": "risky_code",
+      "data": {
+        "type": "code",
+        "title": "Risky Code",
+        "error_strategy": { "type": "fail-branch" },
+        "code": "function main(inputs) { throw new Error('intentional failure'); }",
+        "language": "javascript"
+      }
+    },
+    {
+      "id": "success_tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "Success Path",
+        "template": "success"
+      }
+    },
+    {
+      "id": "failure_tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "Failure Path",
+        "template": "caught-error"
+      }
+    },
+    {
+      "id": "end_success",
+      "data": {
+        "type": "end",
+        "title": "End Success",
+        "outputs": [
+          { "variable": "result", "value_selector": ["success_tmpl", "output"] }
+        ]
+      }
+    },
+    {
+      "id": "end_failure",
+      "data": {
+        "type": "end",
+        "title": "End Failure",
+        "outputs": [
+          { "variable": "result", "value_selector": ["failure_tmpl", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "risky_code" },
+    { "source": "risky_code", "target": "success_tmpl", "sourceHandle": "source" },
+    { "source": "risky_code", "target": "failure_tmpl", "sourceHandle": "fail-branch" },
+    { "source": "success_tmpl", "target": "end_success" },
+    { "source": "failure_tmpl", "target": "end_failure" }
+  ]
+}

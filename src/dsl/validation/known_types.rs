@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::dsl::schema::NodeType;
 
-pub const RESERVED_NAMESPACES: &[&str] = &["sys", "env", "conversation"];
+pub const RESERVED_NAMESPACES: &[&str] = &["sys", "env", "conversation", "loop"];
 
 pub const BRANCH_NODE_TYPES: &[&str] = &["if-else", "question-classifier"];
 

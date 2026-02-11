@@ -1,0 +1,7 @@
+{
+  "status": "completed",
+  "outputs": {
+    "results": [{"value": 2}, {"value": 4}, {"value": 6}]
+  },
+  "partial_match": false
+}

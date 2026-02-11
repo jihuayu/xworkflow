@@ -403,12 +403,20 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
             for edge in &edges {
                 if let Some(handle) = &edge.source_handle {
                     if handle != "source" {
-                        diags.push(error(
-                            "E303",
-                            "Non-branch node has source_handle".to_string(),
-                            Some(node.id.clone()),
-                            Some("edges".to_string()),
-                        ));
+                        let allow_fail_branch = node
+                            .data
+                            .error_strategy
+                            .as_ref()
+                            .map(|s| matches!(s.strategy_type, crate::dsl::schema::ErrorStrategyType::FailBranch))
+                            .unwrap_or(false);
+                        if !(allow_fail_branch && handle == "fail-branch") {
+                            diags.push(error(
+                                "E303",
+                                "Non-branch node has source_handle".to_string(),
+                                Some(node.id.clone()),
+                                Some("edges".to_string()),
+                            ));
+                        }
                     }
                 }
             }

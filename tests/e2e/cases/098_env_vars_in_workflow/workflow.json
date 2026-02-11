@@ -1,0 +1,34 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": { "type": "start", "title": "Start" }
+    },
+    {
+      "id": "tmpl",
+      "data": {
+        "type": "template-transform",
+        "title": "Use Env Var",
+        "template": "API key is {{ api_key }}",
+        "variables": [
+          { "variable": "api_key", "value_selector": ["env", "API_KEY"] }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "result", "value_selector": ["tmpl", "output"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "tmpl" },
+    { "source": "tmpl", "target": "end" }
+  ]
+}

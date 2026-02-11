@@ -1,0 +1,76 @@
+{
+  "version": "0.1.0",
+  "nodes": [
+    {
+      "id": "start",
+      "data": {
+        "type": "start",
+        "title": "Start",
+        "variables": [
+          {
+            "variable": "items",
+            "label": "Items",
+            "type": "array[number]",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "iter1",
+      "data": {
+        "type": "iteration",
+        "title": "Parallel Iteration",
+        "input_selector": ["start", "items"],
+        "parallel": true,
+        "parallelism": 2,
+        "sub_graph": {
+          "nodes": [
+            { "id": "sg_start", "type": "start", "title": "SG Start", "data": {} },
+            {
+              "id": "sg_code",
+              "type": "code",
+              "title": "Double",
+              "data": {
+                "code": "function main(inputs) { return { value: inputs.item * 2 }; }",
+                "language": "javascript",
+                "variables": [
+                  { "variable": "item", "value_selector": ["__scope__", "item"] }
+                ]
+              }
+            },
+            {
+              "id": "sg_end",
+              "type": "end",
+              "title": "SG End",
+              "data": {
+                "outputs": [
+                  { "variable": "value", "value_selector": ["sg_code", "value"] }
+                ]
+              }
+            }
+          ],
+          "edges": [
+            { "source": "sg_start", "target": "sg_code" },
+            { "source": "sg_code", "target": "sg_end" }
+          ]
+        },
+        "output_variable": "results"
+      }
+    },
+    {
+      "id": "end",
+      "data": {
+        "type": "end",
+        "title": "End",
+        "outputs": [
+          { "variable": "results", "value_selector": ["iter1", "results"] }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    { "source": "start", "target": "iter1" },
+    { "source": "iter1", "target": "end" }
+  ]
+}
