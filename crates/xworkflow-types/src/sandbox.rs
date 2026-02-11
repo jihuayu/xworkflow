@@ -47,6 +47,11 @@ pub trait CodeSandbox: Send + Sync {
     async fn get_stats(&self) -> Result<SandboxStats, SandboxError> {
         Ok(SandboxStats::default())
     }
+
+    /// Return a streaming-capable view if supported.
+    fn as_streaming(&self) -> Option<&dyn StreamingSandbox> {
+        None
+    }
 }
 
 // ================================
@@ -83,9 +88,21 @@ pub trait CodeAnalyzer: Send + Sync {
 /// Streaming execution handle
 #[async_trait]
 pub trait StreamingSandboxHandle: Send + Sync {
-    async fn send_chunk(&self, var_name: &str, chunk: &str) -> Result<(), SandboxError>;
-    async fn end_stream(&self, var_name: &str) -> Result<(), SandboxError>;
-    async fn error_stream(&self, var_name: &str, error: &str) -> Result<(), SandboxError>;
+    async fn send_chunk(
+        &self,
+        var_name: &str,
+        chunk: &Value,
+    ) -> Result<Option<Value>, SandboxError>;
+    async fn end_stream(
+        &self,
+        var_name: &str,
+        value: &Value,
+    ) -> Result<Option<Value>, SandboxError>;
+    async fn error_stream(
+        &self,
+        var_name: &str,
+        error: &str,
+    ) -> Result<Option<Value>, SandboxError>;
     async fn finalize(self: Box<Self>) -> Result<SandboxResult, SandboxError>;
 }
 

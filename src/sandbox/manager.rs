@@ -182,6 +182,22 @@ impl SandboxManager {
             .values()
             .find(|s| s.sandbox_type() == sandbox_type)
     }
+
+    /// Get streaming-capable sandbox for a language.
+    pub fn get_streaming_sandbox(
+        &self,
+        language: CodeLanguage,
+    ) -> Result<&dyn StreamingSandbox, SandboxError> {
+        let sandbox = self
+            .sandboxes
+            .get(&language)
+            .or_else(|| self.default_sandbox.as_ref())
+            .ok_or_else(|| SandboxError::UnsupportedLanguage(language))?;
+
+        sandbox
+            .as_streaming()
+            .ok_or_else(|| SandboxError::UnsupportedLanguage(language))
+    }
 }
 
 #[cfg(test)]

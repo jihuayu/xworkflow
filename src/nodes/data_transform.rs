@@ -2,15 +2,9 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
-#[cfg(feature = "builtin-sandbox-js")]
-use xworkflow_sandbox_js::boa_engine::{Context, Source};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-#[cfg(feature = "builtin-sandbox-js")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "builtin-sandbox-js")]
-use tokio::sync::{mpsc, oneshot};
 
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{
@@ -30,8 +24,6 @@ use crate::template::{
 #[cfg(not(feature = "security"))]
 use crate::template::render_jinja2_with_functions;
 use xworkflow_types::template::{TemplateEngine, TemplateFunction};
-#[cfg(feature = "builtin-sandbox-js")]
-use xworkflow_sandbox_js::builtins as js_builtins;
 #[cfg(feature = "security")]
 use crate::security::network::{validate_url, SecureHttpClientFactory};
 #[cfg(feature = "security")]
@@ -976,253 +968,6 @@ async fn execute_sandbox_with_audit(
 // Code Node (sandbox-backed execution)
 // ================================
 
-#[cfg(feature = "builtin-sandbox-js")]
-#[derive(Debug)]
-struct CallbackInvoke {
-    var_name: String,
-    callback: String,
-    arg: Option<Value>,
-    resp: oneshot::Sender<Result<Option<Value>, String>>,
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-#[derive(Debug)]
-enum RuntimeCommand {
-    Invoke(CallbackInvoke),
-    Shutdown,
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-#[derive(Clone, Debug)]
-#[doc(hidden)]
-pub struct JsStreamRuntime {
-    tx: mpsc::Sender<RuntimeCommand>,
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-impl JsStreamRuntime {
-    async fn invoke(
-        &self,
-        var_name: String,
-        callback: &str,
-        arg: Option<Value>,
-    ) -> Result<Option<Value>, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        let cmd = RuntimeCommand::Invoke(CallbackInvoke {
-            var_name,
-            callback: callback.to_string(),
-            arg,
-            resp: resp_tx,
-        });
-        self.tx.send(cmd).await.map_err(|_| "runtime closed".to_string())?;
-        resp_rx.await.map_err(|_| "runtime dropped".to_string())?
-    }
-
-    pub async fn shutdown(&self) {
-        let _ = self.tx.send(RuntimeCommand::Shutdown).await;
-    }
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-impl Drop for JsStreamRuntime {
-    fn drop(&mut self) {
-        let _ = self.tx.try_send(RuntimeCommand::Shutdown);
-    }
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-fn escape_js_string(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('\'', "\\'")
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-fn eval_js_to_string(context: &mut Context, code: &str) -> Result<String, String> {
-    let result = context
-        .eval(Source::from_bytes(code))
-        .map_err(|e| format!("JS eval error: {}", e))?;
-    let s = result
-        .as_string()
-        .map(|s| s.to_std_string_escaped())
-        .ok_or_else(|| "JS result is not string".to_string())?;
-    Ok(s)
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
-    if result_str == "__undefined__" {
-        return Ok(None);
-    }
-    let val: Value = serde_json::from_str(result_str)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
-    if val.is_null() {
-        return Ok(None);
-    }
-    Ok(Some(val))
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-async fn spawn_js_stream_runtime_inner(
-    code: String,
-    inputs: Value,
-    stream_vars: Vec<String>,
-    exit_flag: Option<Arc<AtomicBool>>,
-) -> Result<(Value, bool, JsStreamRuntime), NodeError> {
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<RuntimeCommand>(64);
-    let (ready_tx, ready_rx) = oneshot::channel::<Result<(Value, bool), String>>();
-
-    let exit_flag_for_thread = exit_flag.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let mut context = Context::default();
-        if let Err(e) = js_builtins::register_all(&mut context) {
-            let _ = ready_tx.send(Err(format!("Failed to register builtins: {}", e)));
-            return;
-        }
-
-        if let Err(e) = context.eval(Source::from_bytes(&code)) {
-            let _ = ready_tx.send(Err(format!("JS code eval error: {}", e)));
-            return;
-        }
-
-        let inputs_json = serde_json::to_string(&inputs).unwrap_or("{}".into());
-        let inputs_json_escaped = escape_js_string(&inputs_json);
-
-        let mut stream_setup = String::new();
-        stream_setup.push_str("var __inputs = JSON.parse('");
-        stream_setup.push_str(&inputs_json_escaped);
-        stream_setup.push_str("');\n");
-        stream_setup.push_str("globalThis.__stream_callbacks__ = globalThis.__stream_callbacks__ || {};\n");
-
-        for var_name in &stream_vars {
-            let var_escaped = escape_js_string(var_name);
-            stream_setup.push_str(&format!(
-                "globalThis.__stream_callbacks__['{}'] = {{ on_chunk: null, on_end: null, on_error: null }};\n",
-                var_escaped
-            ));
-            stream_setup.push_str(&format!(
-                "__inputs['{}'] = {{\n",
-                var_escaped
-            ));
-            stream_setup.push_str(&format!(
-                "  on_chunk: function(fn) {{ globalThis.__stream_callbacks__['{}'].on_chunk = fn; return this; }},\n",
-                var_escaped
-            ));
-            stream_setup.push_str(&format!(
-                "  on_end: function(fn) {{ globalThis.__stream_callbacks__['{}'].on_end = fn; return this; }},\n",
-                var_escaped
-            ));
-            stream_setup.push_str(&format!(
-                "  on_error: function(fn) {{ globalThis.__stream_callbacks__['{}'].on_error = fn; return this; }}\n",
-                var_escaped
-            ));
-            stream_setup.push_str("};\n");
-        }
-        stream_setup.push_str("globalThis.__stream_initial_output__ = main(__inputs);\n");
-        stream_setup.push_str("globalThis.__stream_has_callbacks__ = false;\n");
-        for var_name in &stream_vars {
-            let var_escaped = escape_js_string(var_name);
-            stream_setup.push_str(&format!(
-                "if (typeof globalThis.__stream_callbacks__['{}'].on_chunk === 'function') {{ globalThis.__stream_has_callbacks__ = true; }}\n",
-                var_escaped
-            ));
-        }
-
-        if let Err(e) = context.eval(Source::from_bytes(&stream_setup)) {
-            let _ = ready_tx.send(Err(format!("JS stream setup error: {}", e)));
-            return;
-        }
-
-        let output_json = match eval_js_to_string(
-            &mut context,
-            "(function(){ var v = globalThis.__stream_initial_output__; if (v === undefined) return '__undefined__'; try { return JSON.stringify(v); } catch (e) { return '__undefined__'; } })()",
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = ready_tx.send(Err(e));
-                return;
-            }
-        };
-        let initial_output = match parse_json_result(&output_json) {
-            Ok(Some(v)) => v,
-            Ok(None) => Value::Null,
-            Err(e) => {
-                let _ = ready_tx.send(Err(e));
-                return;
-            }
-        };
-
-        let has_callbacks = match eval_js_to_string(
-            &mut context,
-            "(function(){ return globalThis.__stream_has_callbacks__ ? 'true' : 'false'; })()",
-        ) {
-            Ok(v) => v == "true",
-            Err(e) => {
-                let _ = ready_tx.send(Err(e));
-                return;
-            }
-        };
-
-        let _ = ready_tx.send(Ok((initial_output, has_callbacks)));
-
-        loop {
-            match cmd_rx.blocking_recv() {
-                Some(RuntimeCommand::Invoke(inv)) => {
-                    let arg_json = inv
-                        .arg
-                        .map(|v| serde_json::to_string(&v).unwrap_or("null".into()))
-                        .unwrap_or_else(|| "null".to_string());
-                    let arg_escaped = escape_js_string(&arg_json);
-                    let var_escaped = escape_js_string(&inv.var_name);
-                    let cb_escaped = escape_js_string(&inv.callback);
-                    let js = format!(
-                        "(function() {{ var cb = globalThis.__stream_callbacks__ && globalThis.__stream_callbacks__['{}'] && globalThis.__stream_callbacks__['{}']['{}']; if (typeof cb !== 'function') return '__undefined__'; var arg = JSON.parse('{}'); var res = cb(arg); if (res === undefined) return '__undefined__'; try {{ return JSON.stringify(res); }} catch (e) {{ return '__undefined__'; }} }})()",
-                        var_escaped, var_escaped, cb_escaped, arg_escaped
-                    );
-                    let result = match eval_js_to_string(&mut context, &js) {
-                        Ok(s) => parse_json_result(&s),
-                        Err(e) => Err(e),
-                    };
-                    let _ = inv.resp.send(result);
-                }
-                Some(RuntimeCommand::Shutdown) | None => break,
-            }
-        }
-
-        if let Some(flag) = exit_flag_for_thread {
-            flag.store(true, Ordering::SeqCst);
-        }
-    });
-
-    let (initial_output, has_callbacks) = ready_rx
-        .await
-        .map_err(|_| NodeError::ExecutionError("JS runtime setup failed".into()))?
-        .map_err(NodeError::ExecutionError)?;
-
-    Ok((initial_output, has_callbacks, JsStreamRuntime { tx: cmd_tx }))
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-async fn spawn_js_stream_runtime(
-    code: String,
-    inputs: Value,
-    stream_vars: Vec<String>,
-) -> Result<(Value, bool, JsStreamRuntime), NodeError> {
-    spawn_js_stream_runtime_inner(code, inputs, stream_vars, None).await
-}
-
-#[cfg(feature = "builtin-sandbox-js")]
-#[doc(hidden)]
-pub async fn spawn_js_stream_runtime_with_exit_flag(
-    code: String,
-    inputs: Value,
-    stream_vars: Vec<String>,
-) -> Result<(Value, bool, JsStreamRuntime, Arc<AtomicBool>), NodeError> {
-    let exit_flag = Arc::new(AtomicBool::new(false));
-    let (initial_output, has_callbacks, runtime) =
-        spawn_js_stream_runtime_inner(code, inputs, stream_vars, Some(exit_flag.clone())).await?;
-    Ok((initial_output, has_callbacks, runtime, exit_flag))
-}
-
 pub struct CodeNodeExecutor {
     sandbox_manager: std::sync::Arc<crate::sandbox::SandboxManager>,
 }
@@ -1359,162 +1104,176 @@ impl NodeExecutor for CodeNodeExecutor {
         if has_running_streams && language == crate::sandbox::CodeLanguage::JavaScript {
             #[cfg(feature = "builtin-sandbox-js")]
             {
-            self.sandbox_manager
-                .validate(code, language)
-                .await
-                .map_err(|e| NodeError::SandboxError(e.to_string()))?;
+                self.sandbox_manager
+                    .validate(code, language)
+                    .await
+                    .map_err(|e| NodeError::SandboxError(e.to_string()))?;
 
-            let stream_names = stream_inputs.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
-            let (initial_output, has_callbacks, runtime) = spawn_js_stream_runtime(
-                code.to_string(),
-                inputs.clone(),
-                stream_names,
-            )
-            .await?;
+                let stream_names = stream_inputs
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .collect::<Vec<_>>();
 
-            if !has_callbacks {
-                runtime.shutdown().await;
-                let mut resolved_inputs = inputs_map.clone();
-                for (name, stream) in stream_inputs {
-                    let resolved = stream.collect().await.unwrap_or(Segment::None);
-                    resolved_inputs.insert(name, resolved.to_value());
-                }
                 let request = crate::sandbox::SandboxRequest {
                     code: code.to_string(),
                     language,
-                    inputs: Value::Object(resolved_inputs.clone()),
-                    config: exec_config,
+                    inputs: inputs.clone(),
+                    config: exec_config.clone(),
                 };
-                let result = execute_sandbox_with_audit(
-                    &self.sandbox_manager,
-                    request,
-                    context,
-                    node_id,
-                    language,
-                )
-                .await?;
+
+                let streaming = self
+                    .sandbox_manager
+                    .get_streaming_sandbox(language)
+                    .map_err(|e| NodeError::SandboxError(e.to_string()))?;
+
+                let (initial_output, has_callbacks, handle) = streaming
+                    .execute_streaming(request, stream_names)
+                    .await
+                    .map_err(|e| NodeError::SandboxError(e.to_string()))?;
+
+                if !has_callbacks {
+                    let _ = handle.finalize().await;
+                    let mut resolved_inputs = inputs_map.clone();
+                    for (name, stream) in stream_inputs {
+                        let resolved = stream.collect().await.unwrap_or(Segment::None);
+                        resolved_inputs.insert(name, resolved.to_value());
+                    }
+                    let request = crate::sandbox::SandboxRequest {
+                        code: code.to_string(),
+                        language,
+                        inputs: Value::Object(resolved_inputs.clone()),
+                        config: exec_config,
+                    };
+                    let result = execute_sandbox_with_audit(
+                        &self.sandbox_manager,
+                        request,
+                        context,
+                        node_id,
+                        language,
+                    )
+                    .await?;
+
+                    let mut outputs = HashMap::new();
+                    if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
+                        outputs.insert(output_key.to_string(), result.output);
+                    } else if let Value::Object(obj) = &result.output {
+                        for (k, v) in obj {
+                            outputs.insert(k.clone(), v.clone());
+                        }
+                    } else {
+                        outputs.insert("result".to_string(), result.output);
+                    }
+
+                    return Ok(NodeRunResult {
+                        status: WorkflowNodeExecutionStatus::Succeeded,
+                        inputs: resolved_inputs.into_iter().map(|(k, v)| (k, v)).collect(),
+                        outputs: NodeOutputs::Sync(outputs),
+                        edge_source_handle: EdgeHandle::Default,
+                        ..Default::default()
+                    });
+                }
 
                 let mut outputs = HashMap::new();
                 if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
-                    outputs.insert(output_key.to_string(), result.output);
-                } else if let Value::Object(obj) = &result.output {
+                    outputs.insert(output_key.to_string(), initial_output.clone());
+                } else if let Value::Object(obj) = &initial_output {
                     for (k, v) in obj {
                         outputs.insert(k.clone(), v.clone());
                     }
                 } else {
-                    outputs.insert("result".to_string(), result.output);
+                    outputs.insert("result".to_string(), initial_output.clone());
                 }
+
+                let (output_stream, writer) = SegmentStream::channel();
+                tokio::spawn(async move {
+                    let handle = handle;
+                    let mut last_result: Option<Segment> = None;
+                    for (name, stream) in stream_inputs {
+                        let mut reader = stream.reader();
+                        loop {
+                            match reader.next().await {
+                                Some(StreamEvent::Chunk(seg)) => {
+                                    match handle
+                                        .send_chunk(&name, &seg.to_value())
+                                        .await
+                                    {
+                                        Ok(Some(val)) => {
+                                            let out_seg = Segment::from_value(&val);
+                                            writer.send(out_seg.clone()).await;
+                                            last_result = Some(out_seg);
+                                        }
+                                        Ok(None) => {}
+                                        Err(err) => {
+                                            writer.error(err.to_string()).await;
+                                            let _ = handle.finalize().await;
+                                            return;
+                                        }
+                                    }
+                                }
+                                Some(StreamEvent::End(final_seg)) => {
+                                    match handle
+                                        .end_stream(&name, &final_seg.to_value())
+                                        .await
+                                    {
+                                        Ok(Some(val)) => {
+                                            let out_seg = Segment::from_value(&val);
+                                            writer.send(out_seg.clone()).await;
+                                            last_result = Some(out_seg);
+                                        }
+                                        Ok(None) => {}
+                                        Err(err) => {
+                                            writer.error(err.to_string()).await;
+                                            let _ = handle.finalize().await;
+                                            return;
+                                        }
+                                    }
+                                    break;
+                                }
+                                Some(StreamEvent::Error(err)) => {
+                                    match handle
+                                        .error_stream(&name, &err)
+                                        .await
+                                    {
+                                        Ok(Some(val)) => {
+                                            let out_seg = Segment::from_value(&val);
+                                            writer.send(out_seg.clone()).await;
+                                            last_result = Some(out_seg);
+                                        }
+                                        Ok(None) => {
+                                            writer.error(err).await;
+                                            let _ = handle.finalize().await;
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            writer.error(e.to_string()).await;
+                                            let _ = handle.finalize().await;
+                                            return;
+                                        }
+                                    }
+                                    break;
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+
+                    writer.end(last_result.unwrap_or(Segment::None)).await;
+                    let _ = handle.finalize().await;
+                });
+
+                let mut stream_outputs = HashMap::new();
+                stream_outputs.insert("output".to_string(), output_stream);
 
                 return Ok(NodeRunResult {
                     status: WorkflowNodeExecutionStatus::Succeeded,
-                    inputs: resolved_inputs.into_iter().map(|(k, v)| (k, v)).collect(),
-                    outputs: NodeOutputs::Sync(outputs),
+                    inputs: inputs_map.into_iter().map(|(k, v)| (k, v)).collect(),
+                    outputs: NodeOutputs::Stream {
+                        ready: outputs,
+                        streams: stream_outputs,
+                    },
                     edge_source_handle: EdgeHandle::Default,
                     ..Default::default()
                 });
-            }
-
-            let mut outputs = HashMap::new();
-            if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
-                outputs.insert(output_key.to_string(), initial_output.clone());
-            } else if let Value::Object(obj) = &initial_output {
-                for (k, v) in obj {
-                    outputs.insert(k.clone(), v.clone());
-                }
-            } else {
-                outputs.insert("result".to_string(), initial_output.clone());
-            }
-
-            let (output_stream, writer) = SegmentStream::channel();
-            tokio::spawn(async move {
-                let runtime = runtime;
-                let mut last_result: Option<Segment> = None;
-                for (name, stream) in stream_inputs {
-                    let mut reader = stream.reader();
-                    loop {
-                        match reader.next().await {
-                            Some(StreamEvent::Chunk(seg)) => {
-                                match runtime
-                                    .invoke(name.clone(), "on_chunk", Some(seg.to_value()))
-                                    .await
-                                {
-                                    Ok(Some(val)) => {
-                                        let out_seg = Segment::from_value(&val);
-                                        writer.send(out_seg.clone()).await;
-                                        last_result = Some(out_seg);
-                                    }
-                                    Ok(None) => {}
-                                    Err(err) => {
-                                        writer.error(err).await;
-                                        runtime.shutdown().await;
-                                        return;
-                                    }
-                                }
-                            }
-                            Some(StreamEvent::End(final_seg)) => {
-                                match runtime
-                                    .invoke(name.clone(), "on_end", Some(final_seg.to_value()))
-                                    .await
-                                {
-                                    Ok(Some(val)) => {
-                                        let out_seg = Segment::from_value(&val);
-                                        writer.send(out_seg.clone()).await;
-                                        last_result = Some(out_seg);
-                                    }
-                                    Ok(None) => {}
-                                    Err(err) => {
-                                        writer.error(err).await;
-                                        runtime.shutdown().await;
-                                        return;
-                                    }
-                                }
-                                break;
-                            }
-                            Some(StreamEvent::Error(err)) => {
-                                match runtime
-                                    .invoke(name.clone(), "on_error", Some(Value::String(err.clone())))
-                                    .await
-                                {
-                                    Ok(Some(val)) => {
-                                        let out_seg = Segment::from_value(&val);
-                                        writer.send(out_seg.clone()).await;
-                                        last_result = Some(out_seg);
-                                    }
-                                    Ok(None) => {
-                                        writer.error(err).await;
-                                        runtime.shutdown().await;
-                                        return;
-                                    }
-                                    Err(e) => {
-                                        writer.error(e).await;
-                                        runtime.shutdown().await;
-                                        return;
-                                    }
-                                }
-                                break;
-                            }
-                            None => break,
-                        }
-                    }
-                }
-
-                writer.end(last_result.unwrap_or(Segment::None)).await;
-                runtime.shutdown().await;
-            });
-
-            let mut stream_outputs = HashMap::new();
-            stream_outputs.insert("output".to_string(), output_stream);
-
-            return Ok(NodeRunResult {
-                status: WorkflowNodeExecutionStatus::Succeeded,
-                inputs: inputs_map.into_iter().map(|(k, v)| (k, v)).collect(),
-                outputs: NodeOutputs::Stream {
-                    ready: outputs,
-                    streams: stream_outputs,
-                },
-                edge_source_handle: EdgeHandle::Default,
-                ..Default::default()
-            });
             }
 
             #[cfg(not(feature = "builtin-sandbox-js"))]

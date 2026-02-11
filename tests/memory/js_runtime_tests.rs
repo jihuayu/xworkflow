@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::helpers::wait_for_condition;
-use xworkflow::nodes::data_transform::spawn_js_stream_runtime_with_exit_flag;
+use xworkflow_sandbox_js::streaming::spawn_js_stream_runtime_with_exit_flag;
 
 #[tokio::test]
 async fn test_js_runtime_drop_without_shutdown() {

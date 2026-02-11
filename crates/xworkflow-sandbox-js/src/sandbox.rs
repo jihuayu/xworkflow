@@ -100,7 +100,7 @@ impl BuiltinSandbox {
     }
 
     /// Validate code for dangerous patterns
-    fn validate_code(&self, code: &str) -> Result<(), SandboxError> {
+    pub(crate) fn validate_code(&self, code: &str) -> Result<(), SandboxError> {
         // 1. Check code length
         if code.len() > self.config.max_code_length {
             return Err(SandboxError::CodeTooLarge {
@@ -403,6 +403,10 @@ impl CodeSandbox for BuiltinSandbox {
     async fn get_stats(&self) -> Result<SandboxStats, SandboxError> {
         let stats = self.stats.read().await;
         Ok(stats.clone())
+    }
+
+    fn as_streaming(&self) -> Option<&dyn StreamingSandbox> {
+        Some(self)
     }
 }
 
