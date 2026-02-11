@@ -336,3 +336,53 @@ pub use real::new_gate as new_scheduler_plugin_gate;
 pub fn new_scheduler_plugin_gate() -> Box<dyn SchedulerPluginGate> {
   Box::new(NoopSchedulerPluginGate)
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn test_scheduler_plugin_gate_init_and_validate() {
+    let mut gate = new_scheduler_plugin_gate();
+    let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"end"}]}"#;
+    let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
+    let mut report = crate::dsl::validation::ValidationReport {
+      is_valid: true,
+      diagnostics: vec![],
+    };
+    let result = gate.init_and_extend_validation(&schema, &mut report).await;
+    assert!(result.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_scheduler_plugin_gate_after_dsl_validation() {
+    let gate = new_scheduler_plugin_gate();
+    let report = crate::dsl::validation::ValidationReport {
+      is_valid: true,
+      diagnostics: vec![],
+    };
+    let result = gate.after_dsl_validation(&report).await;
+    assert!(result.is_ok());
+  }
+
+  #[test]
+  fn test_scheduler_plugin_gate_apply_node_executors() {
+    let mut gate = new_scheduler_plugin_gate();
+    let mut registry = NodeExecutorRegistry::new();
+    gate.apply_node_executors(&mut registry);
+  }
+
+  #[test]
+  fn test_scheduler_plugin_gate_apply_llm_providers() {
+    let gate = new_scheduler_plugin_gate();
+    let mut llm_registry = LlmProviderRegistry::new();
+    gate.apply_llm_providers(&mut llm_registry);
+  }
+
+  #[test]
+  fn test_scheduler_plugin_gate_customize_context() {
+    let gate = new_scheduler_plugin_gate();
+    let mut context = RuntimeContext::default();
+    gate.customize_context(&mut context);
+  }
+}

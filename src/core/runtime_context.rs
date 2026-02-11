@@ -1,3 +1,9 @@
+//! Runtime context for workflow execution.
+//!
+//! [`RuntimeContext`] bundles time/ID providers and optional extensions (event
+//! channels, sub-graph runners, plugin template functions, security context)
+//! that are threaded through the entire execution pipeline.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -15,6 +21,7 @@ pub struct RuntimeContext {
     pub extensions: RuntimeExtensions,
 }
 
+/// Extension points carried alongside [`RuntimeContext`].
 #[derive(Clone, Default)]
 pub struct RuntimeExtensions {
     pub event_tx: Option<mpsc::Sender<GraphEngineEvent>>,
@@ -135,24 +142,32 @@ impl RuntimeContext {
     }
 }
 
+/// Provides the current wall-clock time for the workflow engine.
 pub trait TimeProvider: Send + Sync {
+    /// Return the current Unix timestamp in seconds.
     fn now_timestamp(&self) -> i64;
+    /// Return the current Unix timestamp in milliseconds.
     fn now_millis(&self) -> i64;
+    /// Return the elapsed seconds since the given timestamp.
     fn elapsed_secs(&self, since: i64) -> u64;
 }
 
+/// Generates unique identifiers (e.g. for run IDs, node execution IDs).
 pub trait IdGenerator: Send + Sync {
+    /// Return the next unique ID string.
     fn next_id(&self) -> String;
 }
 
 // --- Real implementations ---
 
+/// Production [`TimeProvider`] using `SystemTime`.
 pub struct RealTimeProvider {
     #[allow(dead_code)]
     start: Instant,
 }
 
 impl RealTimeProvider {
+    /// Create a new `RealTimeProvider`.
     pub fn new() -> Self {
         Self {
             start: Instant::now(),
@@ -191,6 +206,7 @@ impl TimeProvider for RealTimeProvider {
     }
 }
 
+/// Production [`IdGenerator`] using UUID v4.
 pub struct RealIdGenerator;
 
 impl Default for RealIdGenerator {
@@ -207,11 +223,13 @@ impl IdGenerator for RealIdGenerator {
 
 // --- Fake implementations ---
 
+/// Deterministic [`TimeProvider`] for testing. Always returns the same timestamp.
 pub struct FakeTimeProvider {
     pub fixed_timestamp: i64,
 }
 
 impl FakeTimeProvider {
+    /// Create a new `FakeTimeProvider` with the given fixed timestamp.
     pub fn new(fixed_timestamp: i64) -> Self {
         Self { fixed_timestamp }
     }
@@ -235,12 +253,14 @@ impl TimeProvider for FakeTimeProvider {
     }
 }
 
+/// Deterministic [`IdGenerator`] for testing. Produces sequential IDs with a prefix.
 pub struct FakeIdGenerator {
     pub prefix: String,
     pub counter: AtomicU64,
 }
 
 impl FakeIdGenerator {
+    /// Create a new `FakeIdGenerator` with the given prefix.
     pub fn new(prefix: String) -> Self {
         Self {
             prefix,
@@ -253,5 +273,137 @@ impl IdGenerator for FakeIdGenerator {
     fn next_id(&self) -> String {
         let id = self.counter.fetch_add(1, Ordering::SeqCst);
         format!("{}-{}", self.prefix, id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_real_time_provider_now_timestamp() {
+        let tp = RealTimeProvider::new();
+        let ts = tp.now_timestamp();
+        assert!(ts > 1_700_000_000); // After 2023
+    }
+
+    #[test]
+    fn test_real_time_provider_now_millis() {
+        let tp = RealTimeProvider::new();
+        let ms = tp.now_millis();
+        assert!(ms > 1_700_000_000_000); // After 2023 in ms
+    }
+
+    #[test]
+    fn test_real_time_provider_elapsed_secs() {
+        let tp = RealTimeProvider::new();
+        let past = tp.now_timestamp() - 10;
+        let elapsed = tp.elapsed_secs(past);
+        assert!(elapsed >= 9 && elapsed <= 12);
+    }
+
+    #[test]
+    fn test_real_time_provider_elapsed_future() {
+        let tp = RealTimeProvider::new();
+        let future = tp.now_timestamp() + 1000;
+        assert_eq!(tp.elapsed_secs(future), 0);
+    }
+
+    #[test]
+    fn test_real_time_provider_default() {
+        let tp = RealTimeProvider::default();
+        assert!(tp.now_timestamp() > 0);
+    }
+
+    #[test]
+    fn test_real_id_generator() {
+        let gen = RealIdGenerator::default();
+        let id1 = gen.next_id();
+        let id2 = gen.next_id();
+        assert_ne!(id1, id2);
+        assert_eq!(id1.len(), 36); // UUID format
+    }
+
+    #[test]
+    fn test_fake_time_provider() {
+        let tp = FakeTimeProvider::new(1000);
+        assert_eq!(tp.now_timestamp(), 1000);
+        assert_eq!(tp.now_millis(), 1_000_000);
+    }
+
+    #[test]
+    fn test_fake_time_provider_elapsed_secs() {
+        let tp = FakeTimeProvider::new(1000);
+        assert_eq!(tp.elapsed_secs(990), 10);
+        assert_eq!(tp.elapsed_secs(1000), 0);
+        assert_eq!(tp.elapsed_secs(1010), 0);
+    }
+
+    #[test]
+    fn test_fake_id_generator() {
+        let gen = FakeIdGenerator::new("test".into());
+        assert_eq!(gen.next_id(), "test-0");
+        assert_eq!(gen.next_id(), "test-1");
+        assert_eq!(gen.next_id(), "test-2");
+    }
+
+    #[test]
+    fn test_runtime_context_default() {
+        let ctx = RuntimeContext::default();
+        assert!(ctx.event_tx().is_none());
+        assert!(ctx.sub_graph_runner().is_none());
+        assert!(ctx.node_executor_registry().is_none());
+        assert!(!ctx.strict_template());
+    }
+
+    #[test]
+    fn test_runtime_context_with_event_tx() {
+        let (tx, _rx) = mpsc::channel::<GraphEngineEvent>(16);
+        let ctx = RuntimeContext::default().with_event_tx(tx);
+        assert!(ctx.event_tx().is_some());
+    }
+
+    #[test]
+    fn test_runtime_context_with_node_executor_registry() {
+        let registry = Arc::new(NodeExecutorRegistry::empty());
+        let ctx = RuntimeContext::default().with_node_executor_registry(registry);
+        assert!(ctx.node_executor_registry().is_some());
+    }
+
+    #[test]
+    fn test_runtime_extensions_default() {
+        let ext = RuntimeExtensions::default();
+        assert!(ext.event_tx.is_none());
+        assert!(ext.sub_graph_runner.is_none());
+        assert!(ext.node_executor_registry.is_none());
+        assert!(!ext.strict_template);
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_runtime_context_security_none_by_default() {
+        let ctx = RuntimeContext::default();
+        assert!(ctx.security().is_none());
+        assert!(ctx.resource_group().is_none());
+        assert!(ctx.security_policy().is_none());
+        assert!(ctx.resource_governor().is_none());
+        assert!(ctx.credential_provider().is_none());
+        assert!(ctx.audit_logger().is_none());
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_runtime_context_security_mut() {
+        let mut ctx = RuntimeContext::default();
+        assert!(ctx.security_mut().is_none());
+
+        ctx.extensions.security = Some(SecurityContext {
+            resource_group: None,
+            security_policy: None,
+            resource_governor: None,
+            credential_provider: None,
+            audit_logger: None,
+        });
+        assert!(ctx.security_mut().is_some());
     }
 }

@@ -1,3 +1,17 @@
+//! Core engine components for workflow execution.
+//!
+//! This module contains the fundamental building blocks of the XWorkflow engine:
+//!
+//! - [`variable_pool`] — The Dify-compatible variable type system (`Segment`, `VariablePool`,
+//!   `SegmentStream`) used including streaming support.
+//! - [`dispatcher`] — The main workflow dispatcher that drives DAG-based graph execution.
+//! - [`event_bus`] — Event types emitted during workflow execution for observability.
+//! - [`runtime_context`] — Runtime context providing time, ID generation, and extension points.
+//! - [`sub_graph_runner`] — Sub-graph execution for iteration/loop containers.
+//! - [`debug`] — Interactive debugger gate/hook traits and implementations.
+//! - [`security_gate`] — Security enforcement gate applied before/after node execution.
+//! - [`plugin_gate`] — Plugin hook gate applied around workflow/node lifecycle.
+
 pub mod event_bus;
 pub mod variable_pool;
 pub mod dispatcher;

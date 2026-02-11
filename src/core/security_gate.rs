@@ -1,3 +1,8 @@
+//! Security gate trait for pre/post node execution enforcement.
+//!
+//! The [`SecurityGate`] is checked by the dispatcher before and after each node
+//! to enforce resource limits, output size caps, and LLM usage accounting.
+
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -9,8 +14,10 @@ use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
 use parking_lot::RwLock;
 
+/// Gate for security enforcement around node execution.
 #[async_trait]
 pub trait SecurityGate: Send + Sync {
+  /// Check security constraints before a node executes.
   async fn check_before_node(
     &self,
     node_id: &str,
@@ -30,6 +37,7 @@ pub trait SecurityGate: Send + Sync {
   fn effective_limits(&self, config: &EngineConfig) -> (i32, u64);
 }
 
+/// No-op [`SecurityGate`] used when the `security` feature is disabled.
 #[derive(Debug, Default)]
 pub struct NoopSecurityGate;
 
@@ -326,4 +334,400 @@ pub fn new_security_gate(
   _variable_pool: Arc<RwLock<VariablePool>>,
 ) -> Arc<dyn SecurityGate> {
   Arc::new(NoopSecurityGate)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn test_noop_security_gate_check_before_node() {
+    let gate = NoopSecurityGate;
+    let result = gate.check_before_node("n1", "code", &serde_json::json!({})).await;
+    assert!(result.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_noop_security_gate_enforce_output_limits() {
+    let gate = NoopSecurityGate;
+    let run_result = NodeRunResult::default();
+    let result = gate.enforce_output_limits("n1", "code", run_result).await;
+    assert!(result.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_noop_security_gate_record_llm_usage() {
+    let gate = NoopSecurityGate;
+    let run_result = NodeRunResult::default();
+    gate.record_llm_usage(&run_result).await;
+    // no panic = pass
+  }
+
+  #[test]
+  fn test_noop_security_gate_effective_limits() {
+    let gate = NoopSecurityGate;
+    let config = EngineConfig {
+      max_steps: 100,
+      max_execution_time_secs: 300,
+      ..Default::default()
+    };
+    let (steps, time) = gate.effective_limits(&config);
+    assert_eq!(steps, 100);
+    assert_eq!(time, 300);
+  }
+
+  #[test]
+  fn test_new_security_gate() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    // Just verify it creates without panic
+    let config = EngineConfig::default();
+    let _ = gate.effective_limits(&config);
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_effective_limits_no_group() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let config = EngineConfig {
+      max_steps: 200,
+      max_execution_time_secs: 600,
+      ..Default::default()
+    };
+    let (steps, time) = gate.effective_limits(&config);
+    // Without resource group, just return config values
+    assert_eq!(steps, 200);
+    assert_eq!(time, 600);
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_effective_limits_with_group() {
+    use crate::security::resource_group::{ResourceGroup, ResourceQuota};
+    use crate::security::policy::SecurityLevel;
+    use crate::core::runtime_context::SecurityContext;
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: Some(ResourceGroup {
+        group_id: "test".into(),
+        group_name: None,
+        security_level: SecurityLevel::Standard,
+        quota: ResourceQuota {
+          max_steps: 50,
+          max_execution_time_secs: 120,
+          ..Default::default()
+        },
+        credential_refs: std::collections::HashMap::new(),
+      }),
+      security_policy: None,
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let config = EngineConfig {
+      max_steps: 200,
+      max_execution_time_secs: 600,
+      ..Default::default()
+    };
+    let (steps, time) = gate.effective_limits(&config);
+    // Should take the min of config and group quota
+    assert_eq!(steps, 50);
+    assert_eq!(time, 120);
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_check_before_node_no_governor() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let result = gate.check_before_node("n1", "code", &serde_json::json!({})).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_record_llm_usage_no_governor() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let result = NodeRunResult::default();
+    gate.record_llm_usage(&result).await;
+    // no panic = pass
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_enforce_output_no_policy() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let result = NodeRunResult::default();
+    let enforced = gate.enforce_output_limits("n1", "code", result).await;
+    assert!(enforced.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_check_before_http_no_governor() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let result = gate.check_before_node("n1", "http-request", &serde_json::json!({})).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_check_before_llm_no_governor() {
+    let context = Arc::new(RuntimeContext::default());
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let config = serde_json::json!({"model": {"completion_params": {"max_tokens": 1000}}});
+    let result = gate.check_before_node("n1", "llm", &config).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_with_governor_variable_pool_ok() {
+    use crate::security::{ResourceGroup, ResourceGovernor};
+    use crate::security::resource_group::ResourceQuota;
+    use crate::security::policy::SecurityLevel;
+    use crate::security::governor::InMemoryResourceGovernor;
+    use crate::core::runtime_context::SecurityContext;
+
+    let quota = ResourceQuota::default();
+    let mut quotas = std::collections::HashMap::new();
+    quotas.insert("grp1".to_string(), quota.clone());
+    let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: Some(ResourceGroup {
+        group_id: "grp1".into(),
+        group_name: None,
+        security_level: SecurityLevel::Standard,
+        quota,
+        credential_refs: std::collections::HashMap::new(),
+      }),
+      security_policy: None,
+      resource_governor: Some(governor),
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let result = gate.check_before_node("n1", "code", &serde_json::json!({})).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_with_governor_http_rate_ok() {
+    use crate::security::ResourceGroup;
+    use crate::security::resource_group::ResourceQuota;
+    use crate::security::policy::SecurityLevel;
+    use crate::security::governor::InMemoryResourceGovernor;
+    use crate::core::runtime_context::SecurityContext;
+
+    let quota = ResourceQuota::default();
+    let mut quotas = std::collections::HashMap::new();
+    quotas.insert("grp1".to_string(), quota.clone());
+    let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: Some(ResourceGroup {
+        group_id: "grp1".into(),
+        group_name: None,
+        security_level: SecurityLevel::Standard,
+        quota,
+        credential_refs: std::collections::HashMap::new(),
+      }),
+      security_policy: None,
+      resource_governor: Some(governor),
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let result = gate.check_before_node("h1", "http-request", &serde_json::json!({})).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_with_governor_llm_ok() {
+    use crate::security::ResourceGroup;
+    use crate::security::resource_group::ResourceQuota;
+    use crate::security::policy::SecurityLevel;
+    use crate::security::governor::InMemoryResourceGovernor;
+    use crate::core::runtime_context::SecurityContext;
+
+    let quota = ResourceQuota::default();
+    let mut quotas = std::collections::HashMap::new();
+    quotas.insert("grp1".to_string(), quota.clone());
+    let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: Some(ResourceGroup {
+        group_id: "grp1".into(),
+        group_name: None,
+        security_level: SecurityLevel::Standard,
+        quota,
+        credential_refs: std::collections::HashMap::new(),
+      }),
+      security_policy: None,
+      resource_governor: Some(governor),
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+    let config = serde_json::json!({"model": {"completion_params": {"max_tokens": 100}}});
+    let result = gate.check_before_node("l1", "llm", &config).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_enforce_output_with_policy_under_limit() {
+    use crate::security::ResourceGroup;
+    use crate::security::resource_group::ResourceQuota;
+    use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
+    use crate::core::runtime_context::SecurityContext;
+    use crate::dsl::schema::{NodeOutputs, NodeRunResult};
+    use std::time::Duration;
+
+    let mut node_limits = std::collections::HashMap::new();
+    node_limits.insert("code".to_string(), NodeResourceLimits {
+      max_execution_time: Duration::from_secs(30),
+      max_output_bytes: 1024 * 1024, // 1MB
+      max_memory_bytes: None,
+    });
+    let policy = SecurityPolicy {
+      level: SecurityLevel::Standard,
+      network: None,
+      template: None,
+      dsl_validation: None,
+      node_limits,
+      audit_logger: None,
+    };
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: None,
+      security_policy: Some(policy),
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+
+    let mut ready = std::collections::HashMap::new();
+    ready.insert("result".to_string(), serde_json::json!("small output"));
+    let outputs = NodeOutputs::Sync(ready);
+    let result = NodeRunResult { outputs, ..Default::default() };
+    let enforced = gate.enforce_output_limits("n1", "code", result).await;
+    assert!(enforced.is_ok());
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_enforce_output_too_large() {
+    use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
+    use crate::core::runtime_context::SecurityContext;
+    use crate::dsl::schema::{NodeOutputs, NodeRunResult};
+    use std::time::Duration;
+
+    let mut node_limits = std::collections::HashMap::new();
+    node_limits.insert("code".to_string(), NodeResourceLimits {
+      max_execution_time: Duration::from_secs(30),
+      max_output_bytes: 10, // very small limit
+      max_memory_bytes: None,
+    });
+    let policy = SecurityPolicy {
+      level: SecurityLevel::Standard,
+      network: None,
+      template: None,
+      dsl_validation: None,
+      node_limits,
+      audit_logger: None,
+    };
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: None,
+      security_policy: Some(policy),
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+
+    let mut ready = std::collections::HashMap::new();
+    ready.insert("result".to_string(), serde_json::json!("this is a long output that exceeds 10 bytes"));
+    let outputs = NodeOutputs::Sync(ready);
+    let result = NodeRunResult { outputs, ..Default::default() };
+    let enforced = gate.enforce_output_limits("n1", "code", result).await;
+    assert!(enforced.is_err());
+    let err = enforced.unwrap_err();
+    assert!(err.to_string().contains("too large") || err.to_string().contains("OutputTooLarge") || err.to_string().contains("output"),
+      "got: {}", err);
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_security_gate_enforce_output_no_node_type_limits() {
+    use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
+    use crate::core::runtime_context::SecurityContext;
+    use std::time::Duration;
+
+    let mut node_limits = std::collections::HashMap::new();
+    node_limits.insert("llm".to_string(), NodeResourceLimits {
+      max_execution_time: Duration::from_secs(30),
+      max_output_bytes: 10,
+      max_memory_bytes: None,
+    });
+    let policy = SecurityPolicy {
+      level: SecurityLevel::Standard,
+      network: None,
+      template: None,
+      dsl_validation: None,
+      node_limits,
+      audit_logger: None,
+    };
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: None,
+      security_policy: Some(policy),
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let context = Arc::new(context);
+    let pool = Arc::new(RwLock::new(VariablePool::new()));
+    let gate = new_security_gate(context, pool);
+
+    let result = NodeRunResult::default();
+    // code type has no limits in policy, should pass
+    let enforced = gate.enforce_output_limits("n1", "code", result).await;
+    assert!(enforced.is_ok());
+  }
 }

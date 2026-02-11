@@ -1,3 +1,14 @@
+//! Interactive debugger for workflow execution.
+//!
+//! The debug system uses a two-layer design:
+//! - **[`DebugGate`]**: A cheap, synchronous check that decides whether to pause
+//!   before/after a node. The no-op gate ([`NoopGate`]) is fully inlined away.
+//! - **[`DebugHook`]**: An async callback invoked only when the gate requests a
+//!   pause. The hook can inspect variables, update them, or abort execution.
+//!
+//! For interactive debugging, use [`InteractiveDebugGate`] and
+//! [`InteractiveDebugHook`] with a [`DebugHandle`] for sending commands.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -49,13 +60,18 @@ pub enum DebugAction {
     SkipNode,
 }
 
+/// Configuration for the interactive debugger.
 #[derive(Debug, Clone, Default)]
 pub struct DebugConfig {
+    /// Set of node IDs where execution should pause.
     pub breakpoints: HashSet<String>,
+    /// Whether to pause before the first node executes.
     pub break_on_start: bool,
+    /// Whether to auto-capture variable snapshots on pause.
     pub auto_snapshot: bool,
 }
 
+/// Command sent to the debugger via the [`DebugHandle`].
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
     Step,
@@ -71,6 +87,7 @@ pub enum DebugCommand {
     QueryState,
 }
 
+/// Event emitted by the debugger to the external controller.
 #[derive(Debug, Clone)]
 pub enum DebugEvent {
     Paused { reason: PauseReason, location: PauseLocation },
@@ -84,6 +101,7 @@ pub enum DebugEvent {
     Error { message: String },
 }
 
+/// Current state of the debugger.
 #[derive(Debug, Clone)]
 pub enum DebugState {
     Running,
@@ -94,6 +112,7 @@ pub enum DebugState {
     Finished,
 }
 
+/// Location in the graph where execution is paused.
 #[derive(Debug, Clone)]
 pub enum PauseLocation {
     BeforeNode {
@@ -109,6 +128,7 @@ pub enum PauseLocation {
     },
 }
 
+/// Reason the debugger paused execution.
 #[derive(Debug, Clone)]
 pub enum PauseReason {
     Breakpoint,
@@ -117,6 +137,7 @@ pub enum PauseReason {
     Initial,
 }
 
+/// Internal stepping mode for the debugger.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StepMode {
     Run,
@@ -166,6 +187,9 @@ impl DebugHook for NoopHook {
     }
 }
 
+/// Interactive [`DebugGate`] backed by a shared config and step mode.
+///
+/// This gate checks breakpoints and step mode to decide whether to pause.
 pub struct InteractiveDebugGate {
     pub(crate) config: Arc<RwLock<DebugConfig>>,
     pub(crate) mode: Arc<RwLock<StepMode>>,
@@ -194,6 +218,8 @@ impl DebugGate for InteractiveDebugGate {
     }
 }
 
+/// Interactive [`DebugHook`] that waits for [`DebugCommand`]s from an
+/// external controller and emits [`DebugEvent`]s back.
 pub struct InteractiveDebugHook {
     pub(crate) cmd_rx: Mutex<mpsc::Receiver<DebugCommand>>,
     pub(crate) event_tx: mpsc::Sender<DebugEvent>,
@@ -619,5 +645,592 @@ mod tests {
         let action = hook.wait_for_command(&pool).await.unwrap();
         assert!(matches!(action, DebugAction::Continue));
         assert!(config.read().await.breakpoints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_abort() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let config = Arc::new(RwLock::new(DebugConfig::default()));
+        let mode = Arc::new(RwLock::new(StepMode::Run));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config,
+            mode,
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx
+            .send(DebugCommand::Abort { reason: Some("user quit".into()) })
+            .await
+            .unwrap();
+        let action = hook.wait_for_command(&pool).await.unwrap();
+        match action {
+            DebugAction::Abort { reason } => assert_eq!(reason, "user quit"),
+            other => panic!("Expected Abort, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_abort_no_reason() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx
+            .send(DebugCommand::Abort { reason: None })
+            .await
+            .unwrap();
+        let action = hook.wait_for_command(&pool).await.unwrap();
+        match action {
+            DebugAction::Abort { reason } => assert_eq!(reason, "User aborted"),
+            other => panic!("Expected Abort, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_update_variables() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let (evt_tx, mut evt_rx) = mpsc::channel(4);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        let mut vars = HashMap::new();
+        vars.insert("n1.x".to_string(), Value::Number(42.into()));
+        cmd_tx
+            .send(DebugCommand::UpdateVariables { variables: vars })
+            .await
+            .unwrap();
+        let action = hook.wait_for_command(&pool).await.unwrap();
+        assert!(matches!(action, DebugAction::UpdateVariables { .. }));
+        // Check event emitted
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::VariablesUpdated { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_inspect_node() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let mut pool = VariablePool::new();
+        pool.set(
+            &crate::core::variable_pool::Selector::new("n1", "x"),
+            Segment::Integer(10),
+        );
+        cmd_tx
+            .send(DebugCommand::InspectNodeVariables { node_id: "n1".into() })
+            .await
+            .unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+        let evt = evt_rx.recv().await.unwrap();
+        match evt {
+            DebugEvent::NodeVariableSnapshot { node_id, variables } => {
+                assert_eq!(node_id, "n1");
+                assert!(!variables.is_empty());
+            }
+            other => panic!("Expected NodeVariableSnapshot, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_query_state() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let mut cfg = DebugConfig::default();
+        cfg.breakpoints.insert("bp1".into());
+        let config = Arc::new(RwLock::new(cfg));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config,
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx.send(DebugCommand::QueryState).await.unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+        let evt = evt_rx.recv().await.unwrap();
+        match evt {
+            DebugEvent::StateReport { state, breakpoints, step_count } => {
+                assert!(matches!(state, DebugState::Running));
+                assert!(breakpoints.contains("bp1"));
+                assert_eq!(step_count, 0);
+            }
+            other => panic!("Expected StateReport, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_clear_breakpoints() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, _evt_rx) = mpsc::channel(8);
+        let mut cfg = DebugConfig::default();
+        cfg.breakpoints.insert("a".into());
+        cfg.breakpoints.insert("b".into());
+        let config = Arc::new(RwLock::new(cfg));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config: config.clone(),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx.send(DebugCommand::ClearBreakpoints).await.unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+        assert!(config.read().await.breakpoints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_command_loop_step_over() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let mode = Arc::new(RwLock::new(StepMode::Run));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: mode.clone(),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx.send(DebugCommand::StepOver).await.unwrap();
+        let action = hook.wait_for_command(&pool).await.unwrap();
+        assert!(matches!(action, DebugAction::Continue));
+        assert_eq!(*mode.read().await, StepMode::Step);
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_closed() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        drop(cmd_tx);
+        let result = hook.wait_for_command(&pool).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_interactive_gate_initial_break_on_start() {
+        let mut cfg = DebugConfig::default();
+        cfg.break_on_start = true;
+        let config = Arc::new(RwLock::new(cfg));
+        let mode = Arc::new(RwLock::new(StepMode::Initial));
+        let gate = InteractiveDebugGate { config, mode };
+        assert!(gate.should_pause_before("start"));
+        assert!(!gate.should_pause_after("start"));
+    }
+
+    #[tokio::test]
+    async fn test_noop_hook() {
+        let hook = NoopHook;
+        let pool = VariablePool::new();
+        let result = NodeRunResult::default();
+        let action = hook.before_node_execute("n1", "start", "Start", &pool).await.unwrap();
+        assert!(matches!(action, DebugAction::Continue));
+        let action2 = hook.after_node_execute("n1", "start", "Start", &result, &pool).await.unwrap();
+        assert!(matches!(action2, DebugAction::Continue));
+    }
+
+    #[test]
+    fn test_debug_error_display() {
+        let e1 = DebugError::ChannelClosed;
+        assert_eq!(e1.to_string(), "Debug channel closed");
+        let e2 = DebugError::Timeout;
+        assert_eq!(e2.to_string(), "Debug timeout");
+    }
+
+    #[test]
+    fn test_debug_config_default() {
+        let cfg = DebugConfig::default();
+        assert!(!cfg.break_on_start);
+        assert!(!cfg.auto_snapshot);
+        assert!(cfg.breakpoints.is_empty());
+    }
+
+    #[test]
+    fn test_debug_action_debug() {
+        let action = DebugAction::Continue;
+        let debug_str = format!("{:?}", action);
+        assert!(debug_str.contains("Continue"));
+
+        let action2 = DebugAction::SkipNode;
+        let debug_str2 = format!("{:?}", action2);
+        assert!(debug_str2.contains("SkipNode"));
+    }
+
+    #[test]
+    fn test_pause_reason_debug() {
+        let r = PauseReason::Breakpoint;
+        assert!(format!("{:?}", r).contains("Breakpoint"));
+    }
+
+    #[test]
+    fn test_debug_state_debug() {
+        let s = DebugState::Running;
+        assert!(format!("{:?}", s).contains("Running"));
+        let s2 = DebugState::Finished;
+        assert!(format!("{:?}", s2).contains("Finished"));
+    }
+
+    #[tokio::test]
+    async fn test_emit_paused_with_graph_event_tx() {
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let (graph_tx, mut graph_rx) = mpsc::channel(8);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(mpsc::channel(1).1),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let location = PauseLocation::BeforeNode {
+            node_id: "n1".into(),
+            node_type: "start".into(),
+            node_title: "Start".into(),
+        };
+        hook.emit_paused(PauseReason::Breakpoint, location, "before").await;
+
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::Paused { .. }));
+        let graph_evt = graph_rx.recv().await.unwrap();
+        assert!(matches!(graph_evt, GraphEngineEvent::DebugPaused { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_emit_paused_after_node() {
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let (graph_tx, mut graph_rx) = mpsc::channel(8);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(mpsc::channel(1).1),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let result = NodeRunResult::default();
+        let location = PauseLocation::AfterNode {
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_title: "Code".into(),
+            result,
+        };
+        hook.emit_paused(PauseReason::Step, location, "after").await;
+
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::Paused { .. }));
+        let graph_evt = graph_rx.recv().await.unwrap();
+        match graph_evt {
+            GraphEngineEvent::DebugPaused { phase, reason, .. } => {
+                assert_eq!(phase, "after");
+                assert_eq!(reason, "step");
+            }
+            other => panic!("Expected DebugPaused, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_emit_resumed_with_graph_event_tx() {
+        let (evt_tx, mut evt_rx) = mpsc::channel(4);
+        let (graph_tx, mut graph_rx) = mpsc::channel(4);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(mpsc::channel(1).1),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        hook.emit_resumed().await;
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::Resumed));
+        let graph_evt = graph_rx.recv().await.unwrap();
+        assert!(matches!(graph_evt, GraphEngineEvent::DebugResumed));
+    }
+
+    #[tokio::test]
+    async fn test_emit_snapshot_with_graph_event_tx() {
+        let (evt_tx, mut evt_rx) = mpsc::channel(4);
+        let (graph_tx, mut graph_rx) = mpsc::channel(4);
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(mpsc::channel(1).1),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: Arc::new(RwLock::new(DebugConfig::default())),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let mut pool = VariablePool::new();
+        pool.set(
+            &crate::core::variable_pool::Selector::new("n1", "x"),
+            Segment::Integer(5),
+        );
+        hook.emit_snapshot(&pool).await;
+
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::VariableSnapshot { .. }));
+        let graph_evt = graph_rx.recv().await.unwrap();
+        assert!(matches!(graph_evt, GraphEngineEvent::DebugVariableSnapshot { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_command_add_breakpoint_with_graph_tx() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let (graph_tx, mut graph_rx) = mpsc::channel(8);
+        let config = Arc::new(RwLock::new(DebugConfig::default()));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: config.clone(),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx
+            .send(DebugCommand::AddBreakpoint { node_id: "bp1".into() })
+            .await
+            .unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::BreakpointAdded { .. }));
+        let graph_evt = graph_rx.recv().await.unwrap();
+        match graph_evt {
+            GraphEngineEvent::DebugBreakpointChanged { action, node_id } => {
+                assert_eq!(action, "added");
+                assert_eq!(node_id.unwrap(), "bp1");
+            }
+            other => panic!("Expected DebugBreakpointChanged, got {:?}", other),
+        }
+        assert!(config.read().await.breakpoints.contains("bp1"));
+    }
+
+    #[tokio::test]
+    async fn test_command_remove_breakpoint_with_graph_tx() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let (graph_tx, mut graph_rx) = mpsc::channel(8);
+        let mut cfg = DebugConfig::default();
+        cfg.breakpoints.insert("bp1".into());
+        let config = Arc::new(RwLock::new(cfg));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: config.clone(),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx
+            .send(DebugCommand::RemoveBreakpoint { node_id: "bp1".into() })
+            .await
+            .unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+
+        let evt = evt_rx.recv().await.unwrap();
+        assert!(matches!(evt, DebugEvent::BreakpointRemoved { .. }));
+        let graph_evt = graph_rx.recv().await.unwrap();
+        match graph_evt {
+            GraphEngineEvent::DebugBreakpointChanged { action, .. } => {
+                assert_eq!(action, "removed");
+            }
+            other => panic!("Expected DebugBreakpointChanged, got {:?}", other),
+        }
+        assert!(!config.read().await.breakpoints.contains("bp1"));
+    }
+
+    #[tokio::test]
+    async fn test_command_clear_breakpoints_with_graph_tx() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, _evt_rx) = mpsc::channel(8);
+        let (graph_tx, mut graph_rx) = mpsc::channel(8);
+        let mut cfg = DebugConfig::default();
+        cfg.breakpoints.insert("a".into());
+        let config = Arc::new(RwLock::new(cfg));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: Some(graph_tx),
+            config: config.clone(),
+            mode: Arc::new(RwLock::new(StepMode::Run)),
+            last_pause: Arc::new(RwLock::new(None)),
+            step_count: Arc::new(RwLock::new(0)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx.send(DebugCommand::ClearBreakpoints).await.unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+
+        let graph_evt = graph_rx.recv().await.unwrap();
+        match graph_evt {
+            GraphEngineEvent::DebugBreakpointChanged { action, node_id } => {
+                assert_eq!(action, "cleared");
+                assert!(node_id.is_none());
+            }
+            other => panic!("Expected DebugBreakpointChanged, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_query_state_with_paused_location() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (evt_tx, mut evt_rx) = mpsc::channel(8);
+        let config = Arc::new(RwLock::new(DebugConfig::default()));
+        let last_pause = Arc::new(RwLock::new(Some(PauseLocation::BeforeNode {
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_title: "Code".into(),
+        })));
+        let hook = InteractiveDebugHook {
+            cmd_rx: Mutex::new(cmd_rx),
+            event_tx: evt_tx,
+            graph_event_tx: None,
+            config,
+            mode: Arc::new(RwLock::new(StepMode::Step)),
+            last_pause,
+            step_count: Arc::new(RwLock::new(5)),
+        };
+        let pool = VariablePool::new();
+        cmd_tx.send(DebugCommand::QueryState).await.unwrap();
+        cmd_tx.send(DebugCommand::Continue).await.unwrap();
+        let _ = hook.wait_for_command(&pool).await.unwrap();
+
+        let evt = evt_rx.recv().await.unwrap();
+        match evt {
+            DebugEvent::StateReport { state, step_count, .. } => {
+                assert!(matches!(state, DebugState::Paused { .. }));
+                assert_eq!(step_count, 5);
+            }
+            other => panic!("Expected StateReport, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_debug_handle_methods() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let (_evt_tx, evt_rx) = mpsc::channel(16);
+        let handle = DebugHandle::new(cmd_tx, evt_rx);
+
+        handle.step().await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::Step));
+
+        handle.continue_run().await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::Continue));
+
+        handle.abort(Some("bye".into())).await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::Abort { reason: Some(_) }));
+
+        handle.add_breakpoint("n1").await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::AddBreakpoint { .. }));
+
+        handle.remove_breakpoint("n1").await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::RemoveBreakpoint { .. }));
+
+        handle.inspect_variables().await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::InspectVariables));
+
+        handle.inspect_node("n1").await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::InspectNodeVariables { .. }));
+
+        let mut vars = HashMap::new();
+        vars.insert("n.x".into(), Value::Bool(true));
+        handle.update_variables(vars).await.unwrap();
+        let cmd = cmd_rx.recv().await.unwrap();
+        assert!(matches!(cmd, DebugCommand::UpdateVariables { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_debug_handle_channel_closed() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(4);
+        let (_evt_tx, evt_rx) = mpsc::channel(4);
+        let handle = DebugHandle::new(cmd_tx, evt_rx);
+        drop(_cmd_rx);
+        let result = handle.step().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_debug_handle_wait_for_pause_closed() {
+        let (_cmd_tx, _cmd_rx) = mpsc::channel(4);
+        let (evt_tx, evt_rx) = mpsc::channel(4);
+        let handle = DebugHandle::new(_cmd_tx, evt_rx);
+        drop(evt_tx);
+        let result = handle.wait_for_pause().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_debug_handle_next_event() {
+        let (_cmd_tx, _cmd_rx) = mpsc::channel(4);
+        let (evt_tx, evt_rx) = mpsc::channel(4);
+        let handle = DebugHandle::new(_cmd_tx, evt_rx);
+        evt_tx.send(DebugEvent::Resumed).await.unwrap();
+        let evt = handle.next_event().await;
+        assert!(matches!(evt, Some(DebugEvent::Resumed)));
     }
 }

@@ -26,11 +26,16 @@ use super::types::{
 };
 use super::LlmProviderRegistry;
 
+/// Node executor that drives LLM chat-completion calls.
+///
+/// Handles prompt rendering, context injection, vision/image URLs,
+/// memory, streaming, and security auditing.
 pub struct LlmNodeExecutor {
     registry: Arc<LlmProviderRegistry>,
 }
 
 impl LlmNodeExecutor {
+    /// Create a new executor backed by the given provider registry.
     pub fn new(registry: Arc<LlmProviderRegistry>) -> Self {
         Self { registry }
     }
@@ -408,6 +413,7 @@ mod tests {
     use crate::llm::{LlmError, LlmProvider};
     use crate::llm::types::{ChatCompletionResponse, ProviderInfo};
     use crate::dsl::schema::LlmUsage;
+    use crate::core::variable_pool::SegmentArray;
     use tokio::sync::mpsc;
 
     struct MockProvider;
@@ -477,6 +483,304 @@ mod tests {
 
         let context = RuntimeContext::default();
         let result = executor.execute("llm1", &config, &pool, &context).await.unwrap();
+        assert_eq!(
+            result.outputs.ready().get("text"),
+            Some(&Value::String("hello".into()))
+        );
+    }
+
+    #[test]
+    fn test_map_role_system() {
+        assert!(matches!(map_role("system").unwrap(), ChatRole::System));
+        assert!(matches!(map_role("System").unwrap(), ChatRole::System));
+        assert!(matches!(map_role("SYSTEM").unwrap(), ChatRole::System));
+    }
+
+    #[test]
+    fn test_map_role_user() {
+        assert!(matches!(map_role("user").unwrap(), ChatRole::User));
+    }
+
+    #[test]
+    fn test_map_role_assistant() {
+        assert!(matches!(map_role("assistant").unwrap(), ChatRole::Assistant));
+    }
+
+    #[test]
+    fn test_map_role_invalid() {
+        let result = map_role("tool");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inject_context_with_system_msg() {
+        let mut messages = vec![
+            ChatMessage {
+                role: ChatRole::System,
+                content: ChatContent::Text("You are a bot.".into()),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("Hi".into()),
+            },
+        ];
+        inject_context(&mut messages, "Context: foo".into());
+        match &messages[0].content {
+            ChatContent::Text(text) => {
+                assert!(text.contains("You are a bot."));
+                assert!(text.contains("Context: foo"));
+            }
+            _ => panic!("Expected Text content"),
+        }
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn test_inject_context_without_system_msg() {
+        let mut messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: ChatContent::Text("Hi".into()),
+        }];
+        inject_context(&mut messages, "Context: bar".into());
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, ChatRole::System));
+        match &messages[0].content {
+            ChatContent::Text(text) => assert_eq!(text, "Context: bar"),
+            _ => panic!("Expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_inject_context_multimodal_system() {
+        let mut messages = vec![ChatMessage {
+            role: ChatRole::System,
+            content: ChatContent::MultiModal(vec![ContentPart::Text {
+                text: "base".into(),
+            }]),
+        }];
+        inject_context(&mut messages, "extra context".into());
+        match &messages[0].content {
+            ChatContent::MultiModal(parts) => {
+                assert_eq!(parts.len(), 2);
+            }
+            _ => panic!("Expected MultiModal"),
+        }
+    }
+
+    #[test]
+    fn test_extract_image_urls_string() {
+        let seg = Segment::String("http://img.png".into());
+        let urls = extract_image_urls(&seg);
+        assert_eq!(urls, vec!["http://img.png"]);
+    }
+
+    #[test]
+    fn test_extract_image_urls_array_string() {
+        let seg = Segment::string_array(vec!["a.png".into(), "b.png".into()]);
+        let urls = extract_image_urls(&seg);
+        assert_eq!(urls, vec!["a.png", "b.png"]);
+    }
+
+    #[test]
+    fn test_extract_image_urls_array() {
+        let seg = Segment::Array(Arc::new(SegmentArray::new(vec![
+            Segment::String("x.png".into()),
+            Segment::Integer(42),
+        ])));
+        let urls = extract_image_urls(&seg);
+        // as_string() converts Integer to string too
+        assert_eq!(urls, vec!["x.png", "42"]);
+    }
+
+    #[test]
+    fn test_extract_image_urls_other() {
+        let seg = Segment::Integer(42);
+        let urls = extract_image_urls(&seg);
+        assert!(urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_append_memory_disabled() {
+        let memory = MemoryConfig {
+            enabled: false,
+            variable_selector: None,
+            window_size: None,
+        };
+        let pool = VariablePool::new();
+        let mut messages = Vec::new();
+        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_append_memory_no_selector() {
+        let memory = MemoryConfig {
+            enabled: true,
+            variable_selector: None,
+            window_size: None,
+        };
+        let pool = VariablePool::new();
+        let mut messages = Vec::new();
+        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_append_memory_with_messages() {
+        let memory = MemoryConfig {
+            enabled: true,
+            variable_selector: Some(Selector::new("sys", "history")),
+            window_size: None,
+        };
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("sys", "history"),
+            Segment::from_value(&serde_json::json!([
+                {"role": "user", "text": "Hello"},
+                {"role": "assistant", "text": "Hi there"}
+            ])),
+        );
+        let mut messages = Vec::new();
+        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, ChatRole::User));
+        assert!(matches!(messages[1].role, ChatRole::Assistant));
+    }
+
+    #[tokio::test]
+    async fn test_append_memory_with_window_size() {
+        let memory = MemoryConfig {
+            enabled: true,
+            variable_selector: Some(Selector::new("sys", "history")),
+            window_size: Some(1),
+        };
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("sys", "history"),
+            Segment::from_value(&serde_json::json!([
+                {"role": "user", "text": "First"},
+                {"role": "assistant", "text": "Second"},
+                {"role": "user", "text": "Third"}
+            ])),
+        );
+        let mut messages = Vec::new();
+        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        match &messages[0].content {
+            ChatContent::Text(t) => assert_eq!(t, "Third"),
+            _ => panic!("Expected text"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_llm_executor_missing_provider() {
+        let registry = LlmProviderRegistry::new();
+        let executor = LlmNodeExecutor::new(Arc::new(registry));
+
+        let config = serde_json::json!({
+            "model": { "provider": "nonexistent", "name": "m" },
+            "prompt_template": [
+                { "role": "user", "text": "hi" }
+            ]
+        });
+        let pool = VariablePool::new();
+        let context = RuntimeContext::default();
+        let result = executor.execute("n1", &config, &pool, &context).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_llm_executor_bad_config() {
+        let registry = LlmProviderRegistry::new();
+        let executor = LlmNodeExecutor::new(Arc::new(registry));
+
+        let config = serde_json::json!({"invalid": true});
+        let pool = VariablePool::new();
+        let context = RuntimeContext::default();
+        let result = executor.execute("n1", &config, &pool, &context).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_llm_executor_with_context() {
+        let mut registry = LlmProviderRegistry::new();
+        registry.register(Arc::new(MockProvider));
+        let executor = LlmNodeExecutor::new(Arc::new(registry));
+
+        let config = serde_json::json!({
+            "model": { "provider": "mock", "name": "mock" },
+            "prompt_template": [
+                { "role": "system", "text": "You are a bot" },
+                { "role": "user", "text": "hi" }
+            ],
+            "context": {
+                "enabled": true,
+                "variable_selector": ["sys", "context"]
+            }
+        });
+
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("sys", "context"),
+            Segment::String("background info".into()),
+        );
+        let context = RuntimeContext::default();
+        let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
+        assert_eq!(
+            result.outputs.ready().get("text"),
+            Some(&Value::String("hello".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_llm_executor_stream_mode() {
+        let mut registry = LlmProviderRegistry::new();
+        registry.register(Arc::new(MockProvider));
+        let executor = LlmNodeExecutor::new(Arc::new(registry));
+
+        let config = serde_json::json!({
+            "model": { "provider": "mock", "name": "mock" },
+            "prompt_template": [
+                { "role": "user", "text": "hi" }
+            ],
+            "stream": true
+        });
+
+        let pool = VariablePool::new();
+        let context = RuntimeContext::default();
+        let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
+        // Stream result has stream outputs
+        assert!(result.outputs.streams().unwrap().contains_key("text"));
+    }
+
+    #[tokio::test]
+    async fn test_llm_executor_with_memory() {
+        let mut registry = LlmProviderRegistry::new();
+        registry.register(Arc::new(MockProvider));
+        let executor = LlmNodeExecutor::new(Arc::new(registry));
+
+        let config = serde_json::json!({
+            "model": { "provider": "mock", "name": "mock" },
+            "prompt_template": [
+                { "role": "user", "text": "hi" }
+            ],
+            "memory": {
+                "enabled": true,
+                "variable_selector": ["sys", "history"],
+                "window_size": 2
+            }
+        });
+
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("sys", "history"),
+            Segment::from_value(&serde_json::json!([
+                {"role": "user", "text": "prev question"},
+                {"role": "assistant", "text": "prev answer"}
+            ])),
+        );
+        let context = RuntimeContext::default();
+        let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Value::String("hello".into()))

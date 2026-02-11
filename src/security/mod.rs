@@ -1,3 +1,8 @@
+//! Security layer: audit logging, credential management, resource governance,
+//! network policy enforcement, and DSL / template safety validation.
+//!
+//! All types in this module are gated behind the `security` feature flag.
+
 pub mod audit;
 pub mod credential;
 pub mod governor;

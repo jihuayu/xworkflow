@@ -260,4 +260,44 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_sandbox_manager_empty_execute() {
+        let manager = SandboxManager::new_empty(SandboxManagerConfig::default());
+        let request = SandboxRequest {
+            code: "x".to_string(),
+            language: CodeLanguage::JavaScript,
+            inputs: json!({}),
+            config: ExecutionConfig::default(),
+        };
+        let result = manager.execute(request).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SandboxError::UnsupportedLanguage(lang) => {
+                assert_eq!(lang, CodeLanguage::JavaScript);
+            }
+            other => panic!("Expected UnsupportedLanguage, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sandbox_manager_empty_validate() {
+        let manager = SandboxManager::new_empty(SandboxManagerConfig::default());
+        let result = manager.validate("code", CodeLanguage::Python).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sandbox_manager_health_check_all_empty() {
+        let manager = SandboxManager::new_empty(SandboxManagerConfig::default());
+        let results = manager.health_check_all().await;
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_sandbox_manager_get_sandbox_by_type_empty() {
+        let manager = SandboxManager::new_empty(SandboxManagerConfig::default());
+        let sandbox = manager.get_sandbox_by_type(crate::sandbox::SandboxType::V8);
+        assert!(sandbox.is_none());
+    }
 }

@@ -1,3 +1,5 @@
+//! Plugin registry: central coordination for plugin lifecycle.
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,14 +17,20 @@ use super::hooks::{HookHandler, HookPoint};
 use super::loader::{PluginLoadSource, PluginLoader};
 use super::traits::{Plugin, PluginCategory, PluginCapabilities, PluginMetadata};
 
+/// Current phase of the plugin initialization lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginPhase {
+    /// No plugins loaded yet.
     Uninitialized,
+    /// Loading bootstrap plugins (sandboxes, template engines).
     Bootstrap,
+    /// Loading normal plugins (nodes, hooks, providers).
     Normal,
+    /// All plugins loaded and ready.
     Ready,
 }
 
+/// Central registry managing all loaded plugins and their contributed extensions.
 pub struct PluginRegistry {
     plugins: HashMap<String, Arc<dyn Plugin>>,
     bootstrap_plugin_ids: Vec<String>,
@@ -63,6 +71,7 @@ impl PluginRegistryInner {
 }
 
 impl PluginRegistry {
+    /// Create an empty registry in the [`Uninitialized`](PluginPhase::Uninitialized) phase.
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
@@ -74,6 +83,7 @@ impl PluginRegistry {
         }
     }
 
+    /// Register a custom plugin loader (e.g. for WASM plugins).
     pub fn register_loader(&mut self, loader: Arc<dyn PluginLoader>) {
         self.loaders
             .insert(loader.loader_type().to_string(), loader);

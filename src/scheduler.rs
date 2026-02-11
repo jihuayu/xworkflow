@@ -1,3 +1,10 @@
+//! High-level workflow runner and builder.
+//!
+//! [`WorkflowRunner`] (constructed via [`WorkflowRunnerBuilder`]) is the main
+//! entry point for executing a parsed workflow schema. It wires together the
+//! graph engine, variable pool, node executors, LLM providers, debug hooks,
+//! plugin system, and security layer.
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,7 +46,10 @@ pub enum ExecutionStatus {
   },
 }
 
-/// Handle to a running or completed workflow
+/// Handle to a running or completed workflow.
+///
+/// Allows polling [`status()`](Self::status), blocking on completion via
+/// [`wait()`](Self::wait), and retrieving collected engine events.
 pub struct WorkflowHandle {
     status_rx: watch::Receiver<ExecutionStatus>,
   events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
@@ -47,10 +57,12 @@ pub struct WorkflowHandle {
 }
 
 impl WorkflowHandle {
+    /// Return the current execution status (non-blocking).
     pub async fn status(&self) -> ExecutionStatus {
       self.status_rx.borrow().clone()
     }
 
+    /// Return a snapshot of all collected engine events so far.
     pub async fn events(&self) -> Vec<GraphEngineEvent> {
       match &self.events {
         Some(events) => events.lock().await.clone(),
@@ -58,6 +70,7 @@ impl WorkflowHandle {
       }
     }
 
+    /// Block until the workflow reaches a terminal status.
     pub async fn wait(&self) -> ExecutionStatus {
       let mut rx = self.status_rx.clone();
       loop {
@@ -73,12 +86,16 @@ impl WorkflowHandle {
       }
     }
 
+    /// Whether event collection is still active.
     pub fn events_active(&self) -> bool {
       self.event_active.load(Ordering::Relaxed)
     }
 }
 
-/// Workflow runner with builder-based configuration
+/// Workflow runner with builder-based configuration.
+///
+/// Use [`WorkflowRunner::builder(schema)`](Self::builder) to obtain a
+/// [`WorkflowRunnerBuilder`].
 #[allow(dead_code)]
 pub struct WorkflowRunner {
   schema: WorkflowSchema,
@@ -95,6 +112,7 @@ pub struct WorkflowRunner {
 }
 
 impl WorkflowRunner {
+  /// Create a new builder from a parsed workflow schema.
   pub fn builder(schema: WorkflowSchema) -> WorkflowRunnerBuilder {
     WorkflowRunnerBuilder {
       schema,
@@ -217,6 +235,7 @@ fn extract_error_node_info(
   }
 }
 
+/// Builder for configuring and launching a [`WorkflowRunner`].
 pub struct WorkflowRunnerBuilder {
   schema: WorkflowSchema,
   user_inputs: HashMap<String, Value>,
@@ -233,21 +252,25 @@ pub struct WorkflowRunnerBuilder {
 }
 
 impl WorkflowRunnerBuilder {
+  /// Set user-supplied input variables.
   pub fn user_inputs(mut self, inputs: HashMap<String, Value>) -> Self {
     self.user_inputs = inputs;
     self
   }
 
+  /// Set system variables (e.g. `sys.user_id`).
   pub fn system_vars(mut self, vars: HashMap<String, Value>) -> Self {
     self.system_vars = vars;
     self
   }
 
+  /// Set environment variables accessible to the workflow.
   pub fn environment_vars(mut self, vars: HashMap<String, Value>) -> Self {
     self.environment_vars = vars;
     self
   }
 
+  /// Set conversation variables for stateful chat workflows.
   pub fn conversation_vars(mut self, vars: HashMap<String, Value>) -> Self {
     self.conversation_vars = vars;
     self
@@ -259,11 +282,13 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  /// Set the engine configuration (timeouts, max steps, etc.).
   pub fn config(mut self, config: EngineConfig) -> Self {
     self.config = config;
     self
   }
 
+  /// Set a custom runtime context.
   pub fn context(mut self, context: RuntimeContext) -> Self {
     self.context = context;
     self
@@ -283,6 +308,7 @@ impl WorkflowRunnerBuilder {
     self.context.extensions.security.as_mut().unwrap()
   }
 
+  /// Set a custom sub-graph runner for iteration/loop nodes.
   pub fn sub_graph_runner(mut self, runner: Arc<dyn SubGraphRunner>) -> Self {
     self.context.extensions.sub_graph_runner = Some(runner);
     self
@@ -344,20 +370,24 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  /// Set the LLM provider registry.
   pub fn llm_providers(mut self, registry: Arc<LlmProviderRegistry>) -> Self {
     self.llm_provider_registry = Some(registry);
     self
   }
 
+  /// Enable interactive debugging with the given config.
   pub fn debug(mut self, config: DebugConfig) -> Self {
     self.debug_config = Some(config);
     self
   }
 
+  /// Validate the workflow schema without running it.
   pub fn validate(&self) -> ValidationReport {
     validate_schema(&self.schema)
   }
 
+  /// Build and launch the workflow, returning a [`WorkflowHandle`].
   #[allow(unused_mut)]
   pub async fn run(self) -> Result<WorkflowHandle, WorkflowError> {
     let mut builder = self;
@@ -1047,4 +1077,899 @@ edges:
         let events = handle.events().await;
         assert!(events.is_empty());
       }
+
+    #[test]
+    fn test_error_type_name_variants() {
+        assert_eq!(
+            error_type_name(&WorkflowError::NodeExecutionError {
+                node_id: "n".into(),
+                error: "e".into(),
+                error_detail: None,
+            }),
+            "NodeExecutionError"
+        );
+        assert_eq!(error_type_name(&WorkflowError::Timeout), "Timeout");
+        assert_eq!(error_type_name(&WorkflowError::ExecutionTimeout), "Timeout");
+        assert_eq!(error_type_name(&WorkflowError::MaxStepsExceeded(100)), "MaxStepsExceeded");
+        assert_eq!(error_type_name(&WorkflowError::Aborted("x".into())), "Aborted");
+        assert_eq!(
+            error_type_name(&WorkflowError::InternalError("x".into())),
+            "InternalError"
+        );
+    }
+
+    #[test]
+    fn test_build_error_context_with_node_error() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: code1
+    data: { type: code, title: Code, code: "x", language: javascript }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: code1
+  - source: code1
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let error = WorkflowError::NodeExecutionError {
+            node_id: "code1".into(),
+            error: "boom".into(),
+            error_detail: None,
+        };
+        let mut partial = HashMap::new();
+        partial.insert("foo".to_string(), Value::String("bar".into()));
+        let ctx = build_error_context(&error, &schema, &partial);
+        assert!(ctx.get("sys.error_message").unwrap().as_str().unwrap().contains("boom"));
+        assert_eq!(ctx.get("sys.error_node_id").unwrap(), &Value::String("code1".into()));
+        assert_eq!(ctx.get("sys.error_node_type").unwrap(), &Value::String("code".into()));
+        assert_eq!(ctx.get("sys.error_type").unwrap(), &Value::String("NodeExecutionError".into()));
+        assert!(ctx.get("sys.workflow_outputs").unwrap().is_object());
+    }
+
+    #[test]
+    fn test_build_error_context_non_node_error() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let error = WorkflowError::Timeout;
+        let ctx = build_error_context(&error, &schema, &HashMap::new());
+        assert_eq!(ctx.get("sys.error_node_id").unwrap(), &Value::String("".into()));
+        assert_eq!(ctx.get("sys.error_node_type").unwrap(), &Value::String("".into()));
+        assert_eq!(ctx.get("sys.error_type").unwrap(), &Value::String("Timeout".into()));
+    }
+
+    #[test]
+    fn test_segment_from_type_array_string() {
+        use crate::core::variable_pool::SegmentType;
+        let val = serde_json::json!(["a", "b", "c"]);
+        let seg = segment_from_type(&val, Some(&SegmentType::ArrayString));
+        assert!(matches!(seg, Segment::ArrayString(_)));
+    }
+
+    #[test]
+    fn test_segment_from_type_array_string_non_string_items() {
+        use crate::core::variable_pool::SegmentType;
+        let val = serde_json::json!([1, 2, 3]);
+        let seg = segment_from_type(&val, Some(&SegmentType::ArrayString));
+        // Mixed items fall back to from_value
+        assert!(!matches!(seg, Segment::ArrayString(_)));
+    }
+
+    #[test]
+    fn test_segment_from_type_none() {
+        let val = serde_json::json!("hello");
+        let seg = segment_from_type(&val, None);
+        assert!(matches!(seg, Segment::String(_)));
+    }
+
+    #[test]
+    fn test_collect_start_variable_types() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+      variables:
+        - variable: name
+          label: Name
+          type: string
+          required: true
+        - variable: items
+          label: Items
+          type: array[string]
+          required: false
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let types = collect_start_variable_types(&schema);
+        assert!(types.contains_key("name"));
+        assert!(types.contains_key("items"));
+    }
+
+    #[test]
+    fn test_collect_conversation_variable_types() {
+        let yaml = r#"
+version: "0.1.0"
+conversation_variables:
+  - name: greeting
+    type: string
+  - name: count
+    type: number
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let types = collect_conversation_variable_types(&schema);
+        assert!(types.contains_key("greeting"));
+        assert!(types.contains_key("count"));
+    }
+
+    #[test]
+    fn test_extract_error_node_info_node_error() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let error = WorkflowError::NodeExecutionError {
+            node_id: "start".into(),
+            error: "e".into(),
+            error_detail: None,
+        };
+        let (nid, ntype) = extract_error_node_info(&error, &schema);
+        assert_eq!(nid.unwrap(), "start");
+        assert_eq!(ntype.unwrap(), "start");
+    }
+
+    #[test]
+    fn test_extract_error_node_info_non_node_error() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let (nid, ntype) = extract_error_node_info(&WorkflowError::Timeout, &schema);
+        assert!(nid.is_none());
+        assert!(ntype.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execution_status_debug() {
+        let s = ExecutionStatus::Running;
+        let debug_str = format!("{:?}", s);
+        assert!(debug_str.contains("Running"));
+
+        let s2 = ExecutionStatus::Completed(HashMap::new());
+        let debug_str2 = format!("{:?}", s2);
+        assert!(debug_str2.contains("Completed"));
+
+        let s3 = ExecutionStatus::Failed("err".into());
+        let debug_str3 = format!("{:?}", s3);
+        assert!(debug_str3.contains("Failed"));
+
+        let s4 = ExecutionStatus::FailedWithRecovery {
+            original_error: "orig".into(),
+            recovered_outputs: HashMap::new(),
+        };
+        let debug_str4 = format!("{:?}", s4);
+        assert!(debug_str4.contains("FailedWithRecovery"));
+    }
+
+    #[tokio::test]
+    async fn test_builder_environment_and_conversation_vars() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: env_val
+          value_selector: ["env", "api_key"]
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let mut env_vars = HashMap::new();
+        env_vars.insert("api_key".to_string(), Value::String("secret".into()));
+        let mut conv_vars = HashMap::new();
+        conv_vars.insert("history".to_string(), Value::Array(vec![]));
+
+        let handle = WorkflowRunner::builder(schema)
+            .environment_vars(env_vars)
+            .conversation_vars(conv_vars)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("env_val"), Some(&Value::String("secret".into())));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_reports_issues() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+edges: []
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let builder = WorkflowRunner::builder(schema);
+        let report = builder.validate();
+        // Missing end node, no edges etc
+        assert!(!report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_segment_from_type_integer() {
+        let val = serde_json::json!(42);
+        let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::Number));
+        assert_eq!(seg, crate::core::variable_pool::Segment::Integer(42));
+    }
+
+    #[test]
+    fn test_segment_from_type_string() {
+        let val = serde_json::json!("hello");
+        let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::String));
+        assert_eq!(seg, crate::core::variable_pool::Segment::String("hello".into()));
+    }
+
+    #[test]
+    fn test_segment_from_type_boolean() {
+        let val = serde_json::json!(true);
+        let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::Boolean));
+        assert_eq!(seg, crate::core::variable_pool::Segment::Boolean(true));
+    }
+
+    #[test]
+    fn test_segment_from_type_float() {
+        let val = serde_json::json!(3.14);
+        let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::Number));
+        match seg {
+            crate::core::variable_pool::Segment::Float(f) => assert!((f - 3.14).abs() < 0.001),
+            _ => panic!("Expected Float"),
+        }
+    }
+
+    #[test]
+    fn test_segment_from_type_array_string_valid() {
+        let val = serde_json::json!(["a", "b"]);
+        let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::ArrayString));
+        match seg {
+            crate::core::variable_pool::Segment::ArrayString(_) => {}
+            _ => panic!("Expected ArrayString, got {:?}", seg),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_builder_llm_providers() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let registry = crate::llm::LlmProviderRegistry::new();
+        // Register a mock provider is not possible without the trait, but
+        // the builder path is exercised
+        let handle = WorkflowRunner::builder(schema)
+            .llm_providers(Arc::new(registry))
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_events_active() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .collect_events(true)
+            .run()
+            .await
+            .unwrap();
+        assert!(handle.events_active());
+    }
+
+    #[tokio::test]
+    async fn test_collect_start_variable_types_unmapped() {
+        // Test that variables with unmapped types are skipped
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+      variables:
+        - variable: known
+          type: string
+          required: false
+        - variable: exotic
+          type: some-unknown-type
+          required: false
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let types = collect_start_variable_types(&schema);
+        assert!(types.contains_key("known"));
+        // exotic type should be skipped
+        assert!(!types.contains_key("exotic"));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_workflow_with_template_transform() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+      variables:
+        - variable: name
+          type: string
+          required: true
+  - id: tt
+    data:
+      type: template-transform
+      title: TT
+      template: "Hello {{ name }}"
+      variables:
+        - variable: name
+          value_selector: ["start", "name"]
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: result
+          value_selector: ["tt", "output"]
+edges:
+  - source: start
+    target: tt
+  - source: tt
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let mut input_vars = HashMap::new();
+        input_vars.insert("name".to_string(), Value::String("World".into()));
+        let handle = WorkflowRunner::builder(schema)
+            .user_inputs(input_vars)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("result"), Some(&Value::String("Hello World".into())));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn test_builder_security_policy() {
+        use crate::security::policy::SecurityPolicy;
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let policy = SecurityPolicy::permissive();
+        let handle = WorkflowRunner::builder(schema)
+            .security_policy(policy)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn test_builder_resource_group() {
+        use crate::security::resource_group::{ResourceGroup, ResourceQuota};
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let group = ResourceGroup {
+            group_id: "g1".into(),
+            group_name: Some("Group1".into()),
+            security_level: crate::security::policy::SecurityLevel::Standard,
+            quota: ResourceQuota::default(),
+            credential_refs: HashMap::new(),
+        };
+        let handle = WorkflowRunner::builder(schema)
+            .resource_group(group)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn test_builder_resource_governor() {
+        use crate::security::governor::InMemoryResourceGovernor;
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let governor = Arc::new(InMemoryResourceGovernor::new(HashMap::new()));
+        let handle = WorkflowRunner::builder(schema)
+            .resource_governor(governor)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn test_builder_credential_provider() {
+        // Create a simple credential provider implementation
+        struct TestCredProvider;
+        #[async_trait::async_trait]
+        impl crate::security::credential::CredentialProvider for TestCredProvider {
+            async fn get_credentials(&self, _group_id: &str, _provider: &str) -> Result<HashMap<String, String>, crate::security::credential::CredentialError> {
+                Ok(HashMap::new())
+            }
+        }
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let provider = Arc::new(TestCredProvider);
+        let handle = WorkflowRunner::builder(schema)
+            .credential_provider(provider)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn test_builder_audit_logger() {
+        use crate::security::audit::TracingAuditLogger;
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let logger = Arc::new(TracingAuditLogger);
+        let handle = WorkflowRunner::builder(schema)
+            .audit_logger(logger)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn test_builder_all_security_combined() {
+        use crate::security::policy::SecurityPolicy;
+        use crate::security::resource_group::{ResourceGroup, ResourceQuota};
+        use crate::security::governor::InMemoryResourceGovernor;
+        use crate::security::audit::TracingAuditLogger;
+        struct TestCredProvider2;
+        #[async_trait::async_trait]
+        impl crate::security::credential::CredentialProvider for TestCredProvider2 {
+            async fn get_credentials(&self, _group_id: &str, _provider: &str) -> Result<HashMap<String, String>, crate::security::credential::CredentialError> {
+                Ok(HashMap::new())
+            }
+        }
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .security_policy(SecurityPolicy::permissive())
+            .resource_group(ResourceGroup {
+                group_id: "g1".into(),
+                group_name: Some("G1".into()),
+                security_level: crate::security::policy::SecurityLevel::Standard,
+                quota: ResourceQuota::default(),
+                credential_refs: HashMap::new(),
+            })
+            .resource_governor(Arc::new(InMemoryResourceGovernor::new(HashMap::new())))
+            .credential_provider(Arc::new(TestCredProvider2))
+            .audit_logger(Arc::new(TracingAuditLogger))
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_workflow_failure_no_handler() {
+        // A workflow with a node that will fail and no error handler
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: code
+    data:
+      type: code
+      title: Code
+      code: "function main(inputs) { throw new Error('intentional failure'); }"
+      language: javascript
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: code
+  - source: code
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Failed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_with_config() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let mut config = EngineConfig::default();
+        config.max_steps = 50;
+        config.max_execution_time_secs = 10;
+        let handle = WorkflowRunner::builder(schema)
+            .config(config)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_with_context() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let context = RuntimeContext::default();
+        let handle = WorkflowRunner::builder(schema)
+            .context(context)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_no_events_collection() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .collect_events(false)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+        let events = handle.events().await;
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_workflow_handle_events_active_after_completion() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .run()
+            .await
+            .unwrap();
+        let _status = handle.wait().await;
+        // After completion, events_active should eventually become false
+        // (event_active is set to false after tokio task completes)
+        // Give a small delay for the task to wrap up
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!handle.events_active());
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_with_sub_graph_runner() {
+        use crate::core::sub_graph_runner::DefaultSubGraphRunner;
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let runner = Arc::new(DefaultSubGraphRunner);
+        let handle = WorkflowRunner::builder(schema)
+            .sub_graph_runner(runner)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_with_conversation_vars() {
+        let yaml = r#"
+version: "0.1.0"
+conversation_variables:
+  - name: history
+    type: string
+nodes:
+  - id: s
+    data:
+      type: start
+      title: S
+  - id: e
+    data:
+      type: end
+      title: E
+      outputs:
+        - variable: result
+          value_selector: ["conversation", "history"]
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let mut conv_vars = HashMap::new();
+        conv_vars.insert("history".to_string(), Value::String("prev msg".into()));
+        let handle = WorkflowRunner::builder(schema)
+            .conversation_vars(conv_vars)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        assert!(matches!(status, ExecutionStatus::Completed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_with_env_vars() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data:
+      type: end
+      title: E
+      outputs:
+        - variable: result
+          value_selector: ["env", "api_key"]
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let mut env_vars = HashMap::new();
+        env_vars.insert("api_key".to_string(), Value::String("secret123".into()));
+        let handle = WorkflowRunner::builder(schema)
+            .environment_vars(env_vars)
+            .run()
+            .await
+            .unwrap();
+        let status = handle.wait().await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("result"), Some(&Value::String("secret123".into())));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_workflow_with_events() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema)
+            .collect_events(true)
+            .run()
+            .await
+            .unwrap();
+        let _ = handle.wait().await;
+        // Give a moment for events to flush
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let events = handle.events().await;
+        assert!(!events.is_empty());
+    }
 }

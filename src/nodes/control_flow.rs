@@ -1,3 +1,5 @@
+//! Control flow node executors: Start, End, Answer, IfElse.
+
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -22,6 +24,7 @@ use crate::security::SecurityLevel;
 // Start Node
 // ================================
 
+/// Executor for the Start node. Copies input variables into the pool.
 pub struct StartNodeExecutor;
 
 #[async_trait]
@@ -65,6 +68,7 @@ impl NodeExecutor for StartNodeExecutor {
 // End Node
 // ================================
 
+/// Executor for the End node. Collects final workflow outputs.
 pub struct EndNodeExecutor;
 
 #[async_trait]

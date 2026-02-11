@@ -1,3 +1,5 @@
+//! Plugin context provided to plugins during registration.
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +17,10 @@ use super::loader::PluginLoader;
 use super::registry::{PluginPhase, PluginRegistryInner};
 use super::traits::PluginCapabilities;
 
+/// Mutable context passed to [`Plugin::register()`](super::Plugin::register).
+///
+/// Provides methods for registering node executors, LLM providers, sandboxes,
+/// hooks, template functions, DSL validators, and other extensions.
 pub struct PluginContext<'a> {
     phase: PluginPhase,
     registry_inner: &'a mut PluginRegistryInner,
@@ -40,14 +46,17 @@ impl<'a> PluginContext<'a> {
         }
     }
 
+    /// Return the current plugin lifecycle phase.
     pub fn phase(&self) -> PluginPhase {
         self.phase
     }
 
+    /// Return the id of the plugin currently being registered.
     pub fn plugin_id(&self) -> &str {
         &self.plugin_id
     }
 
+    /// Emit a structured log line tagged with the plugin id.
     pub fn log(&self, level: tracing::Level, message: &str) {
         match level {
             tracing::Level::TRACE => tracing::trace!(plugin_id = %self.plugin_id, message = %message),
@@ -58,6 +67,7 @@ impl<'a> PluginContext<'a> {
         }
     }
 
+    /// Register a code sandbox for the given language (Bootstrap phase only).
     pub fn register_sandbox(
         &mut self,
         language: CodeLanguage,

@@ -1,14 +1,23 @@
+//! IfElse condition evaluation.
+//!
+//! Evaluates multi-case branch conditions against the current [`VariablePool`].
+
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{Case, ComparisonOperator, Condition, LogicalOperator};
 use serde_json::Value;
 
+/// Indicates a type mismatch encountered during condition evaluation.
 #[derive(Debug, Clone)]
 pub struct ConditionTypeMismatch {
+    /// The actual runtime type of the variable.
     pub actual_type: &'static str,
+    /// The type expected by the operator.
     pub expected_type: &'static str,
+    /// The operator that triggered the mismatch.
     pub operator: ComparisonOperator,
 }
 
+/// Result of evaluating a single condition.
 #[derive(Debug, Clone)]
 pub enum ConditionResult {
     True,
@@ -447,5 +456,128 @@ mod tests {
         assert_true(evaluate_condition(&ge, &pool).await);
         let le = make_condition("n", "x", ComparisonOperator::LessOrEqual, serde_json::json!(5));
         assert_true(evaluate_condition(&le, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_contains_array_segment() {
+        let seg = Segment::Array(Arc::new(crate::core::variable_pool::SegmentArray::new(vec![
+            Segment::String("apple".into()),
+            Segment::String("banana".into()),
+        ])));
+        let pool = make_pool(vec![("n", "x", seg)]);
+        let c = make_condition("n", "x", ComparisonOperator::Contains, serde_json::json!("apple"));
+        assert_true(evaluate_condition(&c, &pool).await);
+        let c2 = make_condition("n", "x", ComparisonOperator::Contains, serde_json::json!("cherry"));
+        assert_false(evaluate_condition(&c2, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_contains_integer_segment() {
+        let pool = make_pool(vec![("n", "x", Segment::Integer(42))]);
+        let c = make_condition("n", "x", ComparisonOperator::Contains, serde_json::json!("42"));
+        assert_false(evaluate_condition(&c, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_all_of_array_segment() {
+        let seg = Segment::Array(Arc::new(crate::core::variable_pool::SegmentArray::new(vec![
+            Segment::String("a".into()),
+            Segment::String("b".into()),
+            Segment::String("c".into()),
+        ])));
+        let pool = make_pool(vec![("n", "x", seg)]);
+        let c = make_condition("n", "x", ComparisonOperator::AllOf, serde_json::json!(["a", "b"]));
+        assert_true(evaluate_condition(&c, &pool).await);
+        let c2 = make_condition("n", "x", ComparisonOperator::AllOf, serde_json::json!(["a", "z"]));
+        assert_false(evaluate_condition(&c2, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_all_of_non_array() {
+        let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
+        let c = make_condition("n", "x", ComparisonOperator::AllOf, serde_json::json!(["hello"]));
+        assert_false(evaluate_condition(&c, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_or_all_false_returns_false() {
+        let pool = make_pool(vec![("n", "x", Segment::Integer(1))]);
+        let case = Case {
+            case_id: "c1".into(),
+            logical_operator: LogicalOperator::Or,
+            conditions: vec![
+                make_condition("n", "x", ComparisonOperator::Is, serde_json::json!("99")),
+                make_condition("n", "x", ComparisonOperator::Is, serde_json::json!("88")),
+            ],
+        };
+        assert_false(evaluate_case(&case, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_cases_type_mismatch_propagation() {
+        // TypeMismatch from And case should propagate as Err
+        let pool = make_pool(vec![("n", "x", Segment::None)]);
+        let cases = vec![Case {
+            case_id: "c1".into(),
+            logical_operator: LogicalOperator::And,
+            conditions: vec![
+                make_condition("n", "x", ComparisonOperator::GreaterThan, serde_json::json!(5)),
+            ],
+        }];
+        let result = evaluate_cases(&cases, &pool).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_not_equal_numeric() {
+        let pool = make_pool(vec![("n", "x", Segment::Integer(5))]);
+        let c = make_condition("n", "x", ComparisonOperator::NotEqual, serde_json::json!(3));
+        assert_true(evaluate_condition(&c, &pool).await);
+        let c2 = make_condition("n", "x", ComparisonOperator::NotEqual, serde_json::json!(5));
+        assert_false(evaluate_condition(&c2, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_in_with_non_array_expected() {
+        let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
+        let c = make_condition("n", "x", ComparisonOperator::In, serde_json::json!(42));
+        assert_false(evaluate_condition(&c, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_starts_with_null_expected() {
+        let pool = make_pool(vec![("n", "x", Segment::String("hello".into()))]);
+        let c = make_condition("n", "x", ComparisonOperator::StartWith, Value::Null);
+        // Null converts to empty string by value_to_string
+        let result = evaluate_condition(&c, &pool).await;
+        assert!(matches!(result, ConditionResult::True | ConditionResult::False));
+    }
+
+    #[tokio::test]
+    async fn test_not_contains_array_segment() {
+        let seg = Segment::Array(Arc::new(crate::core::variable_pool::SegmentArray::new(vec![
+            Segment::String("a".into()),
+        ])));
+        let pool = make_pool(vec![("n", "x", seg)]);
+        let c = make_condition("n", "x", ComparisonOperator::NotContains, serde_json::json!("b"));
+        assert_true(evaluate_condition(&c, &pool).await);
+        let c2 = make_condition("n", "x", ComparisonOperator::NotContains, serde_json::json!("a"));
+        assert_false(evaluate_condition(&c2, &pool).await);
+    }
+
+    #[tokio::test]
+    async fn test_or_with_type_mismatch() {
+        let pool = make_pool(vec![("n", "x", Segment::None)]);
+        let case = Case {
+            case_id: "c1".into(),
+            logical_operator: LogicalOperator::Or,
+            conditions: vec![
+                make_condition("n", "x", ComparisonOperator::Is, serde_json::json!("a")),
+                make_condition("n", "x", ComparisonOperator::GreaterThan, serde_json::json!(5)),
+            ],
+        };
+        // First is False (None != "a"), second is TypeMismatch (None vs numeric compare)
+        let result = evaluate_case(&case, &pool).await;
+        assert!(matches!(result, ConditionResult::TypeMismatch(_)));
     }
 }

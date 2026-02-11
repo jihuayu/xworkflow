@@ -1,3 +1,5 @@
+//! Graph data structures.
+
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -7,10 +9,14 @@ use crate::dsl::schema::{EdgeHandle, ErrorStrategyConfig, RetryConfig};
 // Edge Traversal State
 // ================================
 
+/// Traversal state of a graph edge during execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdgeTraversalState {
+    /// Not yet resolved.
     Pending,
+    /// The edge was taken (data flows through).
     Taken,
+    /// The edge was skipped (e.g. IfElse branch not selected).
     Skipped,
 }
 
@@ -18,6 +24,7 @@ pub enum EdgeTraversalState {
 // Graph Node
 // ================================
 
+/// A node in the execution graph, carrying type, config, and runtime state.
 #[derive(Debug, Clone)]
 pub struct GraphNode {
     pub id: String,
@@ -35,6 +42,7 @@ pub struct GraphNode {
 // Graph Edge
 // ================================
 
+/// A directed edge in the execution graph.
 #[derive(Debug, Clone)]
 pub struct GraphEdge {
     pub id: String,
@@ -48,6 +56,9 @@ pub struct GraphEdge {
 // Graph
 // ================================
 
+/// The execution DAG built from a [`WorkflowSchema`](crate::dsl::WorkflowSchema).
+///
+/// Contains nodes, edges, adjacency lists, and the root (start) node ID.
 #[derive(Debug, Clone)]
 pub struct Graph {
     pub nodes: HashMap<String, GraphNode>,

@@ -1,9 +1,14 @@
+//! DSL parser: converts raw YAML/JSON text into [`WorkflowSchema`].
+
 use super::schema::WorkflowSchema;
 use crate::error::WorkflowError;
 
+/// Supported DSL input formats.
 #[derive(Debug, Clone, Copy)]
 pub enum DslFormat {
+    /// YAML format (`.yaml` / `.yml`).
     Yaml,
+    /// JSON format (`.json`).
     Json,
 }
 

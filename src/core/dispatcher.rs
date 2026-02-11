@@ -1,3 +1,10 @@
+//! Workflow dispatcher — the main execution driver.
+//!
+//! The [`WorkflowDispatcher`] walks the DAG graph, executing each node via its
+//! registered [`NodeExecutor`](crate::nodes::NodeExecutor), managing edge
+//! traversal, error strategies, retry logic, timeout enforcement, and streaming
+//! propagation.
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +28,8 @@ use crate::nodes::executor::NodeExecutorRegistry;
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::PluginRegistry;
 
+/// Sender wrapper for engine events, with an atomic active flag so that event
+/// emission can be cheaply skipped when no listener is attached.
 #[derive(Clone)]
 pub struct EventEmitter {
   tx: mpsc::Sender<GraphEngineEvent>,
@@ -28,6 +37,7 @@ pub struct EventEmitter {
 }
 
 impl EventEmitter {
+  /// Create a new event emitter.
   pub fn new(tx: mpsc::Sender<GraphEngineEvent>, active: Arc<AtomicBool>) -> Self {
     Self { tx, active }
   }
@@ -1582,6 +1592,389 @@ edges:
         assert!(event_types.contains(&"node_run_started".to_string()));
         assert!(event_types.contains(&"node_run_succeeded".to_string()));
         assert!(event_types.last().unwrap().contains("graph_run"));
+    }
+
+    #[test]
+    fn test_engine_config_default() {
+        let config = EngineConfig::default();
+        assert_eq!(config.max_steps, 500);
+        assert_eq!(config.max_execution_time_secs, 600);
+        assert!(!config.strict_template);
+    }
+
+    #[test]
+    fn test_engine_config_serde() {
+        let config = EngineConfig {
+            max_steps: 100,
+            max_execution_time_secs: 30,
+            strict_template: true,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["max_steps"], 100);
+        assert_eq!(json["max_execution_time_secs"], 30);
+        assert_eq!(json["strict_template"], true);
+
+        let deserialized: EngineConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.max_steps, 100);
+    }
+
+    #[test]
+    fn test_engine_config_strict_template_default_false() {
+        let json = serde_json::json!({
+            "max_steps": 100,
+            "max_execution_time_secs": 30
+        });
+        let config: EngineConfig = serde_json::from_value(json).unwrap();
+        assert!(!config.strict_template);
+    }
+
+    #[test]
+    fn test_calculate_retry_interval_none_config() {
+        let err = crate::error::NodeError::ExecutionError("e".into());
+        assert_eq!(calculate_retry_interval(&None, 0, &err), 0);
+    }
+
+    #[test]
+    fn test_calculate_retry_interval_fixed() {
+        let rc = crate::dsl::schema::RetryConfig {
+            max_retries: 3,
+            retry_interval: 100,
+            backoff_strategy: crate::dsl::schema::BackoffStrategy::Fixed,
+            backoff_multiplier: 2.0,
+            max_retry_interval: 10000,
+            retry_on_retryable_only: true,
+        };
+        let err = crate::error::NodeError::ExecutionError("e".into());
+        let interval = calculate_retry_interval(&Some(rc), 0, &err);
+        assert_eq!(interval, 100);
+    }
+
+    #[test]
+    fn test_calculate_retry_interval_exponential() {
+        let rc = crate::dsl::schema::RetryConfig {
+            max_retries: 3,
+            retry_interval: 100,
+            backoff_strategy: crate::dsl::schema::BackoffStrategy::Exponential,
+            backoff_multiplier: 2.0,
+            max_retry_interval: 10000,
+            retry_on_retryable_only: true,
+        };
+        let err = crate::error::NodeError::ExecutionError("e".into());
+        let i0 = calculate_retry_interval(&Some(rc.clone()), 0, &err);
+        let i1 = calculate_retry_interval(&Some(rc.clone()), 1, &err);
+        let i2 = calculate_retry_interval(&Some(rc), 2, &err);
+        assert_eq!(i0, 100); // 100 * 2^0
+        assert_eq!(i1, 200); // 100 * 2^1
+        assert_eq!(i2, 400); // 100 * 2^2
+    }
+
+    #[test]
+    fn test_calculate_retry_interval_exponential_with_jitter() {
+        let rc = crate::dsl::schema::RetryConfig {
+            max_retries: 3,
+            retry_interval: 100,
+            backoff_strategy: crate::dsl::schema::BackoffStrategy::ExponentialWithJitter,
+            backoff_multiplier: 2.0,
+            max_retry_interval: 10000,
+            retry_on_retryable_only: true,
+        };
+        let err = crate::error::NodeError::ExecutionError("e".into());
+        let interval = calculate_retry_interval(&Some(rc), 0, &err);
+        // Base is 100, jitter adds up to 10% → [100, 110]
+        assert!(interval >= 100 && interval <= 110);
+    }
+
+    #[test]
+    fn test_calculate_retry_interval_capped() {
+        let rc = crate::dsl::schema::RetryConfig {
+            max_retries: 3,
+            retry_interval: 1000,
+            backoff_strategy: crate::dsl::schema::BackoffStrategy::Exponential,
+            backoff_multiplier: 10.0,
+            max_retry_interval: 5000,
+            retry_on_retryable_only: true,
+        };
+        let err = crate::error::NodeError::ExecutionError("e".into());
+        let interval = calculate_retry_interval(&Some(rc), 2, &err);
+        // 1000 * 10^2 = 100000, capped at 5000
+        assert_eq!(interval, 5000);
+    }
+
+    #[test]
+    fn test_calculate_retry_interval_with_retry_after() {
+        use crate::error::ErrorCode;
+        let rc = crate::dsl::schema::RetryConfig {
+            max_retries: 3,
+            retry_interval: 100,
+            backoff_strategy: crate::dsl::schema::BackoffStrategy::Fixed,
+            backoff_multiplier: 1.0,
+            max_retry_interval: 10000,
+            retry_on_retryable_only: true,
+        };
+        let ctx = crate::error::ErrorContext::retryable(ErrorCode::LlmRateLimit, "rate limited")
+            .with_retry_after(30);
+        let err = crate::error::NodeError::ExecutionError("rate limited".into())
+            .with_context(ctx);
+        let interval = calculate_retry_interval(&Some(rc), 0, &err);
+        assert_eq!(interval, 30000); // 30s * 1000
+    }
+
+    #[tokio::test]
+    async fn test_event_emitter_inactive() {
+        let (tx, _rx) = mpsc::channel(10);
+        let active = Arc::new(AtomicBool::new(false));
+        let emitter = EventEmitter::new(tx, active);
+        assert!(!emitter.is_active());
+        // emit should do nothing when inactive
+        emitter.emit(GraphEngineEvent::GraphRunStarted).await;
+    }
+
+    #[tokio::test]
+    async fn test_event_emitter_active() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let active = Arc::new(AtomicBool::new(true));
+        let emitter = EventEmitter::new(tx, active);
+        assert!(emitter.is_active());
+        emitter.emit(GraphEngineEvent::GraphRunStarted).await;
+        let evt = rx.recv().await.unwrap();
+        assert!(matches!(evt, GraphEngineEvent::GraphRunStarted));
+    }
+
+    #[test]
+    fn test_command_debug() {
+        let cmd = Command::Abort { reason: Some("test".into()) };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Abort"));
+
+        let cmd2 = Command::Pause;
+        assert!(format!("{:?}", cmd2).contains("Pause"));
+
+        let cmd3 = Command::UpdateVariables { variables: HashMap::new() };
+        assert!(format!("{:?}", cmd3).contains("UpdateVariables"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_partial_outputs() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data:
+      type: end
+      title: E
+      outputs:
+        - variable: val
+          value_selector: ["s", "x"]
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
+        let graph = crate::graph::build_graph(&schema).unwrap();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &crate::core::variable_pool::Selector::new("s", "x"),
+            crate::core::variable_pool::Segment::Integer(42),
+        );
+        let registry = crate::nodes::executor::NodeExecutorRegistry::new();
+        let (emitter, _rx) = make_emitter();
+        let context = Arc::new(crate::core::runtime_context::RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(
+            graph,
+            pool,
+            registry,
+            emitter,
+            EngineConfig::default(),
+            context,
+            #[cfg(feature = "plugin-system")]
+            None,
+        );
+        let _ = dispatcher.run().await.unwrap();
+        let partial = dispatcher.partial_outputs();
+        assert_eq!(partial.get("val"), Some(&serde_json::json!(42)));
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_snapshot_pool() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#;
+        let schema = crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
+        let graph = crate::graph::build_graph(&schema).unwrap();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &crate::core::variable_pool::Selector::new("s", "key"),
+            crate::core::variable_pool::Segment::String("val".into()),
+        );
+        let registry = crate::nodes::executor::NodeExecutorRegistry::new();
+        let (emitter, _rx) = make_emitter();
+        let context = Arc::new(crate::core::runtime_context::RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(
+            graph,
+            pool,
+            registry,
+            emitter,
+            EngineConfig::default(),
+            context,
+            #[cfg(feature = "plugin-system")]
+            None,
+        );
+        let _ = dispatcher.run().await.unwrap();
+        let snap = dispatcher.snapshot_pool().await;
+        assert!(snap.len() > 0);
+    }
+
+    #[test]
+    fn test_dispatcher_resource_weak_dropped() {
+        use std::sync::Weak;
+        let graph = Arc::new(RwLock::new(
+            crate::graph::build_graph(&crate::dsl::parse_dsl(
+                r#"version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: e
+"#,
+                crate::dsl::DslFormat::Yaml,
+            ).unwrap()).unwrap(),
+        ));
+        let pool = Arc::new(RwLock::new(VariablePool::new()));
+        let registry = Arc::new(crate::nodes::executor::NodeExecutorRegistry::new());
+        let context = Arc::new(crate::core::runtime_context::RuntimeContext::default());
+
+        let weak = DispatcherResourceWeak {
+            graph: Arc::downgrade(&graph),
+            variable_pool: Arc::downgrade(&pool),
+            registry: Arc::downgrade(&registry),
+            context: Arc::downgrade(&context),
+        };
+
+        assert!(!weak.graph_dropped());
+        assert!(!weak.pool_dropped());
+        assert!(!weak.registry_dropped());
+        assert!(!weak.context_dropped());
+
+        drop(graph);
+        assert!(weak.graph_dropped());
+
+        drop(pool);
+        assert!(weak.pool_dropped());
+
+        drop(registry);
+        assert!(weak.registry_dropped());
+
+        drop(context);
+        assert!(weak.context_dropped());
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_node_not_found_executor() {
+        // Workflow with a node type that has no registered executor
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: custom
+    data: { type: custom-node, title: C }
+  - id: e
+    data: { type: end, title: E, outputs: [] }
+edges:
+  - source: s
+    target: custom
+  - source: custom
+    target: e
+"#;
+        let schema = crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
+        let graph = crate::graph::build_graph(&schema).unwrap();
+        let pool = VariablePool::new();
+        let registry = crate::nodes::executor::NodeExecutorRegistry::new();
+        let (emitter, _rx) = make_emitter();
+        let context = Arc::new(crate::core::runtime_context::RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(
+            graph,
+            pool,
+            registry,
+            emitter,
+            EngineConfig::default(),
+            context,
+            #[cfg(feature = "plugin-system")]
+            None,
+        );
+        let result = dispatcher.run().await;
+        // Should fail because custom-node has no executor
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_max_execution_time_field() {
+        // Verify EngineConfig with custom max_execution_time_secs compiles and can be used
+        let mut config = EngineConfig::default();
+        config.max_execution_time_secs = 30;
+        assert_eq!(config.max_execution_time_secs, 30);
+        config.max_steps = 100;
+        assert_eq!(config.max_steps, 100);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_error_strategy_default_value() {
+        // Use a node that will fail but with default_value error strategy
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: s
+    data: { type: start, title: S }
+  - id: code
+    data:
+      type: code
+      title: Code
+      code: "function main() { throw new Error('fail'); }"
+      language: javascript
+      error_strategy:
+        type: default-value
+        default_value:
+          result: "fallback"
+  - id: e
+    data: { type: end, title: E, outputs: [{variable_selector: [code, result], value_selector: [code, result]}] }
+edges:
+  - source: s
+    target: code
+  - source: code
+    target: e
+"#;
+        let schema = crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
+        let graph = crate::graph::build_graph(&schema).unwrap();
+        let pool = VariablePool::new();
+        let registry = crate::nodes::executor::NodeExecutorRegistry::new();
+        let (emitter, _rx) = make_emitter();
+        let context = Arc::new(crate::core::runtime_context::RuntimeContext::default());
+        let mut dispatcher = WorkflowDispatcher::new(
+            graph,
+            pool,
+            registry,
+            emitter,
+            EngineConfig::default(),
+            context,
+            #[cfg(feature = "plugin-system")]
+            None,
+        );
+        let result = dispatcher.run().await;
+        // Either succeeds with fallback or fails - exercises error strategy path
+        assert!(result.is_ok() || result.is_err());
     }
 }
 

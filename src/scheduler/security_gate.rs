@@ -170,3 +170,210 @@ pub use real::new_gate as new_scheduler_security_gate;
 pub fn new_scheduler_security_gate() -> Arc<dyn SchedulerSecurityGate> {
   Arc::new(NoopSchedulerSecurityGate)
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_scheduler_security_gate_validate_schema() {
+    let gate = new_scheduler_security_gate();
+    let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"end"}]}"#;
+    let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
+    let context = RuntimeContext::default();
+    let report = gate.validate_schema(&schema, &context);
+    assert!(report.is_valid, "diagnostics: {:?}", report.diagnostics);
+  }
+
+  #[tokio::test]
+  async fn test_scheduler_security_gate_audit_validation_noop() {
+    let gate = new_scheduler_security_gate();
+    let context = RuntimeContext::default();
+    let report = crate::dsl::validation::ValidationReport {
+      is_valid: true,
+      diagnostics: vec![],
+    };
+    gate.audit_validation_failed(&context, &report).await;
+  }
+
+  #[test]
+  fn test_scheduler_security_gate_configure_variable_pool() {
+    let gate = new_scheduler_security_gate();
+    let context = RuntimeContext::default();
+    let mut pool = VariablePool::new();
+    gate.configure_variable_pool(&context, &mut pool);
+  }
+
+  #[test]
+  fn test_scheduler_security_gate_effective_engine_config() {
+    let gate = new_scheduler_security_gate();
+    let context = RuntimeContext::default();
+    let config = EngineConfig {
+      max_steps: 100,
+      max_execution_time_secs: 300,
+      strict_template: false,
+    };
+    let effective = gate.effective_engine_config(&context, config.clone());
+    assert_eq!(effective.max_steps, 100);
+    assert_eq!(effective.max_execution_time_secs, 300);
+  }
+
+  #[tokio::test]
+  async fn test_scheduler_security_gate_on_workflow_start() {
+    let gate = new_scheduler_security_gate();
+    let context = RuntimeContext::default();
+    let result = gate.on_workflow_start(&context).await;
+    assert!(result.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_scheduler_security_gate_record_workflow_end() {
+    let gate = new_scheduler_security_gate();
+    let context = RuntimeContext::default();
+    gate.record_workflow_end(&context, Some("wf1")).await;
+    gate.record_workflow_end(&context, None).await;
+  }
+
+  #[cfg(feature = "security")]
+  #[test]
+  fn test_real_scheduler_security_gate_effective_config_with_group() {
+    use crate::security::resource_group::{ResourceGroup, ResourceQuota};
+    use crate::security::policy::SecurityLevel;
+    use crate::core::runtime_context::SecurityContext;
+
+    let gate = new_scheduler_security_gate();
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: Some(ResourceGroup {
+        group_id: "grp".into(),
+        group_name: None,
+        security_level: SecurityLevel::Standard,
+        quota: ResourceQuota {
+          max_steps: 50,
+          max_execution_time_secs: 120,
+          ..Default::default()
+        },
+        credential_refs: std::collections::HashMap::new(),
+      }),
+      security_policy: None,
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let config = EngineConfig {
+      max_steps: 200,
+      max_execution_time_secs: 600,
+      strict_template: true,
+    };
+    let effective = gate.effective_engine_config(&context, config);
+    assert_eq!(effective.max_steps, 50);
+    assert_eq!(effective.max_execution_time_secs, 120);
+    assert!(effective.strict_template);
+  }
+
+  #[cfg(feature = "security")]
+  #[tokio::test]
+  async fn test_real_scheduler_security_gate_on_workflow_start_with_governor() {
+    use crate::security::resource_group::{ResourceGroup, ResourceQuota};
+    use crate::security::policy::SecurityLevel;
+    use crate::security::governor::InMemoryResourceGovernor;
+    use crate::core::runtime_context::SecurityContext;
+
+    let quota = ResourceQuota::default();
+    let mut quotas = std::collections::HashMap::new();
+    quotas.insert("grp1".to_string(), quota.clone());
+    let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
+
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: Some(ResourceGroup {
+        group_id: "grp1".into(),
+        group_name: None,
+        security_level: SecurityLevel::Standard,
+        quota,
+        credential_refs: std::collections::HashMap::new(),
+      }),
+      security_policy: None,
+      resource_governor: Some(governor),
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let gate = new_scheduler_security_gate();
+    let result: Result<Option<String>, WorkflowError> = gate.on_workflow_start(&context).await;
+    assert!(result.is_ok());
+    let workflow_id = result.unwrap();
+    assert!(workflow_id.is_some());
+
+    gate.record_workflow_end(&context, workflow_id.as_deref()).await;
+  }
+
+  #[cfg(feature = "security")]
+  #[test]
+  fn test_real_scheduler_security_gate_validate_with_policy() {
+    use crate::security::policy::{SecurityLevel, SecurityPolicy};
+    use crate::security::DslValidationConfig;
+    use crate::core::runtime_context::SecurityContext;
+
+    let gate = new_scheduler_security_gate();
+    let policy = SecurityPolicy {
+      level: SecurityLevel::Strict,
+      network: None,
+      template: None,
+      dsl_validation: Some(DslValidationConfig {
+        max_nodes: 2,
+        ..Default::default()
+      }),
+      node_limits: std::collections::HashMap::new(),
+      audit_logger: None,
+    };
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: None,
+      security_policy: Some(policy),
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"a","data":{"type":"code","title":"A","code":"x","language":"javascript"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"a"},{"source":"a","target":"end"}]}"#;
+    let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
+    let report = gate.validate_schema(&schema, &context);
+    // max_nodes=2 but we have 3 nodes -> should fail
+    assert!(report.diagnostics.iter().any(|d| d.code == "E020"), "got: {:?}", report.diagnostics);
+  }
+
+  #[cfg(feature = "security")]
+  #[test]
+  fn test_real_scheduler_security_gate_configure_variable_pool_with_selector_validation() {
+    use crate::security::policy::{SecurityLevel, SecurityPolicy};
+    use crate::security::{DslValidationConfig, SelectorValidation};
+    use crate::core::runtime_context::SecurityContext;
+
+    let gate = new_scheduler_security_gate();
+    let policy = SecurityPolicy {
+      level: SecurityLevel::Standard,
+      network: None,
+      template: None,
+      dsl_validation: Some(DslValidationConfig {
+        selector_validation: Some(SelectorValidation {
+          max_depth: 5,
+          max_length: 100,
+          allowed_prefixes: std::collections::HashSet::new(),
+        }),
+        ..Default::default()
+      }),
+      node_limits: std::collections::HashMap::new(),
+      audit_logger: None,
+    };
+    let mut context = RuntimeContext::default();
+    context.extensions.security = Some(SecurityContext {
+      resource_group: None,
+      security_policy: Some(policy),
+      resource_governor: None,
+      credential_provider: None,
+      audit_logger: None,
+    });
+    let mut pool = VariablePool::new();
+    gate.configure_variable_pool(&context, &mut pool);
+    // Pool should now have selector validation configured
+  }
+}

@@ -1,3 +1,9 @@
+//! Workflow DSL schema types.
+//!
+//! All data structures that represent a workflow definition. These types are
+//! deserialized directly from YAML/JSON DSL files and consumed by the graph
+//! builder and executor registry.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,6 +27,7 @@ pub const CURRENT_DSL_VERSION: &str = "0.1.0";
 /// All supported DSL versions
 pub const SUPPORTED_DSL_VERSIONS: &[&str] = &["0.1.0"];
 
+/// Top-level workflow definition.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct WorkflowSchema {
     /// DSL version string, e.g. "0.1.0"
@@ -63,6 +70,7 @@ pub struct NodeData {
     pub extra: HashMap<String, Value>,
 }
 
+/// A directed edge connecting two nodes.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EdgeSchema {
     #[serde(default)]
@@ -73,12 +81,14 @@ pub struct EdgeSchema {
     pub source_handle: Option<String>,
 }
 
+/// An environment variable injected into the workflow at runtime.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EnvironmentVariable {
     pub name: String,
     pub value: String,
 }
 
+/// A persistent conversation variable whose value carries across runs.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ConversationVariable {
     pub name: String,
@@ -92,6 +102,7 @@ pub struct ConversationVariable {
 // Error Strategy
 // ================================
 
+/// Per-node error handling strategy.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ErrorStrategyConfig {
     #[serde(rename = "type")]
@@ -100,6 +111,7 @@ pub struct ErrorStrategyConfig {
     pub default_value: Option<HashMap<String, Value>>,
 }
 
+/// Error strategy type for a node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorStrategyType {
@@ -108,6 +120,7 @@ pub enum ErrorStrategyType {
     DefaultValue,
 }
 
+/// Configuration for automatic retry on node failure.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RetryConfig {
     #[serde(default)]
@@ -124,6 +137,7 @@ pub struct RetryConfig {
     pub retry_on_retryable_only: bool,
 }
 
+/// Retry backoff strategy.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum BackoffStrategy {
@@ -141,6 +155,7 @@ fn default_retry_on_retryable_only() -> bool { true }
 // Workflow Error Handler
 // ================================
 
+/// How the global error handler processes a workflow-level failure.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorHandlingMode {
@@ -154,6 +169,7 @@ impl Default for ErrorHandlingMode {
     }
 }
 
+/// Global error handler configuration with an embedded recovery sub-graph.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ErrorHandlerConfig {
     pub sub_graph: crate::nodes::subgraph::SubGraphDefinition,
@@ -165,6 +181,7 @@ pub struct ErrorHandlerConfig {
 // Node Type Enum (Dify-compatible)
 // ================================
 
+/// Dify-compatible node type enumeration.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeType {
@@ -210,6 +227,7 @@ impl std::fmt::Display for NodeType {
 // Node Execution Type
 // ================================
 
+/// Classifies how a node participates in execution flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeExecutionType {
     Executable,
@@ -235,12 +253,14 @@ impl NodeType {
 // Start Node Config
 // ================================
 
+/// Configuration for a Start node (workflow entry point).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct StartNodeData {
     #[serde(default)]
     pub variables: Vec<StartVariable>,
 }
 
+/// A user-facing input variable declared on the Start node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct StartVariable {
     pub variable: String,
@@ -264,12 +284,14 @@ fn default_var_type() -> String {
 // End Node Config
 // ================================
 
+/// Configuration for an End node (workflow output collector).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EndNodeData {
     #[serde(default)]
     pub outputs: Vec<OutputVariable>,
 }
 
+/// A single output variable mapping in an End node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct OutputVariable {
     pub variable: String,
@@ -280,6 +302,7 @@ pub struct OutputVariable {
 // Answer Node Config
 // ================================
 
+/// Configuration for an Answer node (renders a response template).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AnswerNodeData {
     pub answer: String,
@@ -289,11 +312,13 @@ pub struct AnswerNodeData {
 // IfElse Node Config (Dify-compatible: multi-case branches)
 // ================================
 
+/// Configuration for an IfElse node (conditional branching with multiple cases).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct IfElseNodeData {
     pub cases: Vec<Case>,
 }
 
+/// A single branch case in an IfElse node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Case {
     pub case_id: String,
@@ -301,6 +326,7 @@ pub struct Case {
     pub conditions: Vec<Condition>,
 }
 
+/// A single condition within a case (compares a variable against a value).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Condition {
     pub variable_selector: VariableSelector,
@@ -309,6 +335,7 @@ pub struct Condition {
     pub value: Value,
 }
 
+/// Comparison operators supported by IfElse conditions.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonOperator {
@@ -350,6 +377,7 @@ pub enum ComparisonOperator {
     NotNull,
 }
 
+/// Logical operator for combining conditions within a case.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum LogicalOperator {
@@ -361,6 +389,7 @@ pub enum LogicalOperator {
 // Template Transform Node Config
 // ================================
 
+/// Configuration for a Template Transform node (Jinja2 rendering).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct TemplateTransformNodeData {
     pub template: String,
@@ -368,6 +397,7 @@ pub struct TemplateTransformNodeData {
     pub variables: Vec<VariableMapping>,
 }
 
+/// Maps a named variable to a [`VariableSelector`] source.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct VariableMapping {
     pub variable: String,
@@ -378,6 +408,7 @@ pub struct VariableMapping {
 // Code Node Config
 // ================================
 
+/// Configuration for a Code node (JavaScript/Python3 sandbox execution).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CodeNodeData {
     pub code: String,
@@ -388,6 +419,7 @@ pub struct CodeNodeData {
     pub outputs: HashMap<String, Value>,
 }
 
+/// Supported programming languages for Code nodes.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum CodeLanguage {
@@ -399,6 +431,7 @@ pub enum CodeLanguage {
 // HTTP Request Node Config
 // ================================
 
+/// Configuration for an HTTP Request node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct HttpRequestNodeData {
     pub method: HttpMethod,
@@ -417,6 +450,7 @@ pub struct HttpRequestNodeData {
     pub fail_on_error_status: Option<bool>,
 }
 
+/// HTTP method for requests.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {
@@ -428,12 +462,14 @@ pub enum HttpMethod {
     Head,
 }
 
+/// A generic key-value pair used for headers, query params, and form data.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct KeyValuePair {
     pub key: String,
     pub value: String,
 }
 
+/// HTTP request body variants.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HttpBody {
@@ -444,6 +480,7 @@ pub enum HttpBody {
     Json { data: String },
 }
 
+/// HTTP authorization schemes.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Authorization {
@@ -454,6 +491,7 @@ pub enum Authorization {
     CustomHeaders { headers: Vec<KeyValuePair> },
 }
 
+/// Where to place an API key in the request.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyPosition { Header, Query, Body }
@@ -464,6 +502,7 @@ fn default_timeout() -> u64 { 10 }
 // Variable Aggregator (Dify: returns first non-null)
 // ================================
 
+/// Configuration for a Variable Aggregator node (returns first non-null).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct VariableAggregatorNodeData {
     pub variables: Vec<VariableSelector>,
@@ -475,6 +514,7 @@ pub struct VariableAggregatorNodeData {
 // Variable Assigner
 // ================================
 
+/// Configuration for a Variable Assigner node (writes to a conversation variable).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct VariableAssignerNodeData {
     pub assigned_variable_selector: VariableSelector,
@@ -486,6 +526,7 @@ pub struct VariableAssignerNodeData {
     pub write_mode: WriteMode,
 }
 
+/// Write mode for variable assignment.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum WriteMode {
@@ -500,6 +541,7 @@ fn default_write_mode() -> WriteMode { WriteMode::Overwrite }
 // Iteration Node Config
 // ================================
 
+/// Configuration for an Iteration node (loops over a list with a sub-graph).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct IterationNodeData {
     pub iterator_selector: VariableSelector,
@@ -512,6 +554,7 @@ pub struct IterationNodeData {
     pub error_handle_mode: IterationErrorMode,
 }
 
+/// Error handling mode for iteration failures.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum IterationErrorMode {
@@ -526,6 +569,7 @@ fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Te
 // LLM Node Config (stub)
 // ================================
 
+/// Configuration for an LLM node (calls an LLM provider).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct LlmNodeData {
     pub model: ModelConfig,
@@ -541,6 +585,7 @@ pub struct LlmNodeData {
     pub stream: Option<bool>,
 }
 
+/// LLM model selection and parameters.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ModelConfig {
     pub provider: String,
@@ -553,6 +598,7 @@ pub struct ModelConfig {
     pub credentials: Option<HashMap<String, String>>,
 }
 
+/// LLM completion sampling parameters.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CompletionParams {
     pub temperature: Option<f64>,
@@ -560,6 +606,7 @@ pub struct CompletionParams {
     pub max_tokens: Option<i32>,
 }
 
+/// A prompt message in the LLM prompt template.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PromptMessage {
     pub role: String,
@@ -568,6 +615,7 @@ pub struct PromptMessage {
     pub edition_type: Option<String>,
 }
 
+/// Context retrieval configuration for the LLM node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ContextConfig {
     pub enabled: bool,
@@ -575,6 +623,7 @@ pub struct ContextConfig {
     pub variable_selector: Option<VariableSelector>,
 }
 
+/// Vision (multi-modal) configuration for the LLM node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct VisionConfig {
     pub enabled: bool,
@@ -584,6 +633,7 @@ pub struct VisionConfig {
     pub detail: Option<String>,
 }
 
+/// Conversation memory configuration for the LLM node.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct MemoryConfig {
     pub enabled: bool,
@@ -597,6 +647,7 @@ pub struct MemoryConfig {
 // Node Run Result (Dify-compatible)
 // ================================
 
+/// Execution status of a single node run.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNodeExecutionStatus {
@@ -610,6 +661,7 @@ pub enum WorkflowNodeExecutionStatus {
     Retry,
 }
 
+/// Result of executing a single node, including outputs, metadata, and status.
 #[derive(Debug, Clone)]
 pub struct NodeRunResult {
     pub status: WorkflowNodeExecutionStatus,
@@ -651,6 +703,7 @@ impl Default for EdgeHandle {
     }
 }
 
+/// Node output container, supporting both synchronous and streaming outputs.
 #[derive(Debug, Clone)]
 pub enum NodeOutputs {
     /// All outputs are ready
@@ -685,6 +738,7 @@ impl NodeOutputs {
     }
 }
 
+/// Structured error information attached to a failed [`NodeRunResult`].
 #[derive(Debug, Clone)]
 pub struct NodeErrorInfo {
     pub message: String,
@@ -692,6 +746,7 @@ pub struct NodeErrorInfo {
     pub detail: Option<Value>,
 }
 
+/// LLM token usage and cost metrics.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct LlmUsage {
     #[serde(default)]
@@ -706,4 +761,161 @@ pub struct LlmUsage {
     pub currency: String,
     #[serde(default)]
     pub latency: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_type_display() {
+        assert_eq!(NodeType::Start.to_string(), "start");
+        assert_eq!(NodeType::End.to_string(), "end");
+        assert_eq!(NodeType::IfElse.to_string(), "if-else");
+        assert_eq!(NodeType::Code.to_string(), "code");
+        assert_eq!(NodeType::HttpRequest.to_string(), "http-request");
+        assert_eq!(NodeType::TemplateTransform.to_string(), "template-transform");
+        assert_eq!(NodeType::VariableAssigner.to_string(), "assigner");
+    }
+
+    #[test]
+    fn test_node_type_execution_type() {
+        assert_eq!(NodeType::Start.execution_type(), NodeExecutionType::Root);
+        assert_eq!(NodeType::End.execution_type(), NodeExecutionType::Response);
+        assert_eq!(NodeType::Answer.execution_type(), NodeExecutionType::Response);
+        assert_eq!(NodeType::IfElse.execution_type(), NodeExecutionType::Branch);
+        assert_eq!(NodeType::QuestionClassifier.execution_type(), NodeExecutionType::Branch);
+        assert_eq!(NodeType::Iteration.execution_type(), NodeExecutionType::Container);
+        assert_eq!(NodeType::Loop.execution_type(), NodeExecutionType::Container);
+        assert_eq!(NodeType::Code.execution_type(), NodeExecutionType::Executable);
+        assert_eq!(NodeType::Llm.execution_type(), NodeExecutionType::Executable);
+    }
+
+    #[test]
+    fn test_node_run_result_default() {
+        let r = NodeRunResult::default();
+        assert_eq!(r.status, WorkflowNodeExecutionStatus::Pending);
+        assert!(r.inputs.is_empty());
+        assert!(r.outputs.ready().is_empty());
+        assert!(r.metadata.is_empty());
+        assert!(r.llm_usage.is_none());
+        assert_eq!(r.edge_source_handle, EdgeHandle::Default);
+        assert!(r.error.is_none());
+        assert_eq!(r.retry_index, 0);
+    }
+
+    #[test]
+    fn test_edge_handle_default() {
+        let h = EdgeHandle::default();
+        assert_eq!(h, EdgeHandle::Default);
+    }
+
+    #[test]
+    fn test_edge_handle_branch() {
+        let h = EdgeHandle::Branch("case1".into());
+        assert_ne!(h, EdgeHandle::Default);
+    }
+
+    #[test]
+    fn test_node_outputs_sync() {
+        let mut m = HashMap::new();
+        m.insert("key".into(), Value::Number(42.into()));
+        let out = NodeOutputs::Sync(m);
+        assert_eq!(out.ready()["key"], 42);
+        assert!(out.streams().is_none());
+        let (ready, streams) = out.into_parts();
+        assert_eq!(ready["key"], 42);
+        assert!(streams.is_empty());
+    }
+
+    #[test]
+    fn test_node_outputs_stream() {
+        let (stream, _writer) = crate::core::variable_pool::SegmentStream::channel();
+        let mut ready = HashMap::new();
+        ready.insert("r".into(), Value::Bool(true));
+        let mut streams = HashMap::new();
+        streams.insert("s".into(), stream);
+        let out = NodeOutputs::Stream { ready, streams };
+        assert_eq!(out.ready()["r"], true);
+        assert!(out.streams().is_some());
+        assert_eq!(out.streams().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_error_handling_mode_default() {
+        let mode = ErrorHandlingMode::default();
+        let json = serde_json::to_string(&mode).unwrap();
+        assert!(json.contains("notify"));
+    }
+
+    #[test]
+    fn test_comparison_operator_serde_aliases() {
+        let op: ComparisonOperator = serde_json::from_str("\"not_contains\"").unwrap();
+        assert_eq!(op, ComparisonOperator::NotContains);
+        let op: ComparisonOperator = serde_json::from_str("\"start_with\"").unwrap();
+        assert_eq!(op, ComparisonOperator::StartWith);
+        let op: ComparisonOperator = serde_json::from_str("\">\"").unwrap();
+        assert_eq!(op, ComparisonOperator::GreaterThan);
+    }
+
+    #[test]
+    fn test_workflow_schema_serde_roundtrip() {
+        let json = serde_json::json!({
+            "version": "0.1.0",
+            "nodes": [],
+            "edges": []
+        });
+        let schema: WorkflowSchema = serde_json::from_value(json).unwrap();
+        assert_eq!(schema.version, "0.1.0");
+        assert!(schema.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_llm_usage_default() {
+        let u = LlmUsage::default();
+        assert_eq!(u.prompt_tokens, 0);
+        assert_eq!(u.completion_tokens, 0);
+        assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.total_price, 0.0);
+        assert_eq!(u.currency, "");
+        assert_eq!(u.latency, 0.0);
+    }
+
+    #[test]
+    fn test_node_type_serde_roundtrip() {
+        let node_types = vec![
+            NodeType::Start,
+            NodeType::End,
+            NodeType::Answer,
+            NodeType::Llm,
+            NodeType::IfElse,
+            NodeType::Code,
+            NodeType::HttpRequest,
+            NodeType::TemplateTransform,
+            NodeType::VariableAggregator,
+            NodeType::VariableAssigner,
+            NodeType::Iteration,
+            NodeType::Loop,
+            NodeType::ListOperator,
+        ];
+        for nt in node_types {
+            let json = serde_json::to_value(&nt).unwrap();
+            let de: NodeType = serde_json::from_value(json).unwrap();
+            assert_eq!(de, nt);
+        }
+    }
+
+    #[test]
+    fn test_workflow_execution_status_variants() {
+        let statuses = vec![
+            ("\"pending\"", WorkflowNodeExecutionStatus::Pending),
+            ("\"running\"", WorkflowNodeExecutionStatus::Running),
+            ("\"succeeded\"", WorkflowNodeExecutionStatus::Succeeded),
+            ("\"failed\"", WorkflowNodeExecutionStatus::Failed),
+        ];
+        for (s, expected) in statuses {
+            let de: WorkflowNodeExecutionStatus = serde_json::from_str(s).unwrap();
+            assert_eq!(de, expected);
+        }
+    }
 }

@@ -1,3 +1,12 @@
+//! Template rendering implementations.
+//!
+//! Two distinct template notations are supported:
+//!
+//! 1. **Dify Answer-node** templates — `{{#node_id.var#}}` placeholders
+//!    resolved against a [`VariablePool`].
+//! 2. **Jinja2** templates — powered by `minijinja` with custom functions
+//!    and optional security sanitisation.
+
 use crate::core::variable_pool::{Selector, VariablePool};
 use regex::Regex;
 use std::collections::HashMap;
@@ -18,6 +27,7 @@ pub fn render_template(template: &str, pool: &VariablePool) -> String {
     render_template_with_config(template, pool, false).unwrap_or_default()
 }
 
+/// Error returned when a referenced variable is missing in strict mode.
 #[derive(Debug, Clone)]
 pub struct TemplateRenderError {
     pub selector: String,
@@ -31,6 +41,10 @@ impl std::fmt::Display for TemplateRenderError {
 
 impl std::error::Error for TemplateRenderError {}
 
+/// Synchronous render with configurable strict mode.
+///
+/// In strict mode an error is returned on the first missing variable.
+/// In lenient mode missing variables are replaced with empty strings.
 pub fn render_template_with_config(
     template: &str,
     pool: &VariablePool,
@@ -78,6 +92,7 @@ pub async fn render_template_async(template: &str, pool: &VariablePool) -> Strin
         .unwrap_or_default()
 }
 
+/// Async-capable render that resolves streaming variables before substitution.
 pub async fn render_template_async_with_config(
     template: &str,
     pool: &VariablePool,
@@ -354,5 +369,146 @@ mod tests {
         let compiled = CompiledTemplate::new("Hello {{ name }}!", None).unwrap();
         let result = compiled.render(&vars).unwrap();
         assert_eq!(result, "Hello Rust!");
+    }
+
+    #[test]
+    fn test_render_template_with_config_strict_missing() {
+        let pool = VariablePool::new();
+        let result = render_template_with_config("Hello {{#missing.var#}}!", &pool, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("missing.var"));
+    }
+
+    #[test]
+    fn test_render_template_with_config_strict_present() {
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("n1", "x"),
+            Segment::String("ok".into()),
+        );
+        let result = render_template_with_config("{{#n1.x#}}", &pool, true);
+        assert_eq!(result.unwrap(), "ok");
+    }
+
+    #[test]
+    fn test_render_template_with_config_non_strict_missing() {
+        let pool = VariablePool::new();
+        let result = render_template_with_config("foo {{#miss.x#}} bar", &pool, false);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "foo  bar");
+    }
+
+    #[test]
+    fn test_render_template_no_placeholders() {
+        let pool = VariablePool::new();
+        let result = render_template("No placeholders here", &pool);
+        assert_eq!(result, "No placeholders here");
+    }
+
+    #[test]
+    fn test_render_template_bad_selector() {
+        let pool = VariablePool::new();
+        // A selector without a dot is invalid
+        let result = render_template("{{#nodot#}}", &pool);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_template_render_error_display() {
+        let err = TemplateRenderError {
+            selector: "n1.x".to_string(),
+        };
+        assert_eq!(err.to_string(), "missing template variable: n1.x");
+        // Test the Error trait
+        let _source = std::error::Error::source(&err);
+    }
+
+    #[tokio::test]
+    async fn test_render_template_async_basic() {
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("n1", "a"),
+            Segment::String("hello".into()),
+        );
+        let result = render_template_async("{{#n1.a#}} world", &pool).await;
+        assert_eq!(result, "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_render_template_async_missing() {
+        let pool = VariablePool::new();
+        let result = render_template_async("missing {{#m.x#}}", &pool).await;
+        assert_eq!(result, "missing ");
+    }
+
+    #[tokio::test]
+    async fn test_render_template_async_strict_missing() {
+        let pool = VariablePool::new();
+        let result = render_template_async_with_config("{{#m.x#}}", &pool, true).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_render_template_async_strict_bad_selector() {
+        let pool = VariablePool::new();
+        let result = render_template_async_with_config("{{#nodot#}}", &pool, true).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_render_template_async_multiple() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("a", "x"), Segment::Integer(1));
+        pool.set(&Selector::new("b", "y"), Segment::String("z".into()));
+        let result = render_template_async("{{#a.x#}}-{{#b.y#}}", &pool).await;
+        assert_eq!(result, "1-z");
+    }
+
+    #[test]
+    fn test_render_template_integer_value() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "count"), Segment::Integer(99));
+        let result = render_template("Count: {{#n1.count#}}", &pool);
+        assert_eq!(result, "Count: 99");
+    }
+
+    #[test]
+    fn test_render_template_float_value() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "pi"), Segment::Float(3.14));
+        let result = render_template("Pi: {{#n1.pi#}}", &pool);
+        assert!(result.starts_with("Pi: 3.14"));
+    }
+
+    #[test]
+    fn test_render_template_bool_value() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "flag"), Segment::Boolean(true));
+        let result = render_template("Flag: {{#n1.flag#}}", &pool);
+        assert_eq!(result, "Flag: true");
+    }
+
+    #[cfg(feature = "builtin-template-jinja")]
+    #[test]
+    fn test_render_jinja2_multiple_vars() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("a".to_string(), serde_json::json!(1));
+        vars.insert("b".to_string(), serde_json::json!("two"));
+        let result = render_jinja2("{{ a }} and {{ b }}", &vars).unwrap();
+        assert_eq!(result, "1 and two");
+    }
+
+    #[cfg(feature = "builtin-template-jinja")]
+    #[test]
+    fn test_compiled_template_multiple_renders() {
+        let compiled = CompiledTemplate::new("Hello {{ name }}!", None).unwrap();
+        let mut v1 = std::collections::HashMap::new();
+        v1.insert("name".to_string(), serde_json::json!("A"));
+        assert_eq!(compiled.render(&v1).unwrap(), "Hello A!");
+
+        let mut v2 = std::collections::HashMap::new();
+        v2.insert("name".to_string(), serde_json::json!("B"));
+        assert_eq!(compiled.render(&v2).unwrap(), "Hello B!");
     }
 }

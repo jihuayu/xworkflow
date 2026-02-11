@@ -318,3 +318,298 @@ impl GraphEngineEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pause_reason_serde() {
+        let pr = PauseReason {
+            node_id: "n1".into(),
+            reason: "breakpoint".into(),
+        };
+        let json = serde_json::to_string(&pr).unwrap();
+        let de: PauseReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.node_id, "n1");
+        assert_eq!(de.reason, "breakpoint");
+    }
+
+    #[test]
+    fn test_graph_run_started() {
+        let e = GraphEngineEvent::GraphRunStarted;
+        let j = e.to_json();
+        assert_eq!(j["type"], "graph_run_started");
+    }
+
+    #[test]
+    fn test_graph_run_succeeded() {
+        let mut outputs = HashMap::new();
+        outputs.insert("key".into(), Value::String("val".into()));
+        let e = GraphEngineEvent::GraphRunSucceeded { outputs };
+        let j = e.to_json();
+        assert_eq!(j["type"], "graph_run_succeeded");
+        assert_eq!(j["data"]["outputs"]["key"], "val");
+    }
+
+    #[test]
+    fn test_graph_run_failed() {
+        let e = GraphEngineEvent::GraphRunFailed {
+            error: "boom".into(),
+            exceptions_count: 2,
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "graph_run_failed");
+        assert_eq!(j["data"]["error"], "boom");
+        assert_eq!(j["data"]["exceptions_count"], 2);
+    }
+
+    #[test]
+    fn test_graph_run_partial_succeeded() {
+        let e = GraphEngineEvent::GraphRunPartialSucceeded {
+            exceptions_count: 1,
+            outputs: HashMap::new(),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "graph_run_partial_succeeded");
+        assert_eq!(j["data"]["exceptions_count"], 1);
+    }
+
+    #[test]
+    fn test_graph_run_aborted() {
+        let e = GraphEngineEvent::GraphRunAborted {
+            reason: Some("timeout".into()),
+            outputs: HashMap::new(),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "graph_run_aborted");
+        assert_eq!(j["data"]["reason"], "timeout");
+    }
+
+    #[test]
+    fn test_node_run_started() {
+        let e = GraphEngineEvent::NodeRunStarted {
+            id: "r1".into(),
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_title: "Code Node".into(),
+            predecessor_node_id: Some("n0".into()),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "node_run_started");
+        assert_eq!(j["data"]["node_id"], "n1");
+        assert_eq!(j["data"]["predecessor_node_id"], "n0");
+    }
+
+    #[test]
+    fn test_node_run_succeeded() {
+        let e = GraphEngineEvent::NodeRunSucceeded {
+            id: "r1".into(),
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_run_result: NodeRunResult::default(),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "node_run_succeeded");
+        assert_eq!(j["data"]["status"], "succeeded");
+    }
+
+    #[test]
+    fn test_node_run_failed() {
+        let result = NodeRunResult {
+            error: Some(crate::dsl::schema::NodeErrorInfo {
+                message: "err".into(),
+                error_type: Some("RuntimeError".into()),
+                detail: Some(Value::String("detail".into())),
+            }),
+            ..Default::default()
+        };
+        let e = GraphEngineEvent::NodeRunFailed {
+            id: "r1".into(),
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_run_result: result,
+            error: "err".into(),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "node_run_failed");
+        assert_eq!(j["data"]["error_type"], "RuntimeError");
+    }
+
+    #[test]
+    fn test_node_run_exception() {
+        let e = GraphEngineEvent::NodeRunException {
+            id: "r1".into(),
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_run_result: NodeRunResult::default(),
+            error: "exception".into(),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "node_run_exception");
+    }
+
+    #[test]
+    fn test_node_run_stream_chunk() {
+        let e = GraphEngineEvent::NodeRunStreamChunk {
+            id: "r1".into(),
+            node_id: "n1".into(),
+            node_type: "answer".into(),
+            chunk: "hello".into(),
+            selector: Selector::new("n1", "text"),
+            is_final: false,
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "node_run_stream_chunk");
+        assert_eq!(j["data"]["chunk"], "hello");
+        assert_eq!(j["data"]["is_final"], false);
+    }
+
+    #[test]
+    fn test_node_run_retry() {
+        let e = GraphEngineEvent::NodeRunRetry {
+            id: "r1".into(),
+            node_id: "n1".into(),
+            node_type: "http-request".into(),
+            node_title: "HTTP".into(),
+            error: "timeout".into(),
+            retry_index: 2,
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "node_run_retry");
+        assert_eq!(j["data"]["retry_index"], 2);
+    }
+
+    #[test]
+    fn test_error_handler_events() {
+        let e = GraphEngineEvent::ErrorHandlerStarted { error: "e".into() };
+        assert_eq!(e.to_json()["type"], "error_handler_started");
+
+        let e = GraphEngineEvent::ErrorHandlerSucceeded { outputs: HashMap::new() };
+        assert_eq!(e.to_json()["type"], "error_handler_succeeded");
+
+        let e = GraphEngineEvent::ErrorHandlerFailed { error: "e".into() };
+        assert_eq!(e.to_json()["type"], "error_handler_failed");
+    }
+
+    #[test]
+    fn test_iteration_events() {
+        let e = GraphEngineEvent::IterationStarted {
+            node_id: "n1".into(),
+            node_title: "Iter".into(),
+            inputs: HashMap::new(),
+        };
+        assert_eq!(e.to_json()["type"], "iteration_started");
+
+        let e = GraphEngineEvent::IterationNext {
+            node_id: "n1".into(),
+            node_title: "Iter".into(),
+            index: 3,
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "iteration_next");
+        assert_eq!(j["data"]["index"], 3);
+
+        let e = GraphEngineEvent::IterationSucceeded {
+            node_id: "n1".into(),
+            node_title: "Iter".into(),
+            outputs: HashMap::new(),
+            steps: 5,
+        };
+        assert_eq!(e.to_json()["data"]["steps"], 5);
+
+        let e = GraphEngineEvent::IterationFailed {
+            node_id: "n1".into(),
+            node_title: "Iter".into(),
+            error: "fail".into(),
+            steps: 2,
+        };
+        assert_eq!(e.to_json()["type"], "iteration_failed");
+    }
+
+    #[test]
+    fn test_loop_events() {
+        let e = GraphEngineEvent::LoopStarted {
+            node_id: "n1".into(),
+            node_title: "L".into(),
+            inputs: HashMap::new(),
+        };
+        assert_eq!(e.to_json()["type"], "loop_started");
+
+        let e = GraphEngineEvent::LoopNext {
+            node_id: "n1".into(),
+            node_title: "L".into(),
+            index: 1,
+        };
+        assert_eq!(e.to_json()["type"], "loop_next");
+
+        let e = GraphEngineEvent::LoopSucceeded {
+            node_id: "n1".into(),
+            node_title: "L".into(),
+            outputs: HashMap::new(),
+            steps: 10,
+        };
+        assert_eq!(e.to_json()["data"]["steps"], 10);
+
+        let e = GraphEngineEvent::LoopFailed {
+            node_id: "n1".into(),
+            node_title: "L".into(),
+            error: "err".into(),
+            steps: 3,
+        };
+        assert_eq!(e.to_json()["type"], "loop_failed");
+    }
+
+    #[test]
+    fn test_plugin_events() {
+        let e = GraphEngineEvent::PluginLoaded {
+            plugin_id: "p1".into(),
+            name: "MyPlugin".into(),
+        };
+        assert_eq!(e.to_json()["data"]["name"], "MyPlugin");
+
+        let e = GraphEngineEvent::PluginUnloaded { plugin_id: "p1".into() };
+        assert_eq!(e.to_json()["type"], "plugin_unloaded");
+
+        let e = GraphEngineEvent::PluginEvent {
+            plugin_id: "p1".into(),
+            event_type: "custom".into(),
+            data: Value::Bool(true),
+        };
+        assert_eq!(e.to_json()["data"]["event_type"], "custom");
+
+        let e = GraphEngineEvent::PluginError {
+            plugin_id: "p1".into(),
+            error: "crash".into(),
+        };
+        assert_eq!(e.to_json()["type"], "plugin_error");
+    }
+
+    #[test]
+    fn test_debug_events() {
+        let e = GraphEngineEvent::DebugPaused {
+            reason: "breakpoint".into(),
+            node_id: "n1".into(),
+            node_type: "code".into(),
+            node_title: "Code".into(),
+            phase: "before".into(),
+        };
+        let j = e.to_json();
+        assert_eq!(j["type"], "debug_paused");
+        assert_eq!(j["data"]["phase"], "before");
+
+        let e = GraphEngineEvent::DebugResumed;
+        assert_eq!(e.to_json()["type"], "debug_resumed");
+
+        let e = GraphEngineEvent::DebugBreakpointChanged {
+            action: "add".into(),
+            node_id: Some("n1".into()),
+        };
+        assert_eq!(e.to_json()["data"]["action"], "add");
+
+        let e = GraphEngineEvent::DebugVariableSnapshot {
+            data: serde_json::json!({"x": 1}),
+        };
+        assert_eq!(e.to_json()["data"]["data"]["x"], 1);
+    }
+}

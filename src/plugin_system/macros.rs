@@ -1,3 +1,9 @@
+//! FFI helper macros for declaring plugins as dynamic libraries.
+
+/// Declare a plugin type for C-ABI dynamic loading.
+///
+/// Generates `xworkflow_plugin_create`, `xworkflow_plugin_destroy`, and
+/// `xworkflow_plugin_abi_version` extern functions.
 #[macro_export]
 macro_rules! xworkflow_declare_plugin {
     ($plugin_type:ty) => {
@@ -20,6 +26,10 @@ macro_rules! xworkflow_declare_plugin {
     };
 }
 
+/// Declare a Rust-native plugin (no C-ABI tear-down needed).
+///
+/// Generates `XWORKFLOW_RUST_PLUGIN`, `XWORKFLOW_RUST_ABI_VERSION`, and
+/// `xworkflow_rust_plugin_create` symbols.
 #[macro_export]
 macro_rules! xworkflow_declare_rust_plugin {
     ($plugin_type:ty) => {

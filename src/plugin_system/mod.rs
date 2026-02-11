@@ -1,3 +1,14 @@
+//! Dynamic plugin system for extending xworkflow at runtime.
+//!
+//! Plugins can register node executors, LLM providers, template engines,
+//! code sandboxes, hooks, and DSL validators. Loading happens in two phases:
+//!
+//! 1. **Bootstrap** — core infrastructure plugins (sandboxes, template engines).
+//! 2. **Normal** — business-level plugins (custom nodes, LLM providers, hooks).
+//!
+//! See [`PluginRegistry`] for the central coordination point and
+//! [`Plugin`] for the trait that all plugins must implement.
+
 pub mod config;
 pub mod context;
 pub mod error;

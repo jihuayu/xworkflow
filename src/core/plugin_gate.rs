@@ -1,3 +1,9 @@
+//! Plugin gate trait for lifecycle hook emission.
+//!
+//! The [`PluginGate`] is invoked by the dispatcher at workflow/node boundaries
+//! to run registered plugin hooks (before/after workflow, before/after node,
+//! variable write interception).
+
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -8,8 +14,10 @@ use crate::core::variable_pool::{Selector, VariablePool};
 use crate::dsl::schema::NodeRunResult;
 use crate::error::WorkflowResult;
 
+/// Gate for emitting plugin lifecycle hooks during workflow execution.
 #[async_trait]
 pub trait PluginGate: Send + Sync {
+  /// Emit hooks before the workflow starts.
   async fn emit_before_workflow_hooks(&self) -> WorkflowResult<()>;
 
   async fn emit_after_workflow_hooks(
@@ -44,6 +52,7 @@ pub trait PluginGate: Send + Sync {
   fn mark_pool_dirty(&self);
 }
 
+/// No-op [`PluginGate`] used when no plugins are loaded.
 #[derive(Debug, Default)]
 pub struct NoopPluginGate;
 
@@ -329,4 +338,51 @@ pub fn new_plugin_gate(
   _variable_pool: Arc<parking_lot::RwLock<VariablePool>>,
 ) -> Arc<dyn PluginGate> {
   Arc::new(NoopPluginGate)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn test_noop_plugin_gate_before_workflow() {
+    let gate = NoopPluginGate;
+    assert!(gate.emit_before_workflow_hooks().await.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_noop_plugin_gate_after_workflow() {
+    let gate = NoopPluginGate;
+    let outputs = HashMap::new();
+    assert!(gate.emit_after_workflow_hooks(&outputs, 0).await.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_noop_plugin_gate_before_node() {
+    let gate = NoopPluginGate;
+    let config = serde_json::json!({});
+    assert!(gate.emit_before_node_hooks("n1", "code", "Code", &config).await.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_noop_plugin_gate_after_node() {
+    let gate = NoopPluginGate;
+    let result = NodeRunResult::default();
+    assert!(gate.emit_after_node_hooks("n1", "code", "Code", &result).await.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_noop_plugin_gate_variable_write() {
+    let gate = NoopPluginGate;
+    let sel = Selector::new("n1", "out");
+    let mut val = serde_json::json!("test");
+    assert!(gate.apply_before_variable_write_hooks("n1", &sel, &mut val).await.is_ok());
+    assert_eq!(val, serde_json::json!("test"));
+  }
+
+  #[test]
+  fn test_noop_plugin_gate_mark_pool_dirty() {
+    let gate = NoopPluginGate;
+    gate.mark_pool_dirty(); // no panic = pass
+  }
 }

@@ -1,3 +1,5 @@
+//! Node executor trait and registry.
+
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -31,10 +33,12 @@ pub struct NodeExecutorRegistry {
 }
 
 impl NodeExecutorRegistry {
+    /// Create a new registry pre-populated with all built-in executors.
     pub fn new() -> Self {
         Self::with_builtins()
     }
 
+    /// Create an empty registry with no executors registered.
     pub fn empty() -> Self {
         NodeExecutorRegistry {
             executors: HashMap::new(),
@@ -42,6 +46,7 @@ impl NodeExecutorRegistry {
         }
     }
 
+    /// Create a registry with all built-in (feature-gated) node executors.
     pub fn with_builtins() -> Self {
         let mut registry = NodeExecutorRegistry::empty();
         // Register built-in executors
@@ -118,6 +123,7 @@ impl NodeExecutorRegistry {
         }
     }
 
+    /// Register an eagerly-constructed executor for the given node type.
     pub fn register(&mut self, node_type: &str, executor: Box<dyn NodeExecutor>) {
         let cell = OnceLock::new();
         let _ = cell.set(executor);
@@ -125,6 +131,7 @@ impl NodeExecutorRegistry {
         self.factories.lock().remove(node_type);
     }
 
+    /// Register a lazily-constructed executor. The factory is called on first access.
     pub fn register_lazy(
         &mut self,
         node_type: &str,
@@ -145,6 +152,7 @@ impl NodeExecutorRegistry {
     pub fn set_llm_provider_registry(&mut self, _registry: std::sync::Arc<LlmProviderRegistry>) {
     }
 
+    /// Look up an executor for the given node type string.
     pub fn get(&self, node_type: &str) -> Option<&dyn NodeExecutor> {
         let cell = self.executors.get(node_type)?;
         if cell.get().is_none() {
@@ -194,5 +202,97 @@ impl NodeExecutor for StubExecutor {
             }),
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_executor_registry_empty() {
+        let registry = NodeExecutorRegistry::empty();
+        assert!(registry.get("start").is_none());
+        assert!(registry.get("code").is_none());
+    }
+
+    #[test]
+    fn test_node_executor_registry_with_builtins() {
+        let registry = NodeExecutorRegistry::with_builtins();
+        // built-in core nodes
+        assert!(registry.get("start").is_some());
+        assert!(registry.get("end").is_some());
+        assert!(registry.get("answer").is_some());
+        assert!(registry.get("if-else").is_some());
+        // built-in transform nodes
+        assert!(registry.get("template-transform").is_some());
+        assert!(registry.get("variable-aggregator").is_some());
+        assert!(registry.get("variable-assigner").is_some());
+        assert!(registry.get("assigner").is_some());
+        // built-in http node
+        assert!(registry.get("http-request").is_some());
+        // code node (lazy)
+        assert!(registry.get("code").is_some());
+        // subgraph nodes
+        assert!(registry.get("list-operator").is_some());
+        assert!(registry.get("iteration").is_some());
+        assert!(registry.get("loop").is_some());
+        // stub nodes
+        assert!(registry.get("knowledge-retrieval").is_some());
+        assert!(registry.get("question-classifier").is_some());
+        assert!(registry.get("parameter-extractor").is_some());
+        assert!(registry.get("tool").is_some());
+        assert!(registry.get("document-extractor").is_some());
+        assert!(registry.get("agent").is_some());
+        assert!(registry.get("human-input").is_some());
+    }
+
+    #[test]
+    fn test_node_executor_registry_new_is_with_builtins() {
+        let registry = NodeExecutorRegistry::new();
+        assert!(registry.get("start").is_some());
+    }
+
+    #[test]
+    fn test_node_executor_registry_default() {
+        let registry = NodeExecutorRegistry::default();
+        assert!(registry.get("start").is_some());
+    }
+
+    #[test]
+    fn test_node_executor_registry_get_nonexistent() {
+        let registry = NodeExecutorRegistry::with_builtins();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_register_custom_executor() {
+        let mut registry = NodeExecutorRegistry::empty();
+        registry.register("custom", Box::new(StubExecutor("custom")));
+        assert!(registry.get("custom").is_some());
+    }
+
+    #[test]
+    fn test_register_lazy() {
+        let mut registry = NodeExecutorRegistry::empty();
+        registry.register_lazy("lazy", Box::new(|| Box::new(StubExecutor("lazy"))));
+        // Before first access, lazy factory should be used
+        let executor = registry.get("lazy");
+        assert!(executor.is_some());
+        // Second access should return same executor
+        assert!(registry.get("lazy").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_stub_executor_execute() {
+        let executor = StubExecutor("test-type");
+        let vp = VariablePool::new();
+        let ctx = RuntimeContext::default();
+        let result = executor.execute("node1", &serde_json::json!({}), &vp, &ctx).await;
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(matches!(result.status, crate::dsl::schema::WorkflowNodeExecutionStatus::Exception));
+        assert!(result.error.is_some());
+        assert!(result.error.unwrap().message.contains("test-type"));
     }
 }

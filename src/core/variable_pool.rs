@@ -1,3 +1,15 @@
+//! Variable pool and segment type system.
+//!
+//! This module implements the Dify-compatible variable storage and type system.
+//! Variables are addressed by [`Selector`] (a `(node_id, variable_name)` pair) and
+//! stored as [`Segment`] values in a copy-on-write [`VariablePool`].
+//!
+//! # Streaming
+//!
+//! [`SegmentStream`] supports LLM streaming responses. A stream is created via
+//! [`SegmentStream::channel`], which returns a `(SegmentStream, StreamWriter)` pair.
+//! Downstream nodes can read chunks incrementally through [`StreamReader`].
+
 use compact_str::CompactString;
 use im::HashMap as ImHashMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -8,8 +20,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use tokio::sync::{Notify, RwLock};
 
+/// Sentinel node ID used for scoped (local) variables within sub-graphs.
 pub const SCOPE_NODE_ID: &str = "__scope__";
 
+/// A two-part variable address: `(node_id, variable_name)`.
+///
+/// Selectors are used throughout the engine to reference variables in the
+/// [`VariablePool`]. They can be parsed from JSON arrays (`["node", "var"]`)
+/// or dot-separated strings (`"node.var"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Selector {
     node_id: String,
@@ -17,6 +35,7 @@ pub struct Selector {
 }
 
 impl Selector {
+    /// Create a new selector from a node ID and variable name.
     pub fn new(node_id: impl Into<String>, variable_name: impl Into<String>) -> Self {
         Self {
             node_id: node_id.into(),
@@ -24,6 +43,7 @@ impl Selector {
         }
     }
 
+    /// Parse a selector from a JSON value (string or array of strings).
     pub fn parse_value(value: &Value) -> Option<Self> {
         match value {
             Value::Array(arr) => {
@@ -44,6 +64,7 @@ impl Selector {
         }
     }
 
+    /// Parse a selector from a dot-separated string (e.g. `"node_id.var_name"`).
     pub fn parse_str(selector: &str) -> Option<Self> {
         let parts: Vec<String> = selector
             .split('.')
@@ -61,14 +82,17 @@ impl Selector {
         }
     }
 
+    /// Returns the node ID component of this selector.
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
 
+    /// Returns the variable name component of this selector.
     pub fn variable_name(&self) -> &str {
         &self.variable_name
     }
 
+    /// Returns `true` if either the node ID or variable name is empty.
     pub fn is_empty(&self) -> bool {
         self.node_id.is_empty() || self.variable_name.is_empty()
     }
@@ -132,6 +156,13 @@ impl<'de> Deserialize<'de> for Selector {
 // Segment – Dify variable type system
 // ================================
 
+/// A dynamically-typed variable value used throughout the workflow engine.
+///
+/// `Segment` mirrors the Dify variable type system and supports:
+/// - Primitive types: `String`, `Integer`, `Float`, `Boolean`
+/// - Composite types: `Object` (key-value map), `Array`, `ArrayString`
+/// - `Stream` for LLM streaming responses
+/// - `None` for null / missing values
 #[derive(Debug, Clone)]
 pub enum Segment {
     None,
@@ -145,6 +176,8 @@ pub enum Segment {
     Stream(SegmentStream),
 }
 
+/// A heterogeneous array of [`Segment`] values with a lazily-cached JSON
+/// representation.
 #[derive(Debug, Default)]
 pub struct SegmentArray {
     items: Vec<Segment>,
@@ -152,6 +185,7 @@ pub struct SegmentArray {
 }
 
 impl SegmentArray {
+    /// Create a new `SegmentArray` from a vector of segments.
     pub fn new(items: Vec<Segment>) -> Self {
         Self {
             items,
@@ -195,6 +229,8 @@ impl Deref for SegmentArray {
     }
 }
 
+/// A string-keyed map of [`Segment`] values with a lazily-cached JSON
+/// representation.
 #[derive(Debug, Default)]
 pub struct SegmentObject {
     entries: HashMap<String, Segment>,
@@ -202,6 +238,7 @@ pub struct SegmentObject {
 }
 
 impl SegmentObject {
+    /// Create a new `SegmentObject` from a `HashMap`.
     pub fn new(entries: HashMap<String, Segment>) -> Self {
         Self {
             entries,
@@ -253,6 +290,7 @@ impl Deref for SegmentObject {
     }
 }
 
+/// Serializable file reference used by File-type variables.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileSegment {
     #[serde(default)]
@@ -274,11 +312,13 @@ pub struct FileSegment {
 }
 
 impl FileSegment {
+    /// Convert this file metadata into a [`Segment::Object`].
     pub fn to_segment(&self) -> Segment {
         let value = serde_json::to_value(self).unwrap_or(Value::Null);
         Segment::from_value(&value)
     }
 
+    /// Try to reconstruct a `FileSegment` from a [`Segment`] snapshot.
     pub fn from_segment(seg: &Segment) -> Option<Self> {
         serde_json::from_value(seg.snapshot_to_value()).ok()
     }
@@ -288,13 +328,18 @@ impl FileSegment {
 // Stream support
 // ================================
 
+/// An event emitted by a [`SegmentStream`] writer.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
+    /// A new chunk of data.
     Chunk(Segment),
+    /// The stream has completed with a final aggregated value.
     End(Segment),
+    /// The stream encountered an error.
     Error(String),
 }
 
+/// Current status of a [`SegmentStream`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamStatus {
     Running,
@@ -312,6 +357,10 @@ struct StreamState {
     error: Option<String>,
 }
 
+/// An async stream of [`Segment`] chunks used for LLM streaming responses.
+///
+/// Created via [`SegmentStream::channel`]. The writer end ([`StreamWriter`])
+/// pushes chunks; readers ([`StreamReader`]) consume them asynchronously.
 #[derive(Debug, Clone)]
 pub struct SegmentStream {
     state: Arc<RwLock<StreamState>>,
@@ -319,6 +368,8 @@ pub struct SegmentStream {
     readers: Arc<AtomicUsize>,
 }
 
+/// Write end of a [`SegmentStream`] channel. Use [`StreamWriter::send`] to
+/// push chunks and [`StreamWriter::end`] to finalize.
 #[derive(Debug)]
 pub struct StreamWriter {
     state: Arc<RwLock<StreamState>>,
@@ -327,6 +378,8 @@ pub struct StreamWriter {
     writers: Arc<AtomicUsize>,
 }
 
+/// Read end of a [`SegmentStream`]. Tracks a cursor position to iterate
+/// through chunks as they arrive.
 #[derive(Debug)]
 pub struct StreamReader {
     stream: SegmentStream,
@@ -349,17 +402,22 @@ impl StreamStateWeak {
     }
 }
 
+/// Resource limits for a stream channel.
 #[derive(Debug, Clone, Default)]
 pub struct StreamLimits {
+    /// Maximum number of chunks before the stream is auto-ended.
     pub max_chunks: Option<usize>,
+    /// Maximum cumulative buffer size in bytes.
     pub max_buffer_bytes: Option<usize>,
 }
 
 impl SegmentStream {
+    /// Create a new stream channel with default (unlimited) limits.
     pub fn channel() -> (SegmentStream, StreamWriter) {
         Self::channel_with_limits(StreamLimits::default())
     }
 
+    /// Create a new stream channel with the specified resource limits.
     pub fn channel_with_limits(limits: StreamLimits) -> (SegmentStream, StreamWriter) {
         let state = StreamState {
             chunks: Arc::new(SegmentArray::new(Vec::new())),
@@ -387,6 +445,7 @@ impl SegmentStream {
         (stream, writer)
     }
 
+    /// Create a new [`StreamReader`] for this stream.
     pub fn reader(&self) -> StreamReader {
         self.readers.fetch_add(1, Ordering::Relaxed);
         StreamReader {
@@ -407,6 +466,7 @@ impl SegmentStream {
         self.readers.load(Ordering::Relaxed)
     }
 
+    /// Block until the stream completes and return the final aggregated segment.
     pub async fn collect(&self) -> Result<Segment, String> {
         loop {
             let snapshot = self.state.read().await;
@@ -424,6 +484,7 @@ impl SegmentStream {
         }
     }
 
+    /// Take a non-blocking snapshot of the current stream value.
     pub fn snapshot_segment(&self) -> Segment {
         match self.state.try_read() {
             Ok(snapshot) => match snapshot.status {
@@ -435,6 +496,7 @@ impl SegmentStream {
         }
     }
 
+    /// Return the current stream status (non-blocking).
     pub fn status(&self) -> StreamStatus {
         self.state
             .try_read()
@@ -442,10 +504,12 @@ impl SegmentStream {
             .unwrap_or(StreamStatus::Running)
     }
 
+    /// Return the current stream status (async, acquires read lock).
     pub async fn status_async(&self) -> StreamStatus {
         self.state.read().await.status.clone()
     }
 
+    /// Return a snapshot of all chunks received so far (non-blocking).
     pub fn chunks(&self) -> Vec<Segment> {
         self.state
             .try_read()
@@ -453,10 +517,12 @@ impl SegmentStream {
             .unwrap_or_default()
     }
 
+    /// Return a snapshot of all chunks received so far (async).
     pub async fn chunks_async(&self) -> Vec<Segment> {
         self.state.read().await.chunks.items.clone()
     }
 
+    /// Take an async snapshot of the current stream value.
     pub async fn snapshot_segment_async(&self) -> Segment {
         let snapshot = self.state.read().await;
         match snapshot.status {
@@ -492,6 +558,7 @@ impl SegmentStream {
 }
 
 impl StreamWriter {
+    /// Send a chunk to the stream. No-op if the stream has already ended.
     pub async fn send(&self, chunk: Segment) {
         let mut state = self.state.write().await;
         if state.status != StreamStatus::Running {
@@ -524,6 +591,7 @@ impl StreamWriter {
         self.notify_readers();
     }
 
+    /// Finalize the stream with an aggregated value.
     pub async fn end(&self, final_value: Segment) {
         let mut state = self.state.write().await;
         if state.status != StreamStatus::Running {
@@ -535,6 +603,7 @@ impl StreamWriter {
         self.notify_readers();
     }
 
+    /// Mark the stream as failed with an error message.
     pub async fn error(&self, message: String) {
         let mut state = self.state.write().await;
         if state.status != StreamStatus::Running {
@@ -634,6 +703,10 @@ impl StreamReader {
 // SegmentType – DSL-facing type markers
 // ================================
 
+/// DSL-level type marker for workflow variables.
+///
+/// These correspond to the type strings used in the Dify DSL (`"string"`,
+/// `"number"`, `"array[string]"`, etc.).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SegmentType {
@@ -651,6 +724,7 @@ pub enum SegmentType {
 }
 
 impl SegmentType {
+    /// Parse a DSL type string (e.g. `"string"`, `"array[object]"`) into a `SegmentType`.
     pub fn from_dsl_type(t: &str) -> Option<Self> {
         match t.trim().to_lowercase().as_str() {
             "string" => Some(SegmentType::String),
@@ -668,6 +742,7 @@ impl SegmentType {
 }
 
 impl Segment {
+    /// Return the [`SegmentType`] that corresponds to this segment’s runtime value.
     pub fn segment_type(&self) -> SegmentType {
         match self {
             Segment::None => SegmentType::Any,
@@ -681,6 +756,7 @@ impl Segment {
         }
     }
 
+    /// Check whether this segment is compatible with the given DSL type.
     pub fn matches_type(&self, t: &SegmentType) -> bool {
         match t {
             SegmentType::Any => true,
@@ -808,10 +884,14 @@ impl Segment {
         }
     }
 
+    /// Return `true` if this segment is `None` (null).
     pub fn is_none(&self) -> bool {
         matches!(self, Segment::None)
     }
 
+    /// Try to extract a `String` representation of this segment.
+    ///
+    /// Primitives are converted to their string forms; composite types return `None`.
     pub fn as_string(&self) -> Option<String> {
         match self {
             Segment::String(s) => Some(s.clone()),
@@ -822,6 +902,7 @@ impl Segment {
         }
     }
 
+    /// Return a human-readable display string, resolving streams if needed.
     pub fn to_display_string(&self) -> String {
         match self {
             Segment::None => String::new(),
@@ -846,6 +927,7 @@ impl Segment {
         }
     }
 
+    /// Try to extract a `f64` from this segment (integers, floats, or parseable strings).
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Segment::Integer(i) => Some(*i as f64),
@@ -855,6 +937,7 @@ impl Segment {
         }
     }
 
+    /// Return `true` if this segment is empty (null, empty string, empty collection, etc.).
     pub fn is_empty(&self) -> bool {
         match self {
             Segment::None => true,
@@ -867,6 +950,7 @@ impl Segment {
         }
     }
 
+    /// Estimate the memory footprint of this segment in bytes.
     pub fn estimate_bytes(&self) -> usize {
         match self {
             Segment::None => 0,
@@ -907,6 +991,11 @@ impl std::fmt::Display for Segment {
 // Key: "node_id:variable_name"
 // ================================
 
+/// Copy-on-write variable storage for a workflow execution.
+///
+/// Variables are keyed by `"node_id:variable_name"` and stored as [`Segment`]
+/// values. The pool uses [`im::HashMap`] for efficient structural sharing when
+/// forking pools (e.g. for sub-graph / iteration execution).
 #[derive(Debug, Clone)]
 pub struct VariablePool {
     variables: ImHashMap<CompactString, Segment>,
@@ -917,6 +1006,7 @@ pub struct VariablePool {
 }
 
 impl VariablePool {
+    /// Create an empty variable pool.
     pub fn new() -> Self {
         VariablePool {
             variables: ImHashMap::new(),
@@ -953,10 +1043,12 @@ impl VariablePool {
         self.selector_validation = selector_validation;
     }
 
+    /// Return the number of variables in the pool.
     pub fn len(&self) -> usize {
         self.variables.len()
     }
 
+    /// Estimate the total memory footprint of all variables in bytes.
     pub fn estimate_total_bytes(&self) -> usize {
         self.variables
             .iter()
@@ -1325,5 +1417,617 @@ mod tests {
 
         let resolved = pool.get_resolved(&sel).await;
         assert_eq!(resolved.to_display_string(), "hello");
+    }
+
+    // ---- Selector tests ----
+
+    #[test]
+    fn test_selector_parse_str() {
+        let sel = Selector::parse_str("node1.output").unwrap();
+        assert_eq!(sel.node_id(), "node1");
+        assert_eq!(sel.variable_name(), "output");
+    }
+
+    #[test]
+    fn test_selector_parse_str_single() {
+        let sel = Selector::parse_str("query").unwrap();
+        assert_eq!(sel.node_id(), SCOPE_NODE_ID);
+        assert_eq!(sel.variable_name(), "query");
+    }
+
+    #[test]
+    fn test_selector_parse_str_too_deep() {
+        assert!(Selector::parse_str("a.b.c").is_none());
+    }
+
+    #[test]
+    fn test_selector_parse_str_empty() {
+        assert!(Selector::parse_str("").is_none());
+    }
+
+    #[test]
+    fn test_selector_parse_value_array() {
+        let val = serde_json::json!(["node1", "output"]);
+        let sel = Selector::parse_value(&val).unwrap();
+        assert_eq!(sel.node_id(), "node1");
+        assert_eq!(sel.variable_name(), "output");
+    }
+
+    #[test]
+    fn test_selector_parse_value_string() {
+        let val = serde_json::json!("node1.output");
+        let sel = Selector::parse_value(&val).unwrap();
+        assert_eq!(sel.node_id(), "node1");
+    }
+
+    #[test]
+    fn test_selector_parse_value_invalid() {
+        assert!(Selector::parse_value(&serde_json::json!(42)).is_none());
+    }
+
+    #[test]
+    fn test_selector_is_empty() {
+        let sel = Selector::new("", "var");
+        assert!(sel.is_empty());
+        let sel = Selector::new("node", "");
+        assert!(sel.is_empty());
+        let sel = Selector::new("node", "var");
+        assert!(!sel.is_empty());
+    }
+
+    #[test]
+    fn test_selector_serde_roundtrip() {
+        let sel = Selector::new("n1", "out");
+        let json = serde_json::to_string(&sel).unwrap();
+        let back: Selector = serde_json::from_str(&json).unwrap();
+        assert_eq!(sel, back);
+    }
+
+    #[test]
+    fn test_selector_deserialize_from_string() {
+        let back: Selector = serde_json::from_str(r#""n1.out""#).unwrap();
+        assert_eq!(back.node_id(), "n1");
+        assert_eq!(back.variable_name(), "out");
+    }
+
+    // ---- Segment tests ----
+
+    #[test]
+    fn test_segment_as_string() {
+        assert_eq!(Segment::String("hi".into()).as_string(), Some("hi".into()));
+        assert_eq!(Segment::Integer(42).as_string(), Some("42".into()));
+        assert_eq!(Segment::Float(3.14).as_string(), Some("3.14".into()));
+        assert_eq!(Segment::Boolean(true).as_string(), Some("true".into()));
+        assert_eq!(Segment::None.as_string(), None);
+    }
+
+    #[test]
+    fn test_segment_as_f64() {
+        assert_eq!(Segment::Integer(42).as_f64(), Some(42.0));
+        assert_eq!(Segment::Float(3.14).as_f64(), Some(3.14));
+        assert_eq!(Segment::String("2.5".into()).as_f64(), Some(2.5));
+        assert_eq!(Segment::String("not_num".into()).as_f64(), None);
+        assert_eq!(Segment::None.as_f64(), None);
+    }
+
+    #[test]
+    fn test_segment_is_empty() {
+        assert!(Segment::None.is_empty());
+        assert!(Segment::String("".into()).is_empty());
+        assert!(!Segment::String("a".into()).is_empty());
+        assert!(Segment::ArrayString(Arc::new(vec![])).is_empty());
+        assert!(!Segment::ArrayString(Arc::new(vec!["a".into()])).is_empty());
+        assert!(!Segment::Integer(0).is_empty());
+    }
+
+    #[test]
+    fn test_segment_estimate_bytes() {
+        assert_eq!(Segment::None.estimate_bytes(), 0);
+        assert_eq!(Segment::String("hello".into()).estimate_bytes(), 5);
+        assert_eq!(Segment::Integer(42).estimate_bytes(), 8);
+        assert_eq!(Segment::Boolean(true).estimate_bytes(), 8);
+        assert_eq!(Segment::ArrayString(Arc::new(vec!["ab".into(), "cd".into()])).estimate_bytes(), 4);
+    }
+
+    #[test]
+    fn test_segment_display() {
+        assert_eq!(format!("{}", Segment::String("hi".into())), "hi");
+        assert_eq!(format!("{}", Segment::Integer(42)), "42");
+        assert_eq!(format!("{}", Segment::None), "");
+    }
+
+    #[test]
+    fn test_segment_partial_eq() {
+        assert_eq!(Segment::None, Segment::None);
+        assert_eq!(Segment::String("a".into()), Segment::String("a".into()));
+        assert_ne!(Segment::String("a".into()), Segment::String("b".into()));
+        assert_eq!(Segment::Integer(1), Segment::Integer(1));
+        assert_eq!(Segment::Float(1.0), Segment::Float(1.0));
+    }
+
+    #[test]
+    fn test_segment_string_array() {
+        let seg = Segment::string_array(vec!["a".into(), "b".into()]);
+        match seg {
+            Segment::ArrayString(arr) => assert_eq!(arr.len(), 2),
+            _ => panic!("expected ArrayString"),
+        }
+    }
+
+    #[test]
+    fn test_segment_into_value() {
+        assert_eq!(Segment::None.into_value(), Value::Null);
+        assert_eq!(Segment::String("a".into()).into_value(), Value::String("a".into()));
+        assert_eq!(Segment::Integer(1).into_value(), serde_json::json!(1));
+        assert_eq!(Segment::Float(2.5).into_value(), serde_json::json!(2.5));
+        assert_eq!(Segment::Boolean(true).into_value(), Value::Bool(true));
+        let arr = Segment::ArrayString(Arc::new(vec!["x".into()]));
+        assert_eq!(arr.into_value(), serde_json::json!(["x"]));
+    }
+
+    #[test]
+    fn test_segment_from_value_object() {
+        let val = serde_json::json!({"key": "val"});
+        let seg = Segment::from_value(&val);
+        assert!(matches!(seg, Segment::Object(_)));
+        assert_eq!(seg.to_value(), val);
+    }
+
+    #[test]
+    fn test_segment_from_value_float() {
+        let val = serde_json::json!(3.14);
+        let seg = Segment::from_value(&val);
+        assert!(matches!(seg, Segment::Float(_)));
+    }
+
+    #[test]
+    fn test_segment_type() {
+        assert_eq!(Segment::None.segment_type(), SegmentType::Any);
+        assert_eq!(Segment::String("a".into()).segment_type(), SegmentType::String);
+        assert_eq!(Segment::Integer(1).segment_type(), SegmentType::Number);
+        assert_eq!(Segment::Float(1.0).segment_type(), SegmentType::Number);
+        assert_eq!(Segment::Boolean(true).segment_type(), SegmentType::Boolean);
+    }
+
+    #[test]
+    fn test_segment_matches_type() {
+        assert!(Segment::Integer(1).matches_type(&SegmentType::Any));
+        assert!(Segment::Integer(1).matches_type(&SegmentType::Number));
+        assert!(!Segment::Integer(1).matches_type(&SegmentType::String));
+        let arr = Segment::Array(Arc::new(SegmentArray::new(vec![])));
+        assert!(arr.matches_type(&SegmentType::ArrayNumber));
+        assert!(arr.matches_type(&SegmentType::Array));
+    }
+
+    #[test]
+    fn test_segment_serde() {
+        let seg = Segment::Integer(42);
+        let json = serde_json::to_value(&seg).unwrap();
+        let back: Segment = serde_json::from_value(json).unwrap();
+        assert_eq!(back, seg);
+    }
+
+    // ---- VariablePool additional tests ----
+
+    #[test]
+    fn test_pool_len_and_estimate_bytes() {
+        let mut pool = VariablePool::new();
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.estimate_total_bytes(), 0);
+        pool.set(&Selector::new("n", "a"), Segment::String("hello".into()));
+        assert_eq!(pool.len(), 1);
+        assert!(pool.estimate_total_bytes() > 0);
+    }
+
+    #[test]
+    fn test_pool_set_node_segment_outputs() {
+        let mut pool = VariablePool::new();
+        let mut outputs = HashMap::new();
+        outputs.insert("x".to_string(), Segment::Integer(10));
+        outputs.insert("y".to_string(), Segment::String("hi".into()));
+        pool.set_node_segment_outputs("node1", &outputs);
+        assert_eq!(pool.get(&Selector::new("node1", "x")), Segment::Integer(10));
+        assert_eq!(pool.get(&Selector::new("node1", "y")), Segment::String("hi".into()));
+    }
+
+    #[test]
+    fn test_pool_get_node_variables() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "a"), Segment::Integer(1));
+        pool.set(&Selector::new("n1", "b"), Segment::Integer(2));
+        pool.set(&Selector::new("n2", "c"), Segment::Integer(3));
+        let vars = pool.get_node_variables("n1");
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains_key("a"));
+        assert!(vars.contains_key("b"));
+    }
+
+    #[test]
+    fn test_pool_remove_node() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "a"), Segment::Integer(1));
+        pool.set(&Selector::new("n1", "b"), Segment::Integer(2));
+        pool.set(&Selector::new("n2", "c"), Segment::Integer(3));
+        pool.remove_node("n1");
+        assert!(pool.get(&Selector::new("n1", "a")).is_none());
+        assert!(pool.get(&Selector::new("n1", "b")).is_none());
+        assert_eq!(pool.get(&Selector::new("n2", "c")), Segment::Integer(3));
+    }
+
+    #[test]
+    fn test_pool_clear() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "x");
+        pool.set(&sel, Segment::Integer(42));
+        pool.clear(&sel);
+        assert!(pool.get(&sel).is_none());
+    }
+
+    #[test]
+    fn test_pool_snapshot() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n", "a"), Segment::Integer(1));
+        pool.set(&Selector::new("n", "b"), Segment::String("x".into()));
+        let snap = pool.snapshot();
+        assert_eq!(snap.len(), 2);
+    }
+
+    #[test]
+    fn test_pool_append_to_none() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "arr");
+        pool.append(&sel, Segment::Integer(1));
+        match pool.get(&sel) {
+            Segment::Array(v) => assert_eq!(v.len(), 1),
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn test_pool_append_string() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "s");
+        pool.set(&sel, Segment::String("hello".into()));
+        pool.append(&sel, Segment::String(" world".into()));
+        assert_eq!(pool.get(&sel).to_display_string(), "hello world");
+    }
+
+    #[test]
+    fn test_pool_append_non_array() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "x");
+        pool.set(&sel, Segment::Integer(1));
+        pool.append(&sel, Segment::Integer(2));
+        match pool.get(&sel) {
+            Segment::Array(v) => assert_eq!(v.len(), 2),
+            _ => panic!("expected Array after appending to non-array"),
+        }
+    }
+
+    #[test]
+    fn test_pool_append_array_string_same_type() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "arr");
+        pool.set(&sel, Segment::ArrayString(Arc::new(vec!["a".into()])));
+        pool.append(&sel, Segment::String("b".into()));
+        match pool.get(&sel) {
+            Segment::ArrayString(v) => assert_eq!(v.len(), 2),
+            _ => panic!("expected ArrayString"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pool_get_resolved_value() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n", "x"), Segment::Integer(42));
+        let val = pool.get_resolved_value(&Selector::new("n", "x")).await;
+        assert_eq!(val, serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_pool_default() {
+        let pool = VariablePool::default();
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn test_segment_type_from_dsl_type_all() {
+        assert_eq!(SegmentType::from_dsl_type("string"), Some(SegmentType::String));
+        assert_eq!(SegmentType::from_dsl_type("number"), Some(SegmentType::Number));
+        assert_eq!(SegmentType::from_dsl_type("boolean"), Some(SegmentType::Boolean));
+        assert_eq!(SegmentType::from_dsl_type("object"), Some(SegmentType::Object));
+        assert_eq!(SegmentType::from_dsl_type("array[string]"), Some(SegmentType::ArrayString));
+        assert_eq!(SegmentType::from_dsl_type("array[number]"), Some(SegmentType::ArrayNumber));
+        assert_eq!(SegmentType::from_dsl_type("array[object]"), Some(SegmentType::ArrayObject));
+        assert_eq!(SegmentType::from_dsl_type("file"), Some(SegmentType::File));
+        assert_eq!(SegmentType::from_dsl_type("array[file]"), Some(SegmentType::ArrayFile));
+        assert_eq!(SegmentType::from_dsl_type("unknown"), None);
+    }
+
+    #[tokio::test]
+    async fn test_stream_writer_drop_without_end() {
+        let (stream, writer) = SegmentStream::channel();
+        drop(writer);
+        let err = stream.collect().await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_limits_max_chunks() {
+        let limits = StreamLimits { max_chunks: Some(1), max_buffer_bytes: None };
+        let (stream, writer) = SegmentStream::channel_with_limits(limits);
+        writer.send(Segment::String("a".into())).await;
+        writer.send(Segment::String("b".into())).await;
+        let result = stream.collect().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_limits_max_bytes() {
+        let limits = StreamLimits { max_chunks: None, max_buffer_bytes: Some(5) };
+        let (stream, writer) = SegmentStream::channel_with_limits(limits);
+        writer.send(Segment::String("hello".into())).await;
+        writer.send(Segment::String("world".into())).await;
+        let result = stream.collect().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stream_multiple_writers() {
+        let (stream, writer) = SegmentStream::channel();
+        let writer2 = writer.clone();
+        writer.send(Segment::String("a".into())).await;
+        writer2.send(Segment::String("b".into())).await;
+        drop(writer);
+        writer2.end(Segment::String("ab".into())).await;
+        let result = stream.collect().await.unwrap();
+        assert_eq!(result.to_display_string(), "ab");
+    }
+
+    #[tokio::test]
+    async fn test_stream_status_and_chunks() {
+        let (stream, writer) = SegmentStream::channel();
+        assert_eq!(stream.status(), StreamStatus::Running);
+        writer.send(Segment::String("a".into())).await;
+        assert_eq!(stream.chunks().len(), 1);
+        writer.end(Segment::String("a".into())).await;
+        assert_eq!(stream.status(), StreamStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_stream_snapshot_segment() {
+        let (stream, writer) = SegmentStream::channel();
+        writer.send(Segment::String("a".into())).await;
+        let snap = stream.snapshot_segment();
+        assert!(matches!(snap, Segment::Array(_)));
+        writer.end(Segment::String("done".into())).await;
+        let snap2 = stream.snapshot_segment();
+        assert_eq!(snap2.to_display_string(), "done");
+    }
+
+    #[test]
+    fn test_segment_display_stream_running() {
+        let (stream, _writer) = SegmentStream::channel();
+        let seg = Segment::Stream(stream);
+        // display should not panic on running stream
+        let _ = seg.to_display_string();
+    }
+
+    #[test]
+    fn test_segment_snapshot_to_value_non_stream() {
+        let seg = Segment::Integer(42);
+        assert_eq!(seg.snapshot_to_value(), serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_file_segment_default() {
+        let fs = FileSegment::default();
+        assert!(fs.url.is_none());
+        assert!(fs.filename.is_none());
+        assert_eq!(fs.transfer_method, "");
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_pool_set_checked() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "a");
+        assert!(pool.set_checked(&sel, Segment::Integer(1), 10, 10000).is_ok());
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_pool_set_checked_too_many_entries() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "a");
+        pool.set(&sel, Segment::Integer(1));
+        let sel2 = Selector::new("n", "b");
+        let result = pool.set_checked(&sel2, Segment::Integer(2), 1, 10000);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_pool_selector_validation() {
+        use crate::security::validation::SelectorValidation;
+        let cfg = SelectorValidation {
+            max_depth: 2,
+            max_length: 10,
+            allowed_prefixes: std::collections::HashSet::from(["n1".to_string()]),
+        };
+        let mut pool = VariablePool::new_with_selector_validation(Some(cfg));
+        pool.set(&Selector::new("n1", "a"), Segment::Integer(1));
+        assert_eq!(pool.get(&Selector::new("n1", "a")), Segment::Integer(1));
+        // Disallowed prefix
+        assert!(pool.get(&Selector::new("n2", "a")).is_none());
+        assert!(!pool.has(&Selector::new("n2", "a")));
+    }
+
+    #[test]
+    fn test_stream_writer_send_after_end() {
+        let (stream, writer) = SegmentStream::channel();
+        let w = writer;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            w.send(Segment::String("chunk1".into())).await;
+            w.end(Segment::String("final".into())).await;
+            // Send after end should be a no-op (status != Running)
+            w.send(Segment::String("nope".into())).await;
+        });
+        let (status, chunks, _, _) = stream.snapshot_status();
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(status, StreamStatus::Completed));
+    }
+
+    #[test]
+    fn test_stream_writer_double_end() {
+        let (stream, writer) = SegmentStream::channel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            writer.end(Segment::String("a".into())).await;
+            writer.end(Segment::String("b".into())).await;
+        });
+        let (status, _, final_val, _) = stream.snapshot_status();
+        assert!(matches!(status, StreamStatus::Completed));
+        // second end should be no-op, keep first value
+        assert_eq!(final_val, Some(Segment::String("a".into())));
+    }
+
+    #[test]
+    fn test_stream_writer_error_after_error() {
+        let (stream, writer) = SegmentStream::channel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            writer.error("first error".to_string()).await;
+            writer.error("second error".to_string()).await;
+        });
+        let (status, _, _, err) = stream.snapshot_status();
+        assert!(matches!(status, StreamStatus::Failed));
+        assert_eq!(err, Some("first error".to_string()));
+    }
+
+    #[test]
+    fn test_segment_into_value_shared_arc() {
+        // When Arc has multiple owners, into_value should still work (clone path)
+        let arr = Arc::new(SegmentArray::new(vec![Segment::Integer(1), Segment::Integer(2)]));
+        let arr_clone = arr.clone(); // create second owner
+        let seg = Segment::Array(arr);
+        let val = seg.into_value();
+        assert_eq!(val, serde_json::json!([1, 2]));
+        // arr_clone is still alive
+        assert_eq!(arr_clone.len(), 2);
+    }
+
+    #[test]
+    fn test_segment_into_value_object_shared_arc() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("key".to_string(), Segment::String("val".into()));
+        let obj = Arc::new(SegmentObject::new(map));
+        let obj_clone = obj.clone();
+        let seg = Segment::Object(obj);
+        let val = seg.into_value();
+        assert_eq!(val, serde_json::json!({"key": "val"}));
+        assert_eq!(obj_clone.len(), 1);
+    }
+
+    #[test]
+    fn test_segment_display_stream_failed() {
+        let (stream, writer) = SegmentStream::channel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            writer.error("some error".to_string()).await;
+        });
+        let seg = Segment::Stream(stream);
+        let display = seg.to_display_string();
+        assert!(display.contains("stream error"));
+        assert!(display.contains("some error"));
+    }
+
+    #[test]
+    fn test_segment_display_stream_completed_no_final() {
+        let (stream, writer) = SegmentStream::channel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            writer.end(Segment::None).await;
+        });
+        let seg = Segment::Stream(stream);
+        let display = seg.to_display_string();
+        // Completed with None final_value should display empty
+        assert!(display.is_empty() || display == "");
+    }
+
+    #[test]
+    fn test_file_segment_from_segment_non_object() {
+        let seg = Segment::String("not an object".into());
+        let file = FileSegment::from_segment(&seg);
+        assert!(file.is_none());
+    }
+
+    #[test]
+    fn test_segment_array_into_value_cached() {
+        let arr = SegmentArray::new(vec![Segment::Integer(1)]);
+        // First call computes value
+        let v1 = arr.to_value();
+        // Second call should use cache
+        let v2 = arr.to_value();
+        assert_eq!(v1, v2);
+        // into_value when cache is present
+        let v3 = arr.into_value();
+        assert_eq!(v1, v3);
+    }
+
+    #[test]
+    fn test_segment_object_into_value_cached() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("a".to_string(), Segment::Integer(1));
+        let obj = SegmentObject::new(map);
+        let v1 = obj.to_value();
+        let v2 = obj.to_value();
+        assert_eq!(v1, v2);
+        let v3 = obj.into_value();
+        assert_eq!(v1, v3);
+    }
+
+    #[test]
+    fn test_stream_reader_clone_drop() {
+        let (stream, writer) = SegmentStream::channel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            writer.send(Segment::String("a".into())).await;
+            writer.end(Segment::None).await;
+        });
+        // Just test that clone/drop works without panic
+        let reader1 = stream.reader();
+        let _reader2 = reader1.clone();
+        drop(_reader2);
+        // reader1 is still alive
+        let chunks = stream.chunks();
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn test_segment_snapshot_to_value_stream() {
+        let (stream, writer) = SegmentStream::channel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            writer.send(Segment::String("hello".into())).await;
+            writer.send(Segment::String(" world".into())).await;
+            writer.end(Segment::String("hello world".into())).await;
+        });
+        let seg = Segment::Stream(stream);
+        let val = seg.snapshot_to_value();
+        // Completed stream with final value should return that value
+        assert_eq!(val, serde_json::json!("hello world"));
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_pool_set_checked_memory_limit() {
+        let mut pool = VariablePool::new();
+        let sel = Selector::new("n", "x");
+        // set_checked with very small memory limit
+        let result = pool.set_checked(&sel, Segment::String("a very long string that uses bytes".into()), 100, 1);
+        assert!(result.is_err());
     }
 }

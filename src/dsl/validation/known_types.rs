@@ -26,3 +26,75 @@ pub fn is_known_node_type(node_type: &str) -> bool {
 pub fn is_stub_node_type(node_type: &str) -> bool {
     STUB_NODE_TYPES.iter().any(|t| *t == node_type)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reserved_namespaces() {
+        assert!(RESERVED_NAMESPACES.contains(&"sys"));
+        assert!(RESERVED_NAMESPACES.contains(&"env"));
+        assert!(RESERVED_NAMESPACES.contains(&"conversation"));
+        assert!(RESERVED_NAMESPACES.contains(&"loop"));
+        assert!(!RESERVED_NAMESPACES.contains(&"custom"));
+    }
+
+    #[test]
+    fn test_branch_node_types() {
+        assert!(BRANCH_NODE_TYPES.contains(&"if-else"));
+        assert!(BRANCH_NODE_TYPES.contains(&"question-classifier"));
+        assert!(!BRANCH_NODE_TYPES.contains(&"start"));
+    }
+
+    #[test]
+    fn test_stub_node_types() {
+        assert!(STUB_NODE_TYPES.contains(&"knowledge-retrieval"));
+        assert!(STUB_NODE_TYPES.contains(&"question-classifier"));
+        assert!(STUB_NODE_TYPES.contains(&"parameter-extractor"));
+        assert!(STUB_NODE_TYPES.contains(&"tool"));
+        assert!(STUB_NODE_TYPES.contains(&"document-extractor"));
+        assert!(STUB_NODE_TYPES.contains(&"agent"));
+        assert!(STUB_NODE_TYPES.contains(&"human-input"));
+        assert!(!STUB_NODE_TYPES.contains(&"start"));
+    }
+
+    #[test]
+    fn test_is_known_node_type_builtin() {
+        assert!(is_known_node_type("start"));
+        assert!(is_known_node_type("end"));
+        assert!(is_known_node_type("if-else"));
+        assert!(is_known_node_type("code"));
+        assert!(is_known_node_type("template-transform"));
+        assert!(is_known_node_type("http-request"));
+        assert!(is_known_node_type("llm"));
+        assert!(is_known_node_type("answer"));
+    }
+
+    #[test]
+    fn test_is_known_node_type_plugin() {
+        assert!(is_known_node_type("plugin.custom_node"));
+        assert!(is_known_node_type("plugin.anything"));
+    }
+
+    #[test]
+    fn test_is_known_node_type_unknown() {
+        assert!(!is_known_node_type("nonexistent"));
+        assert!(!is_known_node_type("random"));
+    }
+
+    #[test]
+    fn test_is_stub_node_type_true() {
+        assert!(is_stub_node_type("knowledge-retrieval"));
+        assert!(is_stub_node_type("tool"));
+        assert!(is_stub_node_type("agent"));
+    }
+
+    #[test]
+    fn test_is_stub_node_type_false() {
+        assert!(!is_stub_node_type("start"));
+        assert!(!is_stub_node_type("end"));
+        assert!(!is_stub_node_type("code"));
+        assert!(!is_stub_node_type("plugin.something"));
+    }
+}

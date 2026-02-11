@@ -1,3 +1,9 @@
+//! Sub-graph runner for container nodes (Iteration, Loop).
+//!
+//! A sub-graph is a self-contained mini-workflow embedded inside a container node.
+//! The [`SubGraphRunner`] trait abstracts how sub-graphs are executed so that
+//! tests can substitute custom implementations.
+
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -13,8 +19,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Trait for executing embedded sub-graphs within container nodes.
 #[async_trait]
 pub trait SubGraphRunner: Send + Sync {
+    /// Run the given sub-graph definition with scoped variables derived from
+    /// `parent_pool` and `scope_vars`, returning the aggregated outputs.
     async fn run_sub_graph(
         &self,
         sub_graph: &SubGraphDefinition,
@@ -24,6 +33,8 @@ pub trait SubGraphRunner: Send + Sync {
     ) -> Result<Value, SubGraphError>;
 }
 
+/// Default [`SubGraphRunner`] implementation that builds a fresh
+/// [`WorkflowDispatcher`] and runs the sub-graph to completion.
 pub struct DefaultSubGraphRunner;
 
 #[async_trait]
