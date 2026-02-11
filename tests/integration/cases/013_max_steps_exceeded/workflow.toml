@@ -1,0 +1,54 @@
+# Max steps exceeded: workflow aborts when execution exceeds the configured step limit.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Q"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Step1"
+code = "function main(inputs) { return { v: 1 }; }"
+language = "javascript"
+[[nodes]]
+id = "code2"
+
+[nodes.data]
+type = "code"
+title = "Step2"
+code = "function main(inputs) { return { v: 2 }; }"
+language = "javascript"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code2", "v",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "code2"
+
+[[edges]]
+source = "code2"
+target = "end"
+

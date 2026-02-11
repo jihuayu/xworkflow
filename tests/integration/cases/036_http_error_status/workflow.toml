@@ -1,0 +1,42 @@
+# HTTP error status: handles a non-2xx response status from the server.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "http1"
+
+[nodes.data]
+type = "http-request"
+title = "Not Found"
+method = "GET"
+url = "{{#sys.base_url#}}/api/missing"
+timeout = 10
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "status_code"
+value_selector = [ "http1", "status_code",]
+
+[[nodes.data.outputs]]
+variable = "body"
+value_selector = [ "http1", "body",]
+
+[[edges]]
+source = "start"
+target = "http1"
+
+[[edges]]
+source = "http1"
+target = "end"
+

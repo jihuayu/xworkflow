@@ -1,0 +1,4 @@
+# Code JS runtime exception: JS runtime error is caught and reported.
+# File: Expected execution result and output values
+
+status = "failed"

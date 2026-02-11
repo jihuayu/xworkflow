@@ -1,0 +1,8 @@
+# If-else AND with multiple conditions: all conditions must pass.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "eligible"

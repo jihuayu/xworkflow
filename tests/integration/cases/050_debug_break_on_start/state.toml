@@ -1,0 +1,3 @@
+# Debug break on start: debugger pauses at the very first node before execution.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+

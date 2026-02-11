@@ -1,0 +1,7 @@
+# LLM stream code template: code node with template processing on stream output.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "[HELLO WORLD]"

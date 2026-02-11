@@ -1,0 +1,7 @@
+# LLM stream code autocollect: JS code auto-collects streamed chunks.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "foobar processed"

@@ -1,0 +1,4 @@
+# Variable aggregator: merges outputs from multiple upstream nodes.
+# File: Input variables supplied to the workflow
+
+flag = "true"

@@ -1,0 +1,4 @@
+# System variables: workflow accesses built-in system variables.
+# File: Input variables supplied to the workflow
+
+query = "hello"

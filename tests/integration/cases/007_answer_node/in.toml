@@ -1,0 +1,5 @@
+# Answer node: produces a direct answer output from the workflow.
+# File: Input variables supplied to the workflow
+
+city = "Beijing"
+temp = 25

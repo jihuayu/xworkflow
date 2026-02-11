@@ -1,0 +1,4 @@
+# LLM stream single chunk: stream with only one chunk delivered.
+# File: Input variables supplied to the workflow
+
+query = "one shot"

@@ -1,0 +1,12 @@
+# Code node JSON output: JS code returns a structured JSON object.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+tags = [ "dev", "rust",]
+
+[outputs.user]
+name = "Alice"
+age = 30

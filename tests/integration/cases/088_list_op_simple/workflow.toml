@@ -1,0 +1,111 @@
+# List operation simple: basic list operations (length, flatten, etc.).
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "items"
+label = "Items"
+type = "array[number]"
+required = true
+
+[[nodes]]
+id = "op_unique"
+
+[nodes.data]
+type = "list-operator"
+title = "Unique"
+operation = "unique"
+input_selector = [ "start", "items",]
+output_variable = "unique_result"
+[[nodes]]
+id = "op_reverse"
+
+[nodes.data]
+type = "list-operator"
+title = "Reverse"
+operation = "reverse"
+input_selector = [ "op_unique", "unique_result",]
+output_variable = "reversed"
+[[nodes]]
+id = "op_first"
+
+[nodes.data]
+type = "list-operator"
+title = "First"
+operation = "first"
+input_selector = [ "op_reverse", "reversed",]
+output_variable = "first_val"
+[[nodes]]
+id = "op_last"
+
+[nodes.data]
+type = "list-operator"
+title = "Last"
+operation = "last"
+input_selector = [ "op_reverse", "reversed",]
+output_variable = "last_val"
+[[nodes]]
+id = "op_length"
+
+[nodes.data]
+type = "list-operator"
+title = "Length"
+operation = "length"
+input_selector = [ "op_reverse", "reversed",]
+output_variable = "len"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "first"
+value_selector = [ "op_first", "first_val",]
+
+[[nodes.data.outputs]]
+variable = "last"
+value_selector = [ "op_last", "last_val",]
+
+[[nodes.data.outputs]]
+variable = "length"
+value_selector = [ "op_length", "len",]
+
+[[edges]]
+source = "start"
+target = "op_unique"
+
+[[edges]]
+source = "op_unique"
+target = "op_reverse"
+
+[[edges]]
+source = "op_reverse"
+target = "op_length"
+
+[[edges]]
+source = "op_reverse"
+target = "op_first"
+
+[[edges]]
+source = "op_reverse"
+target = "op_last"
+
+[[edges]]
+source = "op_first"
+target = "end"
+
+[[edges]]
+source = "op_last"
+target = "end"
+
+[[edges]]
+source = "op_length"
+target = "end"
+

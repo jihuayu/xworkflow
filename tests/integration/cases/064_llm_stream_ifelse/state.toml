@@ -1,0 +1,16 @@
+# LLM stream if-else: branches on streamed LLM output content.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "POST"
+path = "/v1/chat/completions"
+response_status = 200
+response_body = "data: {\"choices\":[{\"delta\":{\"content\":\"I say\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" yes!\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":3,\"total_tokens\":6}}\n\ndata: [DONE]\n\n"
+match_body = "\"stream\":true"
+
+[mock_server.response_headers]
+content-type = "text/event-stream"
+
+[llm_providers.openai]
+api_key = "test-key"
+default_model = "gpt-4o"

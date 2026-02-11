@@ -1,0 +1,8 @@
+# Answer with code: combines a code node with an answer node.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+answer = "The square of 6 is 36"

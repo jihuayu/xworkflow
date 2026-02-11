@@ -1,0 +1,15 @@
+# List operation sort/slice: sorts and slices a list.
+# File: Input variables supplied to the workflow
+
+[[items]]
+name = "c"
+score = 3
+
+[[items]]
+name = "a"
+score = 1
+
+[[items]]
+name = "b"
+score = 2
+

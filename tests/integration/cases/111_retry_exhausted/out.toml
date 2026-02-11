@@ -1,0 +1,4 @@
+# Retry exhausted: all retry attempts are consumed, node fails.
+# File: Expected execution result and output values
+
+status = "failed"

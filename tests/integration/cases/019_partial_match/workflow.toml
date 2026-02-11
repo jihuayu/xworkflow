@@ -1,0 +1,54 @@
+# Partial match: only a subset of outputs is verified (partial_match = true).
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "name"
+label = "Name"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Compute"
+code = "function main(inputs) { return { greeting: 'Hi ' + inputs.name, length: inputs.name.length, timestamp: Date.now() }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "name"
+value_selector = [ "start", "name",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "greeting"
+value_selector = [ "code1", "greeting",]
+
+[[nodes.data.outputs]]
+variable = "length"
+value_selector = [ "code1", "length",]
+
+[[nodes.data.outputs]]
+variable = "timestamp"
+value_selector = [ "code1", "timestamp",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

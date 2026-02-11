@@ -1,0 +1,9 @@
+# HTTP DELETE method: sends a DELETE request.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "DELETE"
+path = "/api/users/42"
+response_status = 204
+response_body = ""
+

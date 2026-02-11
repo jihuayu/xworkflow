@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "status_code": 200,
-    "body": "{\"access\":\"granted\"}"
-  },
-  "partial_match": true
-}

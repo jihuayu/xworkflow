@@ -1,0 +1,8 @@
+# List operation reduce: reduces a list to a single value.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = 10

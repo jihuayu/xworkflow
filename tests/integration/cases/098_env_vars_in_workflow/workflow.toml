@@ -1,0 +1,39 @@
+# Environment variables in workflow: accesses environment variables during execution.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "tmpl"
+
+[nodes.data]
+type = "template-transform"
+title = "Use Env Var"
+template = "API key is {{ api_key }}"
+[[nodes.data.variables]]
+variable = "api_key"
+value_selector = [ "env", "API_KEY",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "tmpl", "output",]
+
+[[edges]]
+source = "start"
+target = "tmpl"
+
+[[edges]]
+source = "tmpl"
+target = "end"
+

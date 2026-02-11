@@ -1,0 +1,5 @@
+# LLM stream answer mixed: answer node consumes both stream and plain data.
+# File: Input variables supplied to the workflow
+
+query = "hi"
+prefix = "Bot"

@@ -1,0 +1,8 @@
+# Error handler access error info: error handler node accesses error details.
+# File: Expected execution result and output values
+
+status = "failed_with_recovery"
+partial_match = false
+
+[outputs]
+result = "type=NodeExecutionError, node=code_fail"

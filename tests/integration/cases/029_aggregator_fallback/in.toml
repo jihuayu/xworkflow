@@ -1,0 +1,4 @@
+# Aggregator fallback: aggregator handles missing upstream values gracefully.
+# File: Input variables supplied to the workflow
+
+flag = "false"

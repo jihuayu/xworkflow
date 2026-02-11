@@ -1,0 +1,19 @@
+# Debug branch breakpoint: breakpoint on a branch node in an if-else workflow.
+# File: Debug mode configuration: breakpoints and step expectations
+
+[[steps]]
+expect_node = "if1"
+expect_reason = "breakpoint"
+expect_phase = "before"
+action = "step"
+
+[[steps]]
+expect_node = "if1"
+expect_reason = "step"
+expect_phase = "after"
+action = "continue"
+
+[config]
+breakpoints = [ "if1",]
+break_on_start = false
+auto_snapshot = false

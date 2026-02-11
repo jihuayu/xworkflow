@@ -1,0 +1,46 @@
+# HTTP basic auth: sends a request with HTTP Basic authentication.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "http1"
+
+[nodes.data]
+type = "http-request"
+title = "Basic Auth"
+method = "GET"
+url = "{{#sys.base_url#}}/api/secure"
+timeout = 10
+[nodes.data.authorization]
+type = "basic_auth"
+username = "admin"
+password = "pass123"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "status_code"
+value_selector = [ "http1", "status_code",]
+
+[[nodes.data.outputs]]
+variable = "body"
+value_selector = [ "http1", "body",]
+
+[[edges]]
+source = "start"
+target = "http1"
+
+[[edges]]
+source = "http1"
+target = "end"
+

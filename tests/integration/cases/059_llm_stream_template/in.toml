@@ -1,0 +1,4 @@
+# LLM stream template: streamed LLM output is used in a template transform.
+# File: Input variables supplied to the workflow
+
+query = "say something"

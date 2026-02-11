@@ -1,0 +1,7 @@
+# LLM stream answer: streamed LLM output feeds into an answer node.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "LLM says: Hi there"

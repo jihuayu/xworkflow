@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::core::variable_pool::{Selector, SegmentStream};
 
 // ================================
-// Variable Selector (Dify-compatible)
+// Variable Selector
 // ================================
 
 /// Variable selector: e.g. ["node_id", "output_name"] or ["sys", "query"]

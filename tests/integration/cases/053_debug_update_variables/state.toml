@@ -1,0 +1,3 @@
+# Debug update variables: debugger modifies variable values at a pause point.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+

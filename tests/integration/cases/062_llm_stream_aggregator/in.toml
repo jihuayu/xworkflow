@@ -1,0 +1,4 @@
+# LLM stream aggregator: aggregates streamed LLM output from multiple nodes.
+# File: Input variables supplied to the workflow
+
+query = "test"

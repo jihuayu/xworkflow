@@ -1,0 +1,4 @@
+# Iteration error remove abnormal: failed iteration items are removed from results.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 0, 3,]

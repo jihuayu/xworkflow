@@ -1,0 +1,6 @@
+# Max steps exceeded: workflow aborts when execution exceeds the configured step limit.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[config]
+max_steps = 2
+max_execution_time_secs = 600

@@ -1,0 +1,12 @@
+# Retry exhausted: all retry attempts are consumed, node fails.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/retry"
+response_status = 500
+response_body = "fail"
+expect = 2
+
+[mock_server.response_headers]
+content-type = "text/plain"

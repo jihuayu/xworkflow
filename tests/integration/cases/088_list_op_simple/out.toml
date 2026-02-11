@@ -1,0 +1,10 @@
+# List operation simple: basic list operations (length, flatten, etc.).
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+first = 2
+last = 3
+length = 3

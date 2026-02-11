@@ -1,0 +1,61 @@
+# LLM stream assigner: assigner node processes streamed LLM output.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Streaming"
+stream = true
+[[nodes.data.prompt_template]]
+role = "user"
+text = "{{#start.query#}}"
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+[[nodes]]
+id = "assign1"
+
+[nodes.data]
+type = "assigner"
+title = "Assign Stream"
+assigned_variable_selector = [ "conversation", "last_response",]
+input_variable_selector = [ "llm1", "text",]
+write_mode = "overwrite"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "saved"
+value_selector = [ "conversation", "last_response",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "assign1"
+
+[[edges]]
+source = "assign1"
+target = "end"
+

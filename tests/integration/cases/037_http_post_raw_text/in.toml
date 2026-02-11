@@ -1,0 +1,4 @@
+# HTTP POST raw text: sends a POST request with plain text body.
+# File: Input variables supplied to the workflow
+
+message = "hello world"

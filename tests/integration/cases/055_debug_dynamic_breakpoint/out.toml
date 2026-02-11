@@ -1,0 +1,8 @@
+# Debug dynamic breakpoint: breakpoint is added/removed dynamically during execution.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "dynamic processed"

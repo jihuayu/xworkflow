@@ -1,0 +1,4 @@
+# List operation filter: filters list items by a predicate.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 2, 3, 4, 5,]

@@ -1,0 +1,5 @@
+# Environment variable in if-else: if-else condition references an environment variable.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[environment_variables]
+MODE = "prod"

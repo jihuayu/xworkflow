@@ -1,0 +1,4 @@
+# LLM stream HTTP: combines LLM streaming with HTTP request processing.
+# File: Input variables supplied to the workflow
+
+query = "test"

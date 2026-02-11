@@ -22,6 +22,7 @@ futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde-saphyr = "0.0.18"
+toml = "0.8"
 
 # Template engine
 # (moved to xworkflow-template-jinja)
@@ -68,6 +69,7 @@ minijinja = { version = "2.0", features = ["builtins", "fuel"], optional = true 
 tokio-test = "0.4"
 mockito = "1.2"
 tempfile = "3"
+toml = "0.8"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 dhat = "0.3"
 

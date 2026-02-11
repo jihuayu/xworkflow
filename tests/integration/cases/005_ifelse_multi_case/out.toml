@@ -1,0 +1,8 @@
+# If-else multi-case: multiple condition branches with fallthrough to else.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+grade = "good"

@@ -1,0 +1,4 @@
+# If-else empty check: condition checks whether a variable is empty.
+# File: Input variables supplied to the workflow
+
+text = ""

@@ -1,0 +1,4 @@
+# Chain pipeline: multiple nodes executed in sequence forming a processing chain.
+# File: Input variables supplied to the workflow
+
+x = 5

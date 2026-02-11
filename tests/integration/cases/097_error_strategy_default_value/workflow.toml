@@ -1,0 +1,40 @@
+# Error strategy default value: node failure produces a configured default value.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "failing_code"
+
+[nodes.data]
+type = "code"
+title = "Failing Code"
+code = "function main(inputs) { throw new Error('boom'); }"
+language = "javascript"
+[nodes.data.error_strategy]
+type = "default-value"
+[nodes.data.error_strategy.default_value]
+result = "fallback_output"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "failing_code", "result",]
+
+[[edges]]
+source = "start"
+target = "failing_code"
+
+[[edges]]
+source = "failing_code"
+target = "end"
+

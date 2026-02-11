@@ -1,0 +1,85 @@
+# Diamond merge: DAG with diamond-shaped topology merges correctly.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "x"
+label = "X"
+type = "number"
+required = true
+
+[[nodes]]
+id = "branch_a"
+
+[nodes.data]
+type = "code"
+title = "Branch A"
+code = "function main(inputs) { return { result: inputs.x + 10 }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "x"
+value_selector = [ "start", "x",]
+
+[[nodes]]
+id = "branch_b"
+
+[nodes.data]
+type = "code"
+title = "Branch B"
+code = "function main(inputs) { return { result: inputs.x * 2 }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "x"
+value_selector = [ "start", "x",]
+
+[[nodes]]
+id = "merge_tmpl"
+
+[nodes.data]
+type = "template-transform"
+title = "Merge"
+template = "A={{ a }}, B={{ b }}"
+[[nodes.data.variables]]
+variable = "a"
+value_selector = [ "branch_a", "result",]
+
+[[nodes.data.variables]]
+variable = "b"
+value_selector = [ "branch_b", "result",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "merged"
+value_selector = [ "merge_tmpl", "output",]
+
+[[edges]]
+source = "start"
+target = "branch_a"
+
+[[edges]]
+source = "start"
+target = "branch_b"
+
+[[edges]]
+source = "branch_a"
+target = "merge_tmpl"
+
+[[edges]]
+source = "branch_b"
+target = "merge_tmpl"
+
+[[edges]]
+source = "merge_tmpl"
+target = "end"
+

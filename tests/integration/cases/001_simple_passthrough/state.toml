@@ -1,0 +1,3 @@
+# Simple passthrough: start node receives input and end node outputs it unchanged.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+

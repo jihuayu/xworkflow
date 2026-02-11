@@ -1,0 +1,3 @@
+# Code returns non-object: JS main() returns a non-object value (e.g. number).
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+

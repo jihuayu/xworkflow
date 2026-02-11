@@ -1,0 +1,8 @@
+# LLM stream end collect: end node collects all streamed data.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+text = "collected"
+query = "collect test"

@@ -1,0 +1,62 @@
+# LLM stream HTTP: combines LLM streaming with HTTP request processing.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Streaming"
+stream = true
+[[nodes.data.prompt_template]]
+role = "user"
+text = "{{#start.query#}}"
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+[[nodes]]
+id = "http1"
+
+[nodes.data]
+type = "http-request"
+title = "HTTP with Stream"
+method = "GET"
+url = "{{#sys.base_url#}}/api/echo?text={{#llm1.text#}}"
+headers = []
+params = []
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "body"
+value_selector = [ "http1", "body",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "http1"
+
+[[edges]]
+source = "http1"
+target = "end"
+

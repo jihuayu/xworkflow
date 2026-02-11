@@ -1,0 +1,4 @@
+# List operation reduce: reduces a list to a single value.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 2, 3, 4,]

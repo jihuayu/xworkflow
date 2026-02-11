@@ -1,0 +1,4 @@
+# If-else multi-case: multiple condition branches with fallthrough to else.
+# File: Input variables supplied to the workflow
+
+score = 75

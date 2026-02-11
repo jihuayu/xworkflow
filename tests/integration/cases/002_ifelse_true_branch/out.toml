@@ -1,0 +1,8 @@
+# If-else true branch: input satisfies the condition, routes to the true branch.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+path = 10

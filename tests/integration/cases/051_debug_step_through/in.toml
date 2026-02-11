@@ -1,0 +1,4 @@
+# Debug step through: debugger steps through nodes one by one.
+# File: Input variables supplied to the workflow
+
+query = "hello"

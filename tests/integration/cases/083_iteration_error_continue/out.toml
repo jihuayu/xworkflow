@@ -1,0 +1,6 @@
+# Iteration error continue: iteration continues despite sub-graph errors, null for failed items.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+outputs_json = "{\"results\":[{\"value\":10},null,{\"value\":30}]}"

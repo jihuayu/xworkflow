@@ -1,0 +1,4 @@
+# LLM stream chain: chains multiple streaming LLM calls in sequence.
+# File: Input variables supplied to the workflow
+
+query = "hello"

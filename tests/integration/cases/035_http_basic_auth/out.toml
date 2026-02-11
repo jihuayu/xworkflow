@@ -1,0 +1,9 @@
+# HTTP basic auth: sends a request with HTTP Basic authentication.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "{\"authenticated\":true,\"user\":\"admin\"}"

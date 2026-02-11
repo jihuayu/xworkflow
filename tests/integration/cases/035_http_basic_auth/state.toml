@@ -1,0 +1,13 @@
+# HTTP basic auth: sends a request with HTTP Basic authentication.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/secure"
+response_status = 200
+response_body = "{\"authenticated\":true,\"user\":\"admin\"}"
+
+[mock_server.response_headers]
+content-type = "application/json"
+[mock_server.match_headers]
+authorization = "Basic YWRtaW46cGFzczEyMw=="

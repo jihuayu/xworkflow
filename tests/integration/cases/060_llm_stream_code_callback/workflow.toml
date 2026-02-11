@@ -1,0 +1,64 @@
+# LLM stream code callback: JS code processes individual stream chunks via callback.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Streaming"
+stream = true
+[[nodes.data.prompt_template]]
+role = "user"
+text = "{{#start.query#}}"
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Stream Callback"
+language = "javascript"
+code = "function main(inputs) { var result = ''; inputs.text.on_chunk(function(chunk) { result = result + chunk.toUpperCase(); return result; }).on_end(function(final_val) { return result; }); return ''; }"
+[[nodes.data.variables]]
+variable = "text"
+value_selector = [ "llm1", "text",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code1", "output",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

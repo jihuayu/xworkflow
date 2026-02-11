@@ -1,0 +1,4 @@
+# LLM stream code counter: JS code counts stream chunks.
+# File: Input variables supplied to the workflow
+
+query = "count chunks"

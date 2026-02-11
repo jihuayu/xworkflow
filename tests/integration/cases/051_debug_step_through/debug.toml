@@ -1,0 +1,37 @@
+# Debug step through: debugger steps through nodes one by one.
+# File: Debug mode configuration: breakpoints and step expectations
+
+[[steps]]
+expect_node = "start"
+expect_reason = "initial"
+expect_phase = "before"
+action = "step"
+
+[[steps]]
+expect_node = "start"
+expect_reason = "step"
+expect_phase = "after"
+action = "step"
+
+[[steps]]
+expect_node = "code_1"
+expect_reason = "step"
+expect_phase = "before"
+action = "step"
+
+[[steps]]
+expect_node = "code_1"
+expect_reason = "step"
+expect_phase = "after"
+action = "step"
+
+[[steps]]
+expect_node = "end"
+expect_reason = "step"
+expect_phase = "before"
+action = "continue"
+
+[config]
+breakpoints = []
+break_on_start = true
+auto_snapshot = false

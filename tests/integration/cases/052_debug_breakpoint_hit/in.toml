@@ -1,0 +1,4 @@
+# Debug breakpoint hit: debugger pauses when a breakpoint is reached.
+# File: Input variables supplied to the workflow
+
+query = "test"

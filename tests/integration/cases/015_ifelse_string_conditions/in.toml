@@ -1,0 +1,4 @@
+# If-else string conditions: condition checks on string values (contains, prefix, etc.).
+# File: Input variables supplied to the workflow
+
+email = "bob@company.com"

@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "status_code": 200,
-    "body": "{\"user\":\"admin\",\"role\":\"superuser\"}"
-  },
-  "partial_match": true
-}

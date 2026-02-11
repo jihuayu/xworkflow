@@ -1,0 +1,4 @@
+# LLM stream multi chunk: handles multiple stream chunks correctly.
+# File: Input variables supplied to the workflow
+
+query = "count"

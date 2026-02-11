@@ -1,0 +1,7 @@
+# LLM stream template: streamed LLM output is used in a template transform.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "Result: Good morning"

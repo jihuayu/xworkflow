@@ -1,0 +1,9 @@
+# HTTP POST raw text: sends a POST request with plain text body.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "echo: hello world"

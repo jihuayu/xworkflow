@@ -1,0 +1,4 @@
+# Answer with code: combines a code node with an answer node.
+# File: Input variables supplied to the workflow
+
+x = 6

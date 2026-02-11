@@ -1,0 +1,4 @@
+# If-else OR logic: condition group uses 'or' logical operator.
+# File: Input variables supplied to the workflow
+
+role = "superadmin"

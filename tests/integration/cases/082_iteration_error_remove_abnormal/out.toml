@@ -1,0 +1,13 @@
+# Iteration error remove abnormal: failed iteration items are removed from results.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+[[outputs.results]]
+value = 10
+
+[[outputs.results]]
+value = 30
+

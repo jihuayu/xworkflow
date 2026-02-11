@@ -12,7 +12,7 @@ pub struct PauseReason {
     pub reason: String,
 }
 
-/// All events emitted by the graph engine (Dify-compatible)
+/// All events emitted by the graph engine
 #[derive(Debug, Clone)]
 pub enum GraphEngineEvent {
     // === Graph-level events ===

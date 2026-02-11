@@ -1,0 +1,34 @@
+# System variables: workflow accesses built-in system variables.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Q"
+type = "string"
+required = true
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "query"
+value_selector = [ "sys", "query",]
+
+[[nodes.data.outputs]]
+variable = "user_id"
+value_selector = [ "sys", "user_id",]
+
+[[edges]]
+source = "start"
+target = "end"
+

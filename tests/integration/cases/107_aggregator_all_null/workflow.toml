@@ -1,0 +1,36 @@
+# Aggregator all null: all aggregated upstream values are null.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "agg1"
+
+[nodes.data]
+type = "variable-aggregator"
+title = "Aggregate"
+variables = [ [ "start", "a",], [ "start", "b",],]
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "agg1", "output",]
+
+[[edges]]
+source = "start"
+target = "agg1"
+
+[[edges]]
+source = "agg1"
+target = "end"
+

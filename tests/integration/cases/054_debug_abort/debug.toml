@@ -1,0 +1,14 @@
+# Debug abort: debugger aborts the workflow during a pause.
+# File: Debug mode configuration: breakpoints and step expectations
+
+[[steps]]
+expect_node = "start"
+expect_reason = "initial"
+expect_phase = "before"
+action = "abort"
+abort_reason = "User aborted"
+
+[config]
+breakpoints = []
+break_on_start = true
+auto_snapshot = false

@@ -1,0 +1,11 @@
+# Loop with if-else: loop body contains an if-else branch.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+iterations = 3
+
+[outputs.loop_result]
+counter = 4

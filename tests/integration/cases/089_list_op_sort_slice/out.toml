@@ -1,0 +1,15 @@
+# List operation sort/slice: sorts and slices a list.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+[[outputs.result]]
+name = "a"
+score = 1
+
+[[outputs.result]]
+name = "b"
+score = 2
+

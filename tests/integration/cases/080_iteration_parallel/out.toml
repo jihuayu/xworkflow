@@ -1,0 +1,19 @@
+# Iteration parallel: iterates over a list and processes items in parallel.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+[[outputs.results]]
+value = 20
+
+[[outputs.results]]
+value = 40
+
+[[outputs.results]]
+value = 60
+
+[[outputs.results]]
+value = 80
+

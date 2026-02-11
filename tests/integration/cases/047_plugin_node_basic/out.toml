@@ -1,0 +1,8 @@
+# Plugin node basic: invokes a basic host-registered plugin node.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+echo = "ok"

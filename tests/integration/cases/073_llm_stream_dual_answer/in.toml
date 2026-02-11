@@ -1,0 +1,5 @@
+# LLM stream dual answer: two answer nodes consume the same stream.
+# File: Input variables supplied to the workflow
+
+q1 = "first"
+q2 = "second"

@@ -1,5 +1,0 @@
-{
-  "status": "completed",
-  "outputs": { "is_even": true, "half": 4 },
-  "partial_match": false
-}

@@ -1,0 +1,33 @@
+# Validation duplicate node ID: workflow with duplicate node IDs fails validation.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "code"
+title = "Duplicate"
+code = "function main(inputs) { return { result: 1 }; }"
+language = "javascript"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "start", "result",]
+
+[[edges]]
+source = "start"
+target = "end"
+

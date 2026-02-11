@@ -1,0 +1,5 @@
+# Iteration max exceeded: iteration aborts when item count exceeds the limit.
+# File: Expected execution result and output values
+
+status = "failed"
+error_contains = "exceeds max iterations"

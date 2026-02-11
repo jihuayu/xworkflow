@@ -1,0 +1,5 @@
+# Validation cycle detected: workflow with a cycle is rejected by validation.
+# File: Expected execution result and output values
+
+status = "failed"
+error_contains = "Validation failed"

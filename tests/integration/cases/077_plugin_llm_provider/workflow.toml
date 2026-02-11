@@ -1,0 +1,42 @@
+# Plugin LLM provider: plugin provides a custom LLM provider implementation.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "Plugin LLM"
+stream = false
+[[nodes.data.prompt_template]]
+role = "user"
+text = "Hello"
+
+[nodes.data.model]
+provider = "test"
+name = "test-model"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "text"
+value_selector = [ "llm1", "text",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "end"
+

@@ -1,0 +1,11 @@
+# HTTP error status: handles a non-2xx response status from the server.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/missing"
+response_status = 404
+response_body = "{\"error\":\"not found\"}"
+
+[mock_server.response_headers]
+content-type = "application/json"

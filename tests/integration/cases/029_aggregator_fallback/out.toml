@@ -1,0 +1,8 @@
+# Aggregator fallback: aggregator handles missing upstream values gracefully.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "value_b"

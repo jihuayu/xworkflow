@@ -1,0 +1,4 @@
+# Iteration error continue: iteration continues despite sub-graph errors, null for failed items.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 0, 3,]

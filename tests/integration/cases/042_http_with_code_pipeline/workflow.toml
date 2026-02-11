@@ -1,0 +1,62 @@
+# HTTP with code pipeline: HTTP request followed by JS code processing.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "http1"
+
+[nodes.data]
+type = "http-request"
+title = "Fetch JSON"
+method = "GET"
+url = "{{#sys.base_url#}}/api/items"
+timeout = 10
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Parse Response"
+language = "javascript"
+code = "function main(inputs) { const data = JSON.parse(inputs.body); return { total: data.length, first_name: data[0].name }; }"
+[[nodes.data.variables]]
+variable = "body"
+value_selector = [ "http1", "body",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "total"
+value_selector = [ "code1", "total",]
+
+[[nodes.data.outputs]]
+variable = "first_name"
+value_selector = [ "code1", "first_name",]
+
+[[nodes.data.outputs]]
+variable = "http_status"
+value_selector = [ "http1", "status_code",]
+
+[[edges]]
+source = "start"
+target = "http1"
+
+[[edges]]
+source = "http1"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

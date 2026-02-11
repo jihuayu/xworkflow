@@ -1,0 +1,8 @@
+# HTTP if-else status: branches based on HTTP response status code.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200

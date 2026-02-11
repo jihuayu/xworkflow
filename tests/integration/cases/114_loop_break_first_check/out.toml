@@ -1,0 +1,11 @@
+# Loop break first check: loop exits on the very first iteration check.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+iterations = 0
+
+[outputs.loop_result]
+counter = 0

@@ -1,0 +1,8 @@
+# If-else 'in' operator: condition uses the 'in' (contains) operator.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+type = "primary"

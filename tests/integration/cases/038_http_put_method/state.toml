@@ -1,0 +1,11 @@
+# HTTP PUT method: sends a PUT request.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "PUT"
+path = "/api/users/1"
+response_status = 200
+response_body = "{\"id\":1,\"name\":\"Bob\",\"age\":30,\"updated\":true}"
+
+[mock_server.response_headers]
+content-type = "application/json"

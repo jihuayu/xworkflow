@@ -1,0 +1,4 @@
+# Partial match: only a subset of outputs is verified (partial_match = true).
+# File: Input variables supplied to the workflow
+
+name = "Bob"

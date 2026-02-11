@@ -1,0 +1,8 @@
+# If-else null check: condition uses not_null operator to check variable presence.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+status = "has_value"

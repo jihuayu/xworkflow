@@ -1,0 +1,59 @@
+# LLM stream multi chunk: handles multiple stream chunks correctly.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Multi-Chunk"
+stream = true
+[[nodes.data.prompt_template]]
+role = "user"
+text = "{{#start.query#}}"
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+[[nodes]]
+id = "ans"
+
+[nodes.data]
+type = "answer"
+title = "Answer"
+answer = "{{#llm1.text#}}"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "ans", "answer",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "ans"
+
+[[edges]]
+source = "ans"
+target = "end"
+

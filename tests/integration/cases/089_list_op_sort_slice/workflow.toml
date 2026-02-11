@@ -1,0 +1,60 @@
+# List operation sort/slice: sorts and slices a list.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "items"
+label = "Items"
+type = "array[object]"
+required = true
+
+[[nodes]]
+id = "op_sort"
+
+[nodes.data]
+type = "list-operator"
+title = "Sort"
+operation = "sort"
+input_selector = [ "start", "items",]
+sort_key = "score"
+sort_order = "asc"
+output_variable = "sorted"
+[[nodes]]
+id = "op_slice"
+
+[nodes.data]
+type = "list-operator"
+title = "Slice"
+operation = "slice"
+input_selector = [ "op_sort", "sorted",]
+start = 0
+end = 2
+output_variable = "sliced"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "op_slice", "sliced",]
+
+[[edges]]
+source = "start"
+target = "op_sort"
+
+[[edges]]
+source = "op_sort"
+target = "op_slice"
+
+[[edges]]
+source = "op_slice"
+target = "end"
+

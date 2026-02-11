@@ -1,0 +1,4 @@
+# If-else 'in' operator: condition uses the 'in' (contains) operator.
+# File: Input variables supplied to the workflow
+
+color = "blue"

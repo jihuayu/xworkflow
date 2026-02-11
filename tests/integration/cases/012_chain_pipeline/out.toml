@@ -1,0 +1,8 @@
+# Chain pipeline: multiple nodes executed in sequence forming a processing chain.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+output = "Result is 20"

@@ -1,0 +1,10 @@
+# HTTP with code pipeline: HTTP request followed by JS code processing.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+total = 3
+first_name = "Apple"
+http_status = 200

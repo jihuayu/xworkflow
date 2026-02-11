@@ -1,0 +1,5 @@
+# If-else AND fail: one condition in an AND group fails, routes to else.
+# File: Input variables supplied to the workflow
+
+age = 20
+country = "UK"

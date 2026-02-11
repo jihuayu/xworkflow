@@ -1,0 +1,108 @@
+# LLM stream if-else: branches on streamed LLM output content.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Streaming"
+stream = true
+[[nodes.data.prompt_template]]
+role = "user"
+text = "{{#start.query#}}"
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+[[nodes]]
+id = "if1"
+
+[nodes.data]
+type = "if-else"
+title = "Check LLM Output"
+[[nodes.data.cases]]
+case_id = "has_yes"
+logical_operator = "and"
+[[nodes.data.cases.conditions]]
+variable_selector = [ "llm1", "text",]
+comparison_operator = "contains"
+value = "yes"
+
+
+[[nodes]]
+id = "code_yes"
+
+[nodes.data]
+type = "code"
+title = "Yes Branch"
+language = "javascript"
+code = "function main(inputs) { return { result: 'matched_yes' }; }"
+[[nodes]]
+id = "code_no"
+
+[nodes.data]
+type = "code"
+title = "No Branch"
+language = "javascript"
+code = "function main(inputs) { return { result: 'no_match' }; }"
+[[nodes]]
+id = "agg"
+
+[nodes.data]
+type = "variable-aggregator"
+title = "Merge"
+variables = [ [ "code_yes", "result",], [ "code_no", "result",],]
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "agg", "output",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "if1"
+
+[[edges]]
+source = "if1"
+target = "code_yes"
+sourceHandle = "has_yes"
+
+[[edges]]
+source = "if1"
+target = "code_no"
+sourceHandle = "false"
+
+[[edges]]
+source = "code_yes"
+target = "agg"
+
+[[edges]]
+source = "code_no"
+target = "agg"
+
+[[edges]]
+source = "agg"
+target = "end"
+

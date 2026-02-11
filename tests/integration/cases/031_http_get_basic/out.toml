@@ -1,0 +1,9 @@
+# HTTP GET basic: sends a simple GET request to a mock server.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "{\"message\":\"hello\",\"count\":42}"

@@ -1,0 +1,5 @@
+# Plugin host node basic: executes a host-registered plugin node.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[plugin_system]
+host_normal_plugins = [ "test_host_node",]

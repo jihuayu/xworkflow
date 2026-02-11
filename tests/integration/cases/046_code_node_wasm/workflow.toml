@@ -1,0 +1,37 @@
+# Code node (WASM): executes code via the WASM sandbox.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "WASM"
+code = "(module\n  (memory (export \"memory\") 1)\n  (global $heap (mut i32) (i32.const 1024))\n  (func (export \"alloc\") (param $size i32) (result i32)\n    (local $addr i32)\n    global.get $heap\n    local.set $addr\n    global.get $heap\n    local.get $size\n    i32.add\n    global.set $heap\n    local.get $addr)\n  (func (export \"dealloc\") (param i32 i32))\n  (data (i32.const 0) \"{\\\"result\\\":42}\")\n  (data (i32.const 32) \"\\00\\00\\00\\00\\0d\\00\\00\\00\")\n  (func (export \"main\") (param i32 i32) (result i32)\n    (i32.const 32))\n)"
+language = "wasm"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code1", "result",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

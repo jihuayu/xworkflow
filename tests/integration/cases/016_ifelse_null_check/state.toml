@@ -1,0 +1,3 @@
+# If-else null check: condition uses not_null operator to check variable presence.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+

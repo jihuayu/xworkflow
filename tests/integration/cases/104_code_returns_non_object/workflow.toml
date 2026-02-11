@@ -1,0 +1,37 @@
+# Code returns non-object: JS main() returns a non-object value (e.g. number).
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Scalar Return"
+code = "function main(inputs) { return 42; }"
+language = "javascript"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "value"
+value_selector = [ "code1", "value",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

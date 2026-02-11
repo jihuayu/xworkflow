@@ -1,0 +1,7 @@
+# LLM OpenAI basic: sends a chat completion request to a mock OpenAI endpoint.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+text = "mock answer"

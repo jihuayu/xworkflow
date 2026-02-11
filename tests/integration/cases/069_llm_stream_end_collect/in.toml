@@ -1,0 +1,4 @@
+# LLM stream end collect: end node collects all streamed data.
+# File: Input variables supplied to the workflow
+
+query = "collect test"

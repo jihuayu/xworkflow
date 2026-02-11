@@ -1,0 +1,5 @@
+# Max steps exceeded: workflow aborts when execution exceeds the configured step limit.
+# File: Expected execution result and output values
+
+status = "failed"
+error_contains = "Max steps exceeded"

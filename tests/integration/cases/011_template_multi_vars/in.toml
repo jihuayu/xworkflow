@@ -1,0 +1,6 @@
+# Template with multiple variables: renders a template using several input variables.
+# File: Input variables supplied to the workflow
+
+first_name = "John"
+last_name = "doe"
+age = 30

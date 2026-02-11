@@ -1,0 +1,4 @@
+# Iteration max exceeded: iteration aborts when item count exceeds the limit.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 2, 3,]

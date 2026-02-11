@@ -544,19 +544,25 @@ struct ExpectedOutput {
     partial_match: bool,
     #[serde(default)]
     error_contains: Option<String>,
+    /// Fallback JSON string for outputs that contain null values
+    /// (TOML cannot represent null natively).  When present, this
+    /// field is parsed as JSON and merged into `outputs`.
+    #[serde(default)]
+    outputs_json: Option<String>,
 }
 
 pub async fn run_case(case_dir: &Path) {
-    let workflow_json = read_to_string(case_dir.join("workflow.json"));
-    let inputs: HashMap<String, Value> = read_json(case_dir.join("in.json"));
-    let mut state: StateFile = read_json(case_dir.join("state.json"));
-    let expected: ExpectedOutput = read_json(case_dir.join("out.json"));
+    let workflow_toml = read_to_string(case_dir.join("workflow.toml"));
+    let inputs: HashMap<String, Value> = read_toml(case_dir.join("in.toml"));
+    let mut state: StateFile = read_toml(case_dir.join("state.toml"));
+    let mut expected: ExpectedOutput = read_toml(case_dir.join("out.toml"));
+    resolve_outputs_json(&mut expected);
 
     // Set up mock HTTP server if configured
     let _mock_server_guard = setup_mock_server(&mut state).await;
 
-    let schema = parse_dsl(&workflow_json, DslFormat::Json)
-        .unwrap_or_else(|e| panic!("Failed to parse workflow.json: {}", e));
+    let schema = parse_dsl(&workflow_toml, DslFormat::Toml)
+        .unwrap_or_else(|e| panic!("Failed to parse workflow.toml: {}", e));
 
     let mut context = RuntimeContext::default();
     if let Some(fake_time) = state.fake_time {
@@ -723,7 +729,7 @@ struct MockServerGuard {
 // Debug mode integration test support
 // =====================================================================
 
-/// Debug test configuration loaded from `debug.json`
+/// Debug test configuration loaded from `debug.toml`
 #[derive(Debug, Deserialize)]
 struct DebugTestFile {
     /// Debug configuration: breakpoints, break_on_start, auto_snapshot
@@ -778,17 +784,18 @@ struct DebugStep {
 }
 
 pub async fn run_debug_case(case_dir: &Path) {
-    let workflow_json = read_to_string(case_dir.join("workflow.json"));
-    let inputs: HashMap<String, Value> = read_json(case_dir.join("in.json"));
-    let mut state: StateFile = read_json(case_dir.join("state.json"));
-    let expected: ExpectedOutput = read_json(case_dir.join("out.json"));
-    let debug_test: DebugTestFile = read_json(case_dir.join("debug.json"));
+    let workflow_toml = read_to_string(case_dir.join("workflow.toml"));
+    let inputs: HashMap<String, Value> = read_toml(case_dir.join("in.toml"));
+    let mut state: StateFile = read_toml(case_dir.join("state.toml"));
+    let mut expected: ExpectedOutput = read_toml(case_dir.join("out.toml"));
+    resolve_outputs_json(&mut expected);
+    let debug_test: DebugTestFile = read_toml(case_dir.join("debug.toml"));
 
     // Set up mock HTTP server if configured
     let _mock_server_guard = setup_mock_server(&mut state).await;
 
-    let schema = parse_dsl(&workflow_json, DslFormat::Json)
-        .unwrap_or_else(|e| panic!("Failed to parse workflow.json: {}", e));
+    let schema = parse_dsl(&workflow_toml, DslFormat::Toml)
+        .unwrap_or_else(|e| panic!("Failed to parse workflow.toml: {}", e));
 
     let mut context = RuntimeContext::default();
     if let Some(fake_time) = state.fake_time {
@@ -800,7 +807,7 @@ pub async fn run_debug_case(case_dir: &Path) {
 
     let config = state.config.unwrap_or_default();
 
-    // Build DebugConfig from debug.json
+    // Build DebugConfig from debug.toml
     let mut dbg_config = DebugConfig::default();
     dbg_config.break_on_start = debug_test.config.break_on_start;
     dbg_config.auto_snapshot = debug_test.config.auto_snapshot;
@@ -1129,9 +1136,49 @@ fn read_to_string(path: impl AsRef<Path>) -> String {
     })
 }
 
-fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> T {
+/// Read a TOML file and deserialize into `T`.
+///
+/// Internally the TOML content is first parsed into `toml::Value`, converted
+/// to `serde_json::Value` (so that fields typed as `serde_json::Value` work
+/// correctly), and then deserialized into the target type.
+fn read_toml<T: DeserializeOwned>(path: impl AsRef<Path>) -> T {
     let content = read_to_string(path.as_ref());
-    serde_json::from_str(&content).unwrap_or_else(|e| {
-        panic!("Failed to parse {}: {}", path.as_ref().display(), e)
+    let toml_val: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
+        panic!("Failed to parse TOML {}: {}", path.as_ref().display(), e)
+    });
+    let json_val = toml_value_to_json(toml_val);
+    serde_json::from_value(json_val).unwrap_or_else(|e| {
+        panic!("Failed to deserialize {}: {}", path.as_ref().display(), e)
     })
+}
+
+/// Convert a `toml::Value` into a `serde_json::Value`.
+fn toml_value_to_json(val: toml::Value) -> serde_json::Value {
+    match val {
+        toml::Value::String(s) => serde_json::Value::String(s),
+        toml::Value::Integer(i) => serde_json::json!(i),
+        toml::Value::Float(f) => serde_json::json!(f),
+        toml::Value::Boolean(b) => serde_json::Value::Bool(b),
+        toml::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(toml_value_to_json).collect())
+        }
+        toml::Value::Table(tbl) => {
+            let map: serde_json::Map<String, serde_json::Value> = tbl
+                .into_iter()
+                .map(|(k, v)| (k, toml_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(map)
+        }
+        toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
+    }
+}
+
+/// If `outputs_json` is set, parse it as JSON and merge it into `outputs`.
+/// This is the escape hatch for values TOML cannot represent (e.g. null).
+fn resolve_outputs_json(expected: &mut ExpectedOutput) {
+    if let Some(json_str) = expected.outputs_json.take() {
+        let parsed: HashMap<String, Value> = serde_json::from_str(&json_str)
+            .unwrap_or_else(|e| panic!("Failed to parse outputs_json: {}", e));
+        expected.outputs.extend(parsed);
+    }
 }

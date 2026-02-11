@@ -1,0 +1,39 @@
+# Error strategy none: no error strategy configured, node failure propagates.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Fail"
+code = "function main(inputs) { throw new Error('boom'); }"
+language = "javascript"
+[nodes.data.error_strategy]
+type = "none"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code1", "result",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

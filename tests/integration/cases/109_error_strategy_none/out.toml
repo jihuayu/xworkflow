@@ -1,0 +1,4 @@
+# Error strategy none: no error strategy configured, node failure propagates.
+# File: Expected execution result and output values
+
+status = "failed"

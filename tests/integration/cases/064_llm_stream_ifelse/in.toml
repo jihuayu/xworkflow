@@ -1,0 +1,4 @@
+# LLM stream if-else: branches on streamed LLM output content.
+# File: Input variables supplied to the workflow
+
+query = "do you agree?"

@@ -1,0 +1,9 @@
+# Code node (JavaScript): executes a JS function that computes sum and product.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+sum = 10
+product = 21

@@ -1,0 +1,7 @@
+# LLM stream single chunk: stream with only one chunk delivered.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "Got: done"

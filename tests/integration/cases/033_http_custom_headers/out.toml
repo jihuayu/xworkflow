@@ -1,0 +1,9 @@
+# HTTP custom headers: sends a request with user-defined headers.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "{\"access\":\"granted\"}"

@@ -1,0 +1,52 @@
+# Template Jinja2 loop: template uses {% for %} loop construct.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "MakeList"
+code = "function main(inputs) { return { names: ['Alice', 'Bob', 'Charlie'] }; }"
+language = "javascript"
+[[nodes]]
+id = "tmpl"
+
+[nodes.data]
+type = "template-transform"
+title = "FormatList"
+template = "{% for name in names %}{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}"
+[[nodes.data.variables]]
+variable = "names"
+value_selector = [ "code1", "names",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "tmpl", "output",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "tmpl"
+
+[[edges]]
+source = "tmpl"
+target = "end"
+

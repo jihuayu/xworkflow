@@ -1,0 +1,16 @@
+# LLM stream code template: code node with template processing on stream output.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "POST"
+path = "/v1/chat/completions"
+response_status = 200
+response_body = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\ndata: [DONE]\n\n"
+match_body = "\"stream\":true"
+
+[mock_server.response_headers]
+content-type = "text/event-stream"
+
+[llm_providers.openai]
+api_key = "test-key"
+default_model = "gpt-4o"

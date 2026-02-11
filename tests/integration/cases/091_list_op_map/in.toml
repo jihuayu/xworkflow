@@ -1,0 +1,4 @@
+# List operation map: transforms each item in a list.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 2, 3,]

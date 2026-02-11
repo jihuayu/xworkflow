@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "status_code": 200,
-    "body": "{\"id\":5,\"email\":\"new@example.com\",\"patched\":true}"
-  },
-  "partial_match": true
-}

@@ -1,0 +1,5 @@
+# Plugin LLM provider: plugin provides a custom LLM provider implementation.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[plugin_system]
+host_normal_plugins = [ "test_llm_provider",]

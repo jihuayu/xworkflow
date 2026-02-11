@@ -1,0 +1,8 @@
+# Variable aggregator: merges outputs from multiple upstream nodes.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+merged = "from_branch_a"

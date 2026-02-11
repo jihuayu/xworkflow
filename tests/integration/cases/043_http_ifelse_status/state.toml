@@ -1,0 +1,11 @@
+# HTTP if-else status: branches based on HTTP response status code.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/check"
+response_status = 200
+response_body = "{\"ok\":true}"
+
+[mock_server.response_headers]
+content-type = "application/json"

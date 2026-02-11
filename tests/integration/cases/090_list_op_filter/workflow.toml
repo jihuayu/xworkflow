@@ -1,0 +1,79 @@
+# List operation filter: filters list items by a predicate.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "items"
+label = "Items"
+type = "array[number]"
+required = true
+
+[[nodes]]
+id = "op_filter"
+
+[nodes.data]
+type = "list-operator"
+title = "Filter"
+operation = "filter"
+input_selector = [ "start", "items",]
+output_variable = "filtered"
+[nodes.data.sub_graph]
+[[nodes.data.sub_graph.nodes]]
+id = "sg_start"
+type = "start"
+title = "SG Start"
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_code"
+type = "code"
+title = "Check"
+
+[nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { return { keep: inputs.item > 2 }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "item"
+value_selector = [ "__scope__", "item",]
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_end"
+type = "end"
+title = "SG End"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "keep"
+value_selector = [ "sg_code", "keep",]
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_start"
+target = "sg_code"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_code"
+target = "sg_end"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "op_filter", "filtered",]
+
+[[edges]]
+source = "start"
+target = "op_filter"
+
+[[edges]]
+source = "op_filter"
+target = "end"
+

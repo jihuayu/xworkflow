@@ -1,0 +1,12 @@
+# HTTP POST JSON: sends a POST request with a JSON body.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "POST"
+path = "/api/users"
+response_status = 201
+response_body = "{\"id\":1,\"name\":\"Alice\",\"created\":true}"
+match_body = "Alice"
+
+[mock_server.response_headers]
+content-type = "application/json"

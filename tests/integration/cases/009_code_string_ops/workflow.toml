@@ -1,0 +1,54 @@
+# Code node string operations: JS code performs string manipulation.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "text"
+label = "Text"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "StringOps"
+code = "function main(inputs) { var t = inputs.text; return { upper: t.toUpperCase(), length: t.length, reversed: t.split('').reverse().join('') }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "text"
+value_selector = [ "start", "text",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "upper"
+value_selector = [ "code1", "upper",]
+
+[[nodes.data.outputs]]
+variable = "length"
+value_selector = [ "code1", "length",]
+
+[[nodes.data.outputs]]
+variable = "reversed"
+value_selector = [ "code1", "reversed",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

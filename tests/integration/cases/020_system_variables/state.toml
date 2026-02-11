@@ -1,0 +1,6 @@
+# System variables: workflow accesses built-in system variables.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[system_variables]
+query = "system-query"
+user_id = "user-123"

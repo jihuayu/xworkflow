@@ -1,0 +1,4 @@
+# Conversation variables: reads and uses conversation-scoped variables.
+# File: Input variables supplied to the workflow
+
+name = "Alice"

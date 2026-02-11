@@ -1,0 +1,35 @@
+# Plugin node basic: invokes a basic host-registered plugin node.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "plugin1"
+
+[nodes.data]
+type = "plugin.echo"
+title = "Plugin Echo"
+plugin_node_type = "plugin.echo"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "echo"
+value_selector = [ "plugin1", "echo",]
+
+[[edges]]
+source = "start"
+target = "plugin1"
+
+[[edges]]
+source = "plugin1"
+target = "end"
+

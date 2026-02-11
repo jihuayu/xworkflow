@@ -1,0 +1,4 @@
+# Iteration parallel: iterates over a list and processes items in parallel.
+# File: Input variables supplied to the workflow
+
+items = [ 10, 20, 30, 40,]

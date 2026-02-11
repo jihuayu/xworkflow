@@ -1,0 +1,60 @@
+# Code node (JavaScript): executes a JS function that computes sum and product.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "a"
+label = "A"
+type = "number"
+required = true
+
+[[nodes.data.variables]]
+variable = "b"
+label = "B"
+type = "number"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Add"
+code = "function main(inputs) { return { sum: inputs.a + inputs.b, product: inputs.a * inputs.b }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "a"
+value_selector = [ "start", "a",]
+
+[[nodes.data.variables]]
+variable = "b"
+value_selector = [ "start", "b",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "sum"
+value_selector = [ "code1", "sum",]
+
+[[nodes.data.outputs]]
+variable = "product"
+value_selector = [ "code1", "product",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

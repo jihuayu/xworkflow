@@ -1,0 +1,9 @@
+# HTTP no auth: sends a request without any authentication.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "public data"

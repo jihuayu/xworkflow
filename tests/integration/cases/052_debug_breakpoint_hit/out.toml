@@ -1,0 +1,8 @@
+# Debug breakpoint hit: debugger pauses when a breakpoint is reached.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "test done"

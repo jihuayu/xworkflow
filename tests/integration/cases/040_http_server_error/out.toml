@@ -1,0 +1,9 @@
+# HTTP server error: handles a 500 server error response.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 500
+body = "{\"error\":\"internal server error\"}"

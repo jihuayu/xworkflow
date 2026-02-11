@@ -1,0 +1,7 @@
+# LLM stream if-else: branches on streamed LLM output content.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "matched_yes"

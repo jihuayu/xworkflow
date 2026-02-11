@@ -1,0 +1,50 @@
+# Multiple inputs: start node declares and receives multiple input variables.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "name"
+label = "Name"
+type = "string"
+required = true
+
+[[nodes.data.variables]]
+variable = "age"
+label = "Age"
+type = "number"
+required = true
+
+[[nodes.data.variables]]
+variable = "active"
+label = "Active"
+type = "string"
+required = true
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "out_name"
+value_selector = [ "start", "name",]
+
+[[nodes.data.outputs]]
+variable = "out_age"
+value_selector = [ "start", "age",]
+
+[[nodes.data.outputs]]
+variable = "out_active"
+value_selector = [ "start", "active",]
+
+[[edges]]
+source = "start"
+target = "end"
+

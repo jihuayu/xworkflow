@@ -1,0 +1,10 @@
+# Code node string operations: JS code performs string manipulation.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+upper = "HELLO"
+length = 5
+reversed = "olleh"

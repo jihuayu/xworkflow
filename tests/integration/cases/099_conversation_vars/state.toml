@@ -1,0 +1,5 @@
+# Conversation variables: reads and uses conversation-scoped variables.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[conversation_variables]
+visit_count = 5

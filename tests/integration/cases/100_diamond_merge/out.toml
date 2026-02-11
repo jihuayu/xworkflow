@@ -1,0 +1,8 @@
+# Diamond merge: DAG with diamond-shaped topology merges correctly.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+merged = "A=15, B=10"

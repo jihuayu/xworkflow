@@ -1,0 +1,4 @@
+# Iteration error terminated: iteration stops on first sub-graph error.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 0, 3,]

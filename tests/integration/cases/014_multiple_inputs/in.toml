@@ -1,0 +1,6 @@
+# Multiple inputs: start node declares and receives multiple input variables.
+# File: Input variables supplied to the workflow
+
+name = "Alice"
+age = 28
+active = "yes"

@@ -1,0 +1,3 @@
+# Partial match: only a subset of outputs is verified (partial_match = true).
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+

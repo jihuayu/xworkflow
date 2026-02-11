@@ -1,0 +1,11 @@
+# Loop basic: a simple loop that iterates until a break condition is met.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+iterations = 3
+
+[outputs.loop_result]
+counter = 3

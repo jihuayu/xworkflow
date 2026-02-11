@@ -1,0 +1,11 @@
+# HTTP PATCH method: sends a PATCH request.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "PATCH"
+path = "/api/users/5"
+response_status = 200
+response_body = "{\"id\":5,\"email\":\"new@example.com\",\"patched\":true}"
+
+[mock_server.response_headers]
+content-type = "application/json"

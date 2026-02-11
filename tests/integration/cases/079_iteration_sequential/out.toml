@@ -1,0 +1,16 @@
+# Iteration sequential: iterates over a list and processes items one by one.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+[[outputs.results]]
+value = 2
+
+[[outputs.results]]
+value = 4
+
+[[outputs.results]]
+value = 6
+

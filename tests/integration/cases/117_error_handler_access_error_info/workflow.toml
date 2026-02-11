@@ -1,0 +1,78 @@
+# Error handler access error info: error handler node accesses error details.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "code_fail"
+
+[nodes.data]
+type = "code"
+title = "Failing Code"
+code = "function main(inputs) { throw new Error('boom'); }"
+language = "javascript"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code_fail", "result",]
+
+[[edges]]
+source = "start"
+target = "code_fail"
+
+[[edges]]
+source = "code_fail"
+target = "end"
+
+[error_handler]
+mode = "recover"
+
+[error_handler.sub_graph]
+[[error_handler.sub_graph.nodes]]
+id = "eh_start"
+type = "start"
+title = "EH Start"
+
+[[error_handler.sub_graph.nodes]]
+id = "eh_tmpl"
+type = "template-transform"
+title = "EH Template"
+
+[error_handler.sub_graph.nodes.data]
+template = "type={{ error_type }}, node={{ node_id }}"
+[[error_handler.sub_graph.nodes.data.variables]]
+variable = "error_type"
+value_selector = [ "sys", "error_type",]
+
+[[error_handler.sub_graph.nodes.data.variables]]
+variable = "node_id"
+value_selector = [ "sys", "error_node_id",]
+
+[[error_handler.sub_graph.nodes]]
+id = "eh_end"
+type = "end"
+title = "EH End"
+
+[error_handler.sub_graph.nodes.data]
+[[error_handler.sub_graph.nodes.data.outputs]]
+variable = "result"
+value_selector = [ "eh_tmpl", "output",]
+
+[[error_handler.sub_graph.edges]]
+source = "eh_start"
+target = "eh_tmpl"
+
+[[error_handler.sub_graph.edges]]
+source = "eh_tmpl"
+target = "eh_end"
+

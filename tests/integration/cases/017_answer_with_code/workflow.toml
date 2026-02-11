@@ -1,0 +1,57 @@
+# Answer with code: combines a code node with an answer node.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "x"
+label = "X"
+type = "number"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Compute"
+code = "function main(inputs) { return { square: inputs.x * inputs.x }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "x"
+value_selector = [ "start", "x",]
+
+[[nodes]]
+id = "ans"
+
+[nodes.data]
+type = "answer"
+title = "Answer"
+answer = "The square of {{#start.x#}} is {{#code1.square#}}"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "answer"
+value_selector = [ "ans", "answer",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "ans"
+
+[[edges]]
+source = "ans"
+target = "end"
+

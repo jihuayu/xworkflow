@@ -1,0 +1,113 @@
+# If-else multi-case: multiple condition branches with fallthrough to else.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "score"
+label = "Score"
+type = "number"
+required = true
+
+[[nodes]]
+id = "if1"
+
+[nodes.data]
+type = "if-else"
+title = "Grade"
+[[nodes.data.cases]]
+case_id = "excellent"
+logical_operator = "and"
+[[nodes.data.cases.conditions]]
+variable_selector = [ "start", "score",]
+comparison_operator = "greater_or_equal"
+value = 90
+
+
+[[nodes.data.cases]]
+case_id = "good"
+logical_operator = "and"
+[[nodes.data.cases.conditions]]
+variable_selector = [ "start", "score",]
+comparison_operator = "greater_or_equal"
+value = 70
+
+
+[[nodes.data.cases]]
+case_id = "pass"
+logical_operator = "and"
+[[nodes.data.cases.conditions]]
+variable_selector = [ "start", "score",]
+comparison_operator = "greater_or_equal"
+value = 60
+
+
+[[nodes]]
+id = "end_excellent"
+
+[nodes.data]
+type = "end"
+title = "Excellent"
+[[nodes.data.outputs]]
+variable = "grade"
+value_selector = [ "if1", "selected_case",]
+
+[[nodes]]
+id = "end_good"
+
+[nodes.data]
+type = "end"
+title = "Good"
+[[nodes.data.outputs]]
+variable = "grade"
+value_selector = [ "if1", "selected_case",]
+
+[[nodes]]
+id = "end_pass"
+
+[nodes.data]
+type = "end"
+title = "Pass"
+[[nodes.data.outputs]]
+variable = "grade"
+value_selector = [ "if1", "selected_case",]
+
+[[nodes]]
+id = "end_fail"
+
+[nodes.data]
+type = "end"
+title = "Fail"
+[[nodes.data.outputs]]
+variable = "grade"
+value_selector = [ "if1", "selected_case",]
+
+[[edges]]
+source = "start"
+target = "if1"
+
+[[edges]]
+source = "if1"
+target = "end_excellent"
+sourceHandle = "excellent"
+
+[[edges]]
+source = "if1"
+target = "end_good"
+sourceHandle = "good"
+
+[[edges]]
+source = "if1"
+target = "end_pass"
+sourceHandle = "pass"
+
+[[edges]]
+source = "if1"
+target = "end_fail"
+sourceHandle = "false"
+

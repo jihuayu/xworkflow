@@ -1,0 +1,5 @@
+# Iteration error terminated: iteration stops on first sub-graph error.
+# File: Expected execution result and output values
+
+status = "failed"
+error_contains = "divide by zero"

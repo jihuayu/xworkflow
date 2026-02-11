@@ -1,0 +1,4 @@
+# LLM stream code autocollect: JS code auto-collects streamed chunks.
+# File: Input variables supplied to the workflow
+
+query = "test"

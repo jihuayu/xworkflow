@@ -1,0 +1,7 @@
+# LLM stream code callback: JS code processes individual stream chunks via callback.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "ABCDEF"

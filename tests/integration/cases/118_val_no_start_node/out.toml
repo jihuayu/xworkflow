@@ -1,0 +1,5 @@
+# Validation no start node: workflow without a start node fails validation.
+# File: Expected execution result and output values
+
+status = "failed"
+error_contains = "Validation failed"

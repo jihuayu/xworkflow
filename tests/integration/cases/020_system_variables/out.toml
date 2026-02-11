@@ -1,0 +1,9 @@
+# System variables: workflow accesses built-in system variables.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+query = "system-query"
+user_id = "user-123"

@@ -1,0 +1,7 @@
+# LLM stream code counter: JS code counts stream chunks.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "total_chunks:3"

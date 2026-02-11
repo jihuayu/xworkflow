@@ -1,0 +1,75 @@
+# LLM stream aggregator: aggregates streamed LLM output from multiple nodes.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Stream"
+stream = true
+[[nodes.data.prompt_template]]
+role = "user"
+text = "{{#start.query#}}"
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Static"
+language = "javascript"
+code = "function main(inputs) { return { result: 'fallback_value' }; }"
+[[nodes]]
+id = "agg"
+
+[nodes.data]
+type = "variable-aggregator"
+title = "Aggregator"
+variables = [ [ "llm1", "text",], [ "code1", "result",],]
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "agg", "output",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "llm1"
+target = "agg"
+
+[[edges]]
+source = "code1"
+target = "agg"
+
+[[edges]]
+source = "agg"
+target = "end"
+

@@ -1,0 +1,8 @@
+# Template Jinja2 loop: template uses {% for %} loop construct.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "Alice, Bob, Charlie"

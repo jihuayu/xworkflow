@@ -1,0 +1,7 @@
+# LLM stream template mixed: mixes stream and non-stream data in templates.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "Greeting: Hi there"

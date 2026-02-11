@@ -1,0 +1,7 @@
+# LLM stream HTTP: combines LLM streaming with HTTP request processing.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+body = "echo_ok"

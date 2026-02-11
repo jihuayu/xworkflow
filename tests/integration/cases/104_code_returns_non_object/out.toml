@@ -1,0 +1,6 @@
+# Code returns non-object: JS main() returns a non-object value (e.g. number).
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+outputs_json = "{\"value\":null}"

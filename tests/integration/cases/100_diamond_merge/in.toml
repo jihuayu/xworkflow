@@ -1,0 +1,4 @@
+# Diamond merge: DAG with diamond-shaped topology merges correctly.
+# File: Input variables supplied to the workflow
+
+x = 5

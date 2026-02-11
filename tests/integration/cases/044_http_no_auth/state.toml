@@ -1,0 +1,9 @@
+# HTTP no auth: sends a request without any authentication.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/public"
+response_status = 200
+response_body = "public data"
+

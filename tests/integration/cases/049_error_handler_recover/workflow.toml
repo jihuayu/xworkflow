@@ -1,0 +1,70 @@
+# Error handler recover: workflow-level error handler catches and recovers from a node failure.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "code_fail"
+
+[nodes.data]
+type = "code"
+title = "Failing Code"
+code = "function main(inputs) { throw new Error('boom'); }"
+language = "javascript"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code_fail", "result",]
+
+[[edges]]
+source = "start"
+target = "code_fail"
+
+[[edges]]
+source = "code_fail"
+target = "end"
+
+[error_handler]
+mode = "recover"
+
+[error_handler.sub_graph]
+[[error_handler.sub_graph.nodes]]
+id = "eh_start"
+type = "start"
+title = "Error Handler Start"
+
+[[error_handler.sub_graph.nodes]]
+id = "fallback"
+type = "template-transform"
+title = "Fallback"
+
+[error_handler.sub_graph.nodes.data]
+template = "fallback"
+[[error_handler.sub_graph.nodes]]
+id = "eh_end"
+type = "end"
+title = "Error Handler End"
+
+[error_handler.sub_graph.nodes.data]
+[[error_handler.sub_graph.nodes.data.outputs]]
+variable = "result"
+value_selector = [ "fallback", "output",]
+
+[[error_handler.sub_graph.edges]]
+source = "eh_start"
+target = "fallback"
+
+[[error_handler.sub_graph.edges]]
+source = "fallback"
+target = "eh_end"
+

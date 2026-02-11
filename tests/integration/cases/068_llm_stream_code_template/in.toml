@@ -1,0 +1,4 @@
+# LLM stream code template: code node with template processing on stream output.
+# File: Input variables supplied to the workflow
+
+query = "test"

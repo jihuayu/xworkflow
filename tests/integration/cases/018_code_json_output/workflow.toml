@@ -1,0 +1,41 @@
+# Code node JSON output: JS code returns a structured JSON object.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "BuildObject"
+code = "function main(inputs) { return { user: { name: 'Alice', age: 30 }, tags: ['dev', 'rust'] }; }"
+language = "javascript"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "user"
+value_selector = [ "code1", "user",]
+
+[[nodes.data.outputs]]
+variable = "tags"
+value_selector = [ "code1", "tags",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+

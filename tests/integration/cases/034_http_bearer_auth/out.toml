@@ -1,0 +1,9 @@
+# HTTP bearer auth: sends a request with Bearer token authentication.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "{\"user\":\"admin\",\"role\":\"superuser\"}"

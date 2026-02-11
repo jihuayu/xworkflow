@@ -1,0 +1,9 @@
+# Code boolean return: JS code returns a boolean value.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+is_even = true
+half = 4

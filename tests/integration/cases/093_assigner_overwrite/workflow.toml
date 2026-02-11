@@ -1,0 +1,48 @@
+# Assigner overwrite: overwrites a conversation variable value.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "input_val"
+label = "Val"
+type = "string"
+required = true
+
+[[nodes]]
+id = "assign1"
+
+[nodes.data]
+type = "assigner"
+title = "Assign Overwrite"
+assigned_variable_selector = [ "conversation", "stored",]
+input_variable_selector = [ "start", "input_val",]
+write_mode = "overwrite"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "stored"
+value_selector = [ "conversation", "stored",]
+
+[[edges]]
+source = "start"
+target = "assign1"
+
+[[edges]]
+source = "assign1"
+target = "end"
+
+[[conversation_variables]]
+name = "stored"
+type = "string"
+default = "initial"
+

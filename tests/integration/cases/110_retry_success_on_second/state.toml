@@ -1,0 +1,21 @@
+# Retry success on second: node succeeds on the second retry attempt.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/retry"
+response_status = 500
+response_body = "fail"
+expect = 1
+
+[mock_server.response_headers]
+content-type = "text/plain"
+[[mock_server]]
+method = "GET"
+path = "/api/retry"
+response_status = 200
+response_body = "ok"
+expect = 1
+
+[mock_server.response_headers]
+content-type = "text/plain"

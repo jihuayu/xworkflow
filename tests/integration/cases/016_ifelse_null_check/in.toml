@@ -1,0 +1,4 @@
+# If-else null check: condition uses not_null operator to check variable presence.
+# File: Input variables supplied to the workflow
+
+name = "Bob"

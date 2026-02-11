@@ -1,0 +1,5 @@
+# LLM stream template mixed: mixes stream and non-stream data in templates.
+# File: Input variables supplied to the workflow
+
+query = "greet"
+label = "Greeting"

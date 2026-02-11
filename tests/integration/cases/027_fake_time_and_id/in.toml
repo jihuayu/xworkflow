@@ -1,0 +1,4 @@
+# Fake time and ID: uses deterministic time provider and ID generator.
+# File: Input variables supplied to the workflow
+
+query = "deterministic"

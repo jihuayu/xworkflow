@@ -1,0 +1,9 @@
+# HTTP PATCH method: sends a PATCH request.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 200
+body = "{\"id\":5,\"email\":\"new@example.com\",\"patched\":true}"

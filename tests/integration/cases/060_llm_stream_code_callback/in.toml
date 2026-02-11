@@ -1,0 +1,4 @@
+# LLM stream code callback: JS code processes individual stream chunks via callback.
+# File: Input variables supplied to the workflow
+
+query = "test"

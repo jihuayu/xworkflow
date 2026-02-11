@@ -1,0 +1,4 @@
+# LLM OpenAI basic: sends a chat completion request to a mock OpenAI endpoint.
+# File: Input variables supplied to the workflow
+
+query = "world"

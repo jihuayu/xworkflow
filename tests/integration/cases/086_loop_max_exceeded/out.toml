@@ -1,0 +1,5 @@
+# Loop max exceeded: loop aborts when iteration count exceeds the limit.
+# File: Expected execution result and output values
+
+status = "failed"
+error_contains = "Max iterations 3 exceeded"

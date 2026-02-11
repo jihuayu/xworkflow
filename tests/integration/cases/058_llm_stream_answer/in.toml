@@ -1,0 +1,4 @@
+# LLM stream answer: streamed LLM output feeds into an answer node.
+# File: Input variables supplied to the workflow
+
+query = "greet me"

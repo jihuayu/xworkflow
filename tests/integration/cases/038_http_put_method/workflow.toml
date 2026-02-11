@@ -1,0 +1,45 @@
+# HTTP PUT method: sends a PUT request.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "http1"
+
+[nodes.data]
+type = "http-request"
+title = "Put Update"
+method = "PUT"
+url = "{{#sys.base_url#}}/api/users/1"
+timeout = 10
+[nodes.data.body]
+type = "json"
+data = "{\"name\":\"Bob\",\"age\":30}"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "status_code"
+value_selector = [ "http1", "status_code",]
+
+[[nodes.data.outputs]]
+variable = "body"
+value_selector = [ "http1", "body",]
+
+[[edges]]
+source = "start"
+target = "http1"
+
+[[edges]]
+source = "http1"
+target = "end"
+

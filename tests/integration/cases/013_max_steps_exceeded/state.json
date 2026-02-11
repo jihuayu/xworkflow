@@ -1,6 +1,0 @@
-{
-  "config": {
-    "max_steps": 2,
-    "max_execution_time_secs": 600
-  }
-}

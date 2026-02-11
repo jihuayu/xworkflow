@@ -1,0 +1,134 @@
+# Loop with if-else: loop body contains an if-else branch.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "loop1"
+
+[nodes.data]
+type = "loop"
+title = "Loop With IfElse"
+max_iterations = 10
+output_variable = "loop_result"
+[nodes.data.condition]
+variable_selector = [ "loop", "counter",]
+comparison_operator = "less_than"
+value = 4
+[nodes.data.initial_vars]
+counter = 0
+[nodes.data.sub_graph]
+[[nodes.data.sub_graph.nodes]]
+id = "sg_start"
+type = "start"
+title = "SG Start"
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_if"
+type = "if-else"
+title = "Check"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.cases]]
+case_id = "small"
+logical_operator = "and"
+[[nodes.data.sub_graph.nodes.data.cases.conditions]]
+variable_selector = [ "loop", "counter",]
+comparison_operator = "less_than"
+value = 2
+
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_inc1"
+type = "code"
+title = "Inc1"
+
+[nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { return { counter: inputs.counter + 1 }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "counter"
+value_selector = [ "loop", "counter",]
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_inc2"
+type = "code"
+title = "Inc2"
+
+[nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { return { counter: inputs.counter + 2 }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "counter"
+value_selector = [ "loop", "counter",]
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_agg"
+type = "variable-aggregator"
+title = "Pick"
+
+[nodes.data.sub_graph.nodes.data]
+variables = [ [ "sg_inc1", "counter",], [ "sg_inc2", "counter",],]
+[[nodes.data.sub_graph.nodes]]
+id = "sg_end"
+type = "end"
+title = "SG End"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "counter"
+value_selector = [ "sg_agg", "output",]
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_start"
+target = "sg_if"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_if"
+target = "sg_inc1"
+sourceHandle = "small"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_if"
+target = "sg_inc2"
+sourceHandle = "false"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_inc1"
+target = "sg_agg"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_inc2"
+target = "sg_agg"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_agg"
+target = "sg_end"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "loop_result"
+value_selector = [ "loop1", "loop_result",]
+
+[[nodes.data.outputs]]
+variable = "iterations"
+value_selector = [ "loop1", "_iterations",]
+
+[[edges]]
+source = "start"
+target = "loop1"
+
+[[edges]]
+source = "loop1"
+target = "end"
+

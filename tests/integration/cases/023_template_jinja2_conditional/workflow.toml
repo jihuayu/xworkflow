@@ -1,0 +1,45 @@
+# Template Jinja2 conditional: template uses {% if %} conditional logic.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "items"
+label = "Items"
+type = "string"
+required = true
+
+[[nodes]]
+id = "tmpl"
+
+[nodes.data]
+type = "template-transform"
+title = "Jinja2 Conditional"
+template = "{% if count > 0 %}You have {{ count }} items{% else %}No items{% endif %}"
+[[nodes.data.variables]]
+variable = "count"
+value_selector = [ "start", "items",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "tmpl", "output",]
+
+[[edges]]
+source = "start"
+target = "tmpl"
+
+[[edges]]
+source = "tmpl"
+target = "end"
+

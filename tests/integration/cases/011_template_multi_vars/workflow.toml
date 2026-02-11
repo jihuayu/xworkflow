@@ -1,0 +1,65 @@
+# Template with multiple variables: renders a template using several input variables.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "first_name"
+label = "First"
+type = "string"
+required = true
+
+[[nodes.data.variables]]
+variable = "last_name"
+label = "Last"
+type = "string"
+required = true
+
+[[nodes.data.variables]]
+variable = "age"
+label = "Age"
+type = "number"
+required = true
+
+[[nodes]]
+id = "tmpl"
+
+[nodes.data]
+type = "template-transform"
+title = "Format"
+template = "Name: {{ first }} {{ last | upper }}, Age: {{ age }}"
+[[nodes.data.variables]]
+variable = "first"
+value_selector = [ "start", "first_name",]
+
+[[nodes.data.variables]]
+variable = "last"
+value_selector = [ "start", "last_name",]
+
+[[nodes.data.variables]]
+variable = "age"
+value_selector = [ "start", "age",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "tmpl", "output",]
+
+[[edges]]
+source = "start"
+target = "tmpl"
+
+[[edges]]
+source = "tmpl"
+target = "end"
+

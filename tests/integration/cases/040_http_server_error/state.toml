@@ -1,0 +1,11 @@
+# HTTP server error: handles a 500 server error response.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/crash"
+response_status = 500
+response_body = "{\"error\":\"internal server error\"}"
+
+[mock_server.response_headers]
+content-type = "application/json"

@@ -1,0 +1,8 @@
+# Simple passthrough: start node receives input and end node outputs it unchanged.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "hello world"

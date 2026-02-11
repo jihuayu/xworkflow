@@ -1,0 +1,8 @@
+# Environment variable in if-else: if-else condition references an environment variable.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+env = "prod"

@@ -1,0 +1,4 @@
+# List operation simple: basic list operations (length, flatten, etc.).
+# File: Input variables supplied to the workflow
+
+items = [ 3, 1, 2, 1, 3,]

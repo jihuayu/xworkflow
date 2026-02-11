@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "status_code": 500,
-    "body": "{\"error\":\"internal server error\"}"
-  },
-  "partial_match": true
-}

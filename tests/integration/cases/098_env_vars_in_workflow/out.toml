@@ -1,0 +1,8 @@
+# Environment variables in workflow: accesses environment variables during execution.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "API key is sk-test-12345"

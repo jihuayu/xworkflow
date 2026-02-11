@@ -1,0 +1,8 @@
+# Error strategy default value: node failure produces a configured default value.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "fallback_output"

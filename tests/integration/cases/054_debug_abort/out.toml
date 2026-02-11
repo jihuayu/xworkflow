@@ -1,0 +1,8 @@
+# Debug abort: debugger aborts the workflow during a pause.
+# File: Expected execution result and output values
+
+status = "failed"
+partial_match = false
+error_contains = "aborted"
+
+[outputs]

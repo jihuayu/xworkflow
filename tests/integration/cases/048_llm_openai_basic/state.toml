@@ -1,0 +1,15 @@
+# LLM OpenAI basic: sends a chat completion request to a mock OpenAI endpoint.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "POST"
+path = "/v1/chat/completions"
+response_status = 200
+response_body = "{\"model\":\"gpt-4o\",\"choices\":[{\"message\":{\"content\":\"mock answer\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}"
+
+[mock_server.response_headers]
+content-type = "application/json"
+
+[llm_providers.openai]
+api_key = "test-key"
+default_model = "gpt-4o"

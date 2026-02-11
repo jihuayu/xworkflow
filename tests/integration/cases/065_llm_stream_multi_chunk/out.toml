@@ -1,0 +1,7 @@
+# LLM stream multi chunk: handles multiple stream chunks correctly.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "one two three four five"

@@ -1,0 +1,7 @@
+# Plugin host node basic: executes a host-registered plugin node.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "hello"

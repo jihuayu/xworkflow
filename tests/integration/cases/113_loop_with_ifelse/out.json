@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "loop_result": { "counter": 4 },
-    "iterations": 3
-  },
-  "partial_match": false
-}

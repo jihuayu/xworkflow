@@ -1,0 +1,8 @@
+# If-else AND fail: one condition in an AND group fails, routes to else.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "false"

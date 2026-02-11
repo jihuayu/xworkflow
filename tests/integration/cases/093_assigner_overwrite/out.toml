@@ -1,0 +1,8 @@
+# Assigner overwrite: overwrites a conversation variable value.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+stored = "new_value"

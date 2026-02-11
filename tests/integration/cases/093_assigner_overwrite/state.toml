@@ -1,0 +1,5 @@
+# Assigner overwrite: overwrites a conversation variable value.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[conversation_variables]
+stored = "initial"

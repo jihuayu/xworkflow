@@ -1,0 +1,5 @@
+# If-else AND with multiple conditions: all conditions must pass.
+# File: Input variables supplied to the workflow
+
+age = 20
+country = "US"

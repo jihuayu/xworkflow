@@ -1,0 +1,7 @@
+# LLM stream chain: chains multiple streaming LLM calls in sequence.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "[Response: Yes!]"

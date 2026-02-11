@@ -1,0 +1,5 @@
+# Assigner clear: clears a conversation variable (sets to null).
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[conversation_variables]
+data = "important"

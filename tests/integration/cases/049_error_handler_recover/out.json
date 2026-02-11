@@ -1,8 +1,0 @@
-{
-  "status": "failed_with_recovery",
-  "outputs": {
-    "result": "fallback"
-  },
-  "partial_match": false,
-  "error_contains": "boom"
-}

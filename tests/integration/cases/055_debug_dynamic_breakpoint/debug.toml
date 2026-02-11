@@ -1,0 +1,20 @@
+# Debug dynamic breakpoint: breakpoint is added/removed dynamically during execution.
+# File: Debug mode configuration: breakpoints and step expectations
+
+[[steps]]
+expect_node = "start"
+expect_reason = "initial"
+expect_phase = "before"
+action = "continue"
+add_breakpoint = "code_1"
+
+[[steps]]
+expect_node = "code_1"
+expect_reason = "breakpoint"
+expect_phase = "before"
+action = "continue"
+
+[config]
+breakpoints = []
+break_on_start = true
+auto_snapshot = false

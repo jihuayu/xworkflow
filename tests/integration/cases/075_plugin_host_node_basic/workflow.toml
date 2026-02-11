@@ -1,0 +1,35 @@
+# Plugin host node basic: executes a host-registered plugin node.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "custom1"
+
+[nodes.data]
+type = "plugin.test.echo"
+title = "Custom Node"
+message = "hello"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "custom1", "result",]
+
+[[edges]]
+source = "start"
+target = "custom1"
+
+[[edges]]
+source = "custom1"
+target = "end"
+

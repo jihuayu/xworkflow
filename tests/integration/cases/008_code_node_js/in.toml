@@ -1,0 +1,5 @@
+# Code node (JavaScript): executes a JS function that computes sum and product.
+# File: Input variables supplied to the workflow
+
+a = 7
+b = 3

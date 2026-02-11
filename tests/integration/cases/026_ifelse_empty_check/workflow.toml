@@ -1,0 +1,64 @@
+# If-else empty check: condition checks whether a variable is empty.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "text"
+label = "Text"
+type = "string"
+required = true
+
+[[nodes]]
+id = "if1"
+
+[nodes.data]
+type = "if-else"
+title = "Check Empty"
+[[nodes.data.cases]]
+case_id = "not_empty"
+logical_operator = "and"
+[[nodes.data.cases.conditions]]
+variable_selector = [ "start", "text",]
+comparison_operator = "not_empty"
+
+
+[[nodes]]
+id = "end_not_empty"
+
+[nodes.data]
+type = "end"
+title = "Not Empty"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "if1", "selected_case",]
+
+[[nodes]]
+id = "end_empty"
+
+[nodes.data]
+type = "end"
+title = "Empty"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "if1", "selected_case",]
+
+[[edges]]
+source = "start"
+target = "if1"
+
+[[edges]]
+source = "if1"
+target = "end_not_empty"
+sourceHandle = "not_empty"
+
+[[edges]]
+source = "if1"
+target = "end_empty"
+sourceHandle = "false"
+

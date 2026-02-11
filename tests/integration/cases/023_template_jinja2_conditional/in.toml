@@ -1,0 +1,4 @@
+# Template Jinja2 conditional: template uses {% if %} conditional logic.
+# File: Input variables supplied to the workflow
+
+items = 5

@@ -1,0 +1,7 @@
+# LLM stream aggregator: aggregates streamed LLM output from multiple nodes.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+result = "stream_result"

@@ -1,0 +1,7 @@
+# Plugin LLM provider: plugin provides a custom LLM provider implementation.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+text = "plugin:test-model"

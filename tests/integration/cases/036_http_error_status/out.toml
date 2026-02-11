@@ -1,0 +1,9 @@
+# HTTP error status: handles a non-2xx response status from the server.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
+status_code = 404
+body = "{\"error\":\"not found\"}"

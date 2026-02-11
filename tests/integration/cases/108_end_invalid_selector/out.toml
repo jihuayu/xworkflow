@@ -1,0 +1,6 @@
+# End invalid selector: end node references a non-existent variable selector.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+outputs_json = "{\"missing\":null}"

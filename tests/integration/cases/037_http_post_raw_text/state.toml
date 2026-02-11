@@ -1,0 +1,10 @@
+# HTTP POST raw text: sends a POST request with plain text body.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "POST"
+path = "/api/echo"
+response_status = 200
+response_body = "echo: hello world"
+match_body = "hello world"
+

@@ -1,0 +1,7 @@
+# Plugin hook modifier: plugin hook modifies data during workflow execution.
+# File: Expected execution result and output values
+
+status = "completed"
+
+[outputs]
+text = "hello-hooked"

@@ -1,0 +1,4 @@
+# Simple passthrough: start node receives input and end node outputs it unchanged.
+# File: Input variables supplied to the workflow
+
+query = "hello world"

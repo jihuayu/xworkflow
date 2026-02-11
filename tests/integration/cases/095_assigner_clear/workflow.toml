@@ -1,0 +1,40 @@
+# Assigner clear: clears a conversation variable (sets to null).
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "assign1"
+
+[nodes.data]
+type = "assigner"
+title = "Clear"
+assigned_variable_selector = [ "conversation", "data",]
+write_mode = "clear"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "data"
+value_selector = [ "conversation", "data",]
+
+[[edges]]
+source = "start"
+target = "assign1"
+
+[[edges]]
+source = "assign1"
+target = "end"
+
+[[conversation_variables]]
+name = "data"
+type = "string"
+

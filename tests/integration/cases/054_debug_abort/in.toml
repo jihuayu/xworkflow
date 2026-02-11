@@ -1,0 +1,4 @@
+# Debug abort: debugger aborts the workflow during a pause.
+# File: Input variables supplied to the workflow
+
+query = "hello"

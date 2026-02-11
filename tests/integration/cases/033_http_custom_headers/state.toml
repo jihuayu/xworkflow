@@ -1,0 +1,14 @@
+# HTTP custom headers: sends a request with user-defined headers.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/protected"
+response_status = 200
+response_body = "{\"access\":\"granted\"}"
+
+[mock_server.response_headers]
+content-type = "application/json"
+[mock_server.match_headers]
+x-api-key = "secret-key-123"
+accept = "application/json"

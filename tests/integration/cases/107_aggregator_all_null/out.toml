@@ -1,0 +1,6 @@
+# Aggregator all null: all aggregated upstream values are null.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+outputs_json = "{\"result\":null}"

@@ -1,0 +1,4 @@
+# Template transform: renders a Jinja2-style template with input variables.
+# File: Input variables supplied to the workflow
+
+name = "Alice"

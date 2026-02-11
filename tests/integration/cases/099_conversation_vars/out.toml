@@ -1,0 +1,9 @@
+# Conversation variables: reads and uses conversation-scoped variables.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+greeting = "Hello Alice, count=6"
+new_count = 6

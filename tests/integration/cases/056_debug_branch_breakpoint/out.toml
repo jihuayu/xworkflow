@@ -1,0 +1,8 @@
+# Debug branch breakpoint: breakpoint on a branch node in an if-else workflow.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+path = 10

@@ -1,0 +1,4 @@
+# Assigner overwrite: overwrites a conversation variable value.
+# File: Input variables supplied to the workflow
+
+input_val = "new_value"

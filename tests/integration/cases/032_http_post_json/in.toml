@@ -1,0 +1,4 @@
+# HTTP POST JSON: sends a POST request with a JSON body.
+# File: Input variables supplied to the workflow
+
+name = "Alice"

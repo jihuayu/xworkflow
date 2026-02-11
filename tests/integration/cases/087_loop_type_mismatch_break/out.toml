@@ -1,0 +1,11 @@
+# Loop type mismatch break: loop breaks on type mismatch condition.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+iterations = 0
+
+[outputs.loop_result]
+counter = 5

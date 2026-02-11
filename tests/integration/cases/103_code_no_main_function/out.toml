@@ -1,0 +1,4 @@
+# Code no main function: JS code without a main() function is detected.
+# File: Expected execution result and output values
+
+status = "failed"

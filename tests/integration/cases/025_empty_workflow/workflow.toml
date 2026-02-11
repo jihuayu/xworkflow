@@ -1,0 +1,22 @@
+# Empty workflow: workflow with no processing nodes between start and end.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+variables = []
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+outputs = []
+[[edges]]
+source = "start"
+target = "end"
+

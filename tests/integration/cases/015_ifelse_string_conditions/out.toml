@@ -1,0 +1,8 @@
+# If-else string conditions: condition checks on string values (contains, prefix, etc.).
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+provider = "company"

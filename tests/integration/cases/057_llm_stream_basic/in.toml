@@ -1,0 +1,4 @@
+# LLM stream basic: streams tokens from a mock OpenAI SSE endpoint.
+# File: Input variables supplied to the workflow
+
+query = "hello"

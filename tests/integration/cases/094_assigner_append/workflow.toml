@@ -1,0 +1,41 @@
+# Assigner append: appends to a conversation variable value.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "assign1"
+
+[nodes.data]
+type = "assigner"
+title = "Append"
+assigned_variable_selector = [ "conversation", "list",]
+value = 3
+write_mode = "append"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "list"
+value_selector = [ "conversation", "list",]
+
+[[edges]]
+source = "start"
+target = "assign1"
+
+[[edges]]
+source = "assign1"
+target = "end"
+
+[[conversation_variables]]
+name = "list"
+type = "array[number]"
+

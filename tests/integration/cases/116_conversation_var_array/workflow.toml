@@ -1,0 +1,41 @@
+# Conversation variable array: conversation variable holds an array value.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes]]
+id = "assign1"
+
+[nodes.data]
+type = "assigner"
+title = "Append"
+assigned_variable_selector = [ "conversation", "items",]
+value = "c"
+write_mode = "append"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "items"
+value_selector = [ "conversation", "items",]
+
+[[edges]]
+source = "start"
+target = "assign1"
+
+[[edges]]
+source = "assign1"
+target = "end"
+
+[[conversation_variables]]
+name = "items"
+type = "array[string]"
+

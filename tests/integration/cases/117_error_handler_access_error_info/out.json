@@ -1,5 +1,0 @@
-{
-  "status": "failed_with_recovery",
-  "outputs": { "result": "type=NodeExecutionError, node=code_fail" },
-  "partial_match": false
-}

@@ -1,0 +1,10 @@
+# Multiple inputs: start node declares and receives multiple input variables.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+out_name = "Alice"
+out_age = 28
+out_active = "yes"

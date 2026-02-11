@@ -1,0 +1,8 @@
+# Template with multiple variables: renders a template using several input variables.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "Name: John DOE, Age: 30"

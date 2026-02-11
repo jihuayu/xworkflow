@@ -1,0 +1,8 @@
+# Debug update variables: debugger modifies variable values at a pause point.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+path = 10

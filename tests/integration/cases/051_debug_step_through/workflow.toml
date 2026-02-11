@@ -1,0 +1,46 @@
+# Debug step through: debugger steps through nodes one by one.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Q"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code_1"
+
+[nodes.data]
+type = "code"
+title = "Process"
+language = "javascript"
+code = "function main(inputs) { return { result: inputs.input + ' processed' }; }"
+[[nodes.data.variables]]
+variable = "input"
+value_selector = [ "start", "query",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code_1", "result",]
+
+[[edges]]
+source = "start"
+target = "code_1"
+
+[[edges]]
+source = "code_1"
+target = "end"
+

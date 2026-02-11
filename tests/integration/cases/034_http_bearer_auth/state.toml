@@ -1,0 +1,13 @@
+# HTTP bearer auth: sends a request with Bearer token authentication.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/me"
+response_status = 200
+response_body = "{\"user\":\"admin\",\"role\":\"superuser\"}"
+
+[mock_server.response_headers]
+content-type = "application/json"
+[mock_server.match_headers]
+authorization = "Bearer my-jwt-token-abc"

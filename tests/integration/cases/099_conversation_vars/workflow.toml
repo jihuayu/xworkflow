@@ -1,0 +1,91 @@
+# Conversation variables: reads and uses conversation-scoped variables.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "name"
+label = "Name"
+type = "string"
+required = true
+
+[[nodes]]
+id = "tmpl_greet"
+
+[nodes.data]
+type = "template-transform"
+title = "Greet"
+template = "Hello {{ name }}, count={{ count }}"
+[[nodes.data.variables]]
+variable = "name"
+value_selector = [ "start", "name",]
+
+[[nodes.data.variables]]
+variable = "count"
+value_selector = [ "conversation", "visit_count",]
+
+[[nodes]]
+id = "code_inc"
+
+[nodes.data]
+type = "code"
+title = "Increment"
+code = "function main(inputs) { return { new_count: inputs.count + 1 }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "count"
+value_selector = [ "conversation", "visit_count",]
+
+[[nodes]]
+id = "assign_count"
+
+[nodes.data]
+type = "assigner"
+title = "Update Count"
+assigned_variable_selector = [ "conversation", "visit_count",]
+input_variable_selector = [ "code_inc", "new_count",]
+write_mode = "overwrite"
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "greeting"
+value_selector = [ "tmpl_greet", "output",]
+
+[[nodes.data.outputs]]
+variable = "new_count"
+value_selector = [ "conversation", "visit_count",]
+
+[[edges]]
+source = "start"
+target = "tmpl_greet"
+
+[[edges]]
+source = "start"
+target = "code_inc"
+
+[[edges]]
+source = "tmpl_greet"
+target = "end"
+
+[[edges]]
+source = "code_inc"
+target = "assign_count"
+
+[[edges]]
+source = "assign_count"
+target = "end"
+
+[[conversation_variables]]
+name = "visit_count"
+type = "number"
+default = 0
+

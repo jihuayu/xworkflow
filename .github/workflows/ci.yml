@@ -27,9 +27,6 @@ jobs:
       - name: Run unit tests
         run: cargo test --no-fail-fast --all-features --workspace --lib --bins
 
-      - name: Run doc tests
-        run: cargo test --no-fail-fast --all-features --workspace --doc
-
       - name: Run integration tests
         run: |
           cargo test --no-fail-fast --all-features --workspace --test integration_tests

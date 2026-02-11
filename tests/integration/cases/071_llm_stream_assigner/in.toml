@@ -1,0 +1,4 @@
+# LLM stream assigner: assigner node processes streamed LLM output.
+# File: Input variables supplied to the workflow
+
+query = "save this"

@@ -1,0 +1,45 @@
+# Template transform: renders a Jinja2-style template with input variables.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "name"
+label = "Name"
+type = "string"
+required = true
+
+[[nodes]]
+id = "tmpl"
+
+[nodes.data]
+type = "template-transform"
+title = "Template"
+template = "Hello {{ name }}!"
+[[nodes.data.variables]]
+variable = "name"
+value_selector = [ "start", "name",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "tmpl", "output",]
+
+[[edges]]
+source = "start"
+target = "tmpl"
+
+[[edges]]
+source = "tmpl"
+target = "end"
+

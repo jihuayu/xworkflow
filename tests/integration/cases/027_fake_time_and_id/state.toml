@@ -1,0 +1,8 @@
+# Fake time and ID: uses deterministic time provider and ID generator.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[fake_time]
+fixed_timestamp = 1700000000
+
+[fake_id]
+prefix = "test"

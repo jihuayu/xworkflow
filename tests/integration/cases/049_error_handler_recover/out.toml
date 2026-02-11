@@ -1,0 +1,9 @@
+# Error handler recover: workflow-level error handler catches and recovers from a node failure.
+# File: Expected execution result and output values
+
+status = "failed_with_recovery"
+partial_match = false
+error_contains = "boom"
+
+[outputs]
+result = "fallback"

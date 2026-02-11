@@ -1,0 +1,4 @@
+# Iteration sequential: iterates over a list and processes items one by one.
+# File: Input variables supplied to the workflow
+
+items = [ 1, 2, 3,]

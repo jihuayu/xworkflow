@@ -1,0 +1,8 @@
+# Template transform: renders a Jinja2-style template with input variables.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "Hello Alice!"

@@ -1,0 +1,5 @@
+# Conversation variable array: conversation variable holds an array value.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[conversation_variables]
+items = [ "a", "b",]

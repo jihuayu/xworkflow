@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "status_code": 200,
-    "body": "echo: hello world"
-  },
-  "partial_match": true
-}

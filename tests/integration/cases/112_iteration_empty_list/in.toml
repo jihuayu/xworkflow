@@ -1,0 +1,4 @@
+# Iteration empty list: iteration over an empty list produces empty results.
+# File: Input variables supplied to the workflow
+
+items = []

@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "outputs": {
-    "status_code": 404,
-    "body": "{\"error\":\"not found\"}"
-  },
-  "partial_match": true
-}

@@ -1,0 +1,4 @@
+# Debug dynamic breakpoint: breakpoint is added/removed dynamically during execution.
+# File: Input variables supplied to the workflow
+
+query = "dynamic"

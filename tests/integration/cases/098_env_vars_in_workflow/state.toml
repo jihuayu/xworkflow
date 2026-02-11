@@ -1,0 +1,5 @@
+# Environment variables in workflow: accesses environment variables during execution.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[environment_variables]
+API_KEY = "sk-test-12345"

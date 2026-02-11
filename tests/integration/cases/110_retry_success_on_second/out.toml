@@ -1,0 +1,9 @@
+# Retry success on second: node succeeds on the second retry attempt.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+status_code = 200
+body = "ok"

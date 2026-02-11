@@ -1,0 +1,8 @@
+# Debug break on start: debugger pauses at the very first node before execution.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "hello world"

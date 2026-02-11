@@ -1,0 +1,8 @@
+# If-else false branch: input does NOT satisfy the condition, routes to the else branch.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+branch = 2
