@@ -245,42 +245,55 @@ fn parse_response(&self, body: &Value) -> Result<ChatCompletionResponse, LlmErro
 
 ---
 
-## 4. MCP Client Crate
+## 4. MCP Client 模块
 
-### 4.1 Workspace 结构
+### 4.1 模块结构
+
+MCP 客户端作为 `src/mcp/` 核心模块实现，与 `src/llm/` 平行。
 
 ```
-crates/
-  xworkflow-mcp/
-    Cargo.toml
-    src/
-      lib.rs                 # pub mod client, config, tools
-      config.rs              # McpServerConfig, Transport
-      client.rs              # McpClient 封装（基于 rmcp）
-      pool.rs                # McpConnectionPool
-      tools.rs               # MCP tool → ToolDefinition 转换
+src/
+  mcp/
+    mod.rs                 # pub mod config, client, pool, tools, error
+    config.rs              # McpServerConfig, McpTransport
+    client.rs              # McpClient 封装（基于 rmcp）
+    pool.rs                # McpConnectionPool
+    tools.rs               # MCP tool → ToolDefinition 转换
+    error.rs               # McpError
 ```
 
-### 4.2 Cargo.toml
+**为什么不用独立 crate？**
+
+| 独立 crate (`crates/xworkflow-mcp/`) | 核心模块 (`src/mcp/`) |
+|---------------------------------------|----------------------|
+| workspace 成员+1（当前已 8 个） | 零膨胀 |
+| 跨 crate 引用 `llm::types::ToolDefinition` 需要通过 `xworkflow-types` 中转 | 直接 `use crate::llm::types::ToolDefinition` |
+| 需要独立 Cargo.toml 管理版本 | 随主 crate 版本 |
+| MCP 客户端无外部复用场景 | 仅被 `src/nodes/tool.rs` 和 `src/nodes/agent.rs` 使用 |
+| Feature gating 需要 `dep:xworkflow-mcp` | 直接 `#[cfg(feature = "builtin-agent-node")]` 门控整个模块 |
+
+**lib.rs 中声明**：
+
+```rust
+#[cfg(feature = "builtin-agent-node")]
+pub mod mcp;
+```
+
+### 4.2 Cargo.toml 依赖
+
+`rmcp` 作为主 crate 的可选依赖，由 `builtin-agent-node` feature 触发：
 
 ```toml
-[package]
-name = "xworkflow-mcp"
-version = "0.1.0"
-edition = "2021"
-
 [dependencies]
-rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"] }
-tokio = { version = "1", features = ["process", "sync"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tracing = "0.1"
+rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"], optional = true }
+
+[features]
+builtin-agent-node = ["dep:rmcp", "builtin-llm-node"]
 ```
 
 ### 4.3 核心类型
 
-**文件**: `crates/xworkflow-mcp/src/config.rs`
+**文件**: `src/mcp/config.rs`
 
 ```rust
 /// MCP Server 连接配置
@@ -316,7 +329,7 @@ pub enum McpTransport {
 
 ### 4.4 McpClient — rmcp 封装
 
-**文件**: `crates/xworkflow-mcp/src/client.rs`
+**文件**: `src/mcp/client.rs`
 
 ```rust
 use rmcp::{ServiceExt, model::*, transport::*};
@@ -391,11 +404,11 @@ impl McpClient {
 
 ### 4.5 MCP Tool → ToolDefinition 转换
 
-**文件**: `crates/xworkflow-mcp/src/tools.rs`
+**文件**: `src/mcp/tools.rs`
 
 ```rust
-use crate::client::McpClient;
-use xworkflow_types::ToolDefinition;  // 或从 llm::types 引用
+use crate::mcp::client::McpClient;
+use crate::llm::types::ToolDefinition;
 
 /// 从 MCP Server 发现所有工具并转换为 LLM ToolDefinition
 pub async fn discover_tools(client: &McpClient) -> Result<Vec<ToolDefinition>, McpError> {
@@ -413,7 +426,7 @@ MCP 的 `input_schema` 和 OpenAI 的 `parameters` 都是 JSON Schema 格式，*
 
 ### 4.6 连接池
 
-**文件**: `crates/xworkflow-mcp/src/pool.rs`
+**文件**: `src/mcp/pool.rs`
 
 ```rust
 use std::collections::HashMap;
@@ -956,23 +969,26 @@ pub(crate) fn render_arguments(
 **文件**: `Cargo.toml`
 
 ```toml
+[dependencies]
+rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"], optional = true }
+
 [features]
 default = [
     "security", "plugin-system", "compiler", "workflow-cache",
     "builtin-template-jinja",
     "builtin-core-nodes", "builtin-transform-nodes",
     "builtin-http-node", "builtin-subgraph-nodes", "builtin-llm-node",
-    # "builtin-agent-node",  # 默认不开启
+    # "builtin-agent-node",  # 默认不开启（需要 rmcp 依赖）
 ]
 
-# Agent 节点 = LLM tool calling + MCP client
-builtin-agent-node = ["dep:xworkflow-mcp", "builtin-llm-node"]
-
-[dependencies]
-xworkflow-mcp = { path = "crates/xworkflow-mcp", optional = true }
+# Agent 节点 = LLM tool calling + MCP client（均在 src/ 内）
+builtin-agent-node = ["dep:rmcp", "builtin-llm-node"]
 ```
 
-`builtin-agent-node` 依赖 `builtin-llm-node`（需要 `LlmProviderRegistry`）和 `xworkflow-mcp`。未启用时编译时完全消除。
+`builtin-agent-node` 启用 `rmcp` 可选依赖 + 依赖 `builtin-llm-node`（需要 `LlmProviderRegistry`）。
+未启用时 `src/mcp/` 模块整体不编译，零开销。
+
+与现有模式一致：`builtin-code-node = ["builtin-sandbox-js"]` 依赖沙箱而非外部 crate。
 
 ### 9.2 Executor 注册
 
@@ -980,13 +996,13 @@ xworkflow-mcp = { path = "crates/xworkflow-mcp", optional = true }
 
 ```rust
 #[cfg(feature = "builtin-agent-node")]
-pub fn set_mcp_pool(&mut self, pool: Arc<RwLock<McpConnectionPool>>) {
+pub fn set_mcp_pool(&mut self, pool: Arc<RwLock<crate::mcp::pool::McpConnectionPool>>) {
     // tool 节点
-    self.register("tool", Box::new(ToolNodeExecutor::new(pool.clone())));
+    self.register("tool", Box::new(super::tool::ToolNodeExecutor::new(pool.clone())));
 
     // agent 节点（需要 llm_registry，必须在 set_llm_provider_registry 之后）
     if let Some(ref llm_reg) = self.llm_registry {
-        self.register("agent", Box::new(AgentNodeExecutor::new(
+        self.register("agent", Box::new(super::agent::AgentNodeExecutor::new(
             llm_reg.clone(), pool,
         )));
     }
@@ -1110,40 +1126,47 @@ async fn check_tool_security(
 | `src/llm/types.rs` | 修改 | 添加 ToolDefinition, ToolCall, ToolResult, ChatRole::Tool, ChatMessage 扩展 |
 | `src/llm/provider/openai.rs` | 修改 | build_payload/build_messages/parse_response 支持 tools |
 | `src/llm/executor.rs` | 修改 | 3 个函数改为 `pub(crate)`（同 question-classifier） |
-| `src/dsl/schema.rs` | 修改 | 添加 ToolNodeData, AgentNodeData, AgentToolsConfig, McpServerConfig |
+| `src/dsl/schema.rs` | 修改 | 添加 ToolNodeData, AgentNodeData, AgentToolsConfig；`mcp_servers` 字段引用 `crate::mcp::config::McpServerConfig` |
 | `src/nodes/tool.rs` | **新建** | ToolNodeExecutor 实现 |
 | `src/nodes/agent.rs` | **新建** | AgentNodeExecutor 实现 |
 | `src/nodes/mod.rs` | 修改 | 添加 tool, agent 模块声明 |
 | `src/nodes/executor.rs` | 修改 | 添加 set_mcp_pool 注册方法 |
-| `crates/xworkflow-mcp/` | **新建** | MCP Client crate（config, client, pool, tools） |
-| `Cargo.toml` | 修改 | 添加 builtin-agent-node feature + xworkflow-mcp 依赖 |
+| `src/mcp/mod.rs` | **新建** | MCP 模块声明（pub mod config, client, pool, tools, error） |
+| `src/mcp/config.rs` | **新建** | McpServerConfig, McpTransport 类型定义 |
+| `src/mcp/client.rs` | **新建** | McpClient — rmcp 封装（connect_stdio, connect_http, list_tools, call_tool） |
+| `src/mcp/pool.rs` | **新建** | McpConnectionPool — 按 config hash 复用连接 |
+| `src/mcp/tools.rs` | **新建** | discover_tools() — MCP tool → ToolDefinition 零转换 |
+| `src/mcp/error.rs` | **新建** | McpError 枚举 |
+| `src/lib.rs` | 修改 | 添加 `#[cfg(feature = "builtin-agent-node")] pub mod mcp;` |
+| `Cargo.toml` | 修改 | 添加 `rmcp` 可选依赖 + `builtin-agent-node` feature |
 | `src/dsl/validation/known_types.rs` | 修改 | feature-gate 条件下移除 tool/agent 的 stub 标记 |
 
 ---
 
 ## 13. 实施顺序
 
-1. `src/llm/types.rs` — 添加 Tool Calling 类型（基础设施，不影响现有行为）
-2. `src/llm/provider/openai.rs` — Provider 支持 tools 参数
-3. `src/llm/executor.rs` — 提取共享函数为 `pub(crate)`
-4. `crates/xworkflow-mcp/` — MCP Client crate
-5. `src/dsl/schema.rs` — DSL 类型定义
-6. `src/nodes/tool.rs` — Tool 节点实现
-7. `src/nodes/agent.rs` — Agent 节点实现
-8. `src/nodes/executor.rs` — 注册新节点
-9. `Cargo.toml` — Feature flag 配置
-10. 单元测试 + 集成测试
+1. `Cargo.toml` — 添加 `rmcp` 可选依赖 + `builtin-agent-node` feature
+2. `src/llm/types.rs` — 添加 Tool Calling 类型（基础设施，不影响现有行为）
+3. `src/llm/provider/openai.rs` — Provider 支持 tools 参数
+4. `src/llm/executor.rs` — 提取共享函数为 `pub(crate)`
+5. `src/mcp/` — MCP Client 模块（config, client, pool, tools, error）
+6. `src/lib.rs` — 添加 cfg-gated `pub mod mcp`
+7. `src/dsl/schema.rs` — DSL 类型定义
+8. `src/nodes/tool.rs` — Tool 节点实现
+9. `src/nodes/agent.rs` — Agent 节点实现
+10. `src/nodes/executor.rs` — 注册新节点
+11. 单元测试 + 集成测试
 
 ---
 
 ## 14. 验证命令
 
 ```bash
-# 仅构建 MCP crate
-cargo build -p xworkflow-mcp
-
 # 构建含 agent 节点
 cargo build --features builtin-agent-node
+
+# 不含 agent 节点（确认 feature gate 正确，零残留）
+cargo build
 
 # 全量构建（确认不破坏现有功能）
 cargo build --all-features
@@ -1151,6 +1174,7 @@ cargo build --all-features
 # 测试
 cargo test --all-features --workspace --lib tool_node
 cargo test --all-features --workspace --lib agent_node
+cargo test --all-features --workspace --lib mcp
 cargo test --all-features --workspace --test integration_tests -- 130
 cargo test --all-features --workspace --test integration_tests -- 131
 cargo test --all-features --workspace --test integration_tests -- 132

@@ -1312,7 +1312,7 @@ impl CheckpointStore for FileCheckpointStore {
 
 ### 9.3 插件扩展方式
 
-第三方 `CheckpointStore` 实现通过**插件系统的 Bootstrap 阶段**注册：
+第三方 `CheckpointStore` 实现通过**插件系统注册**（Bootstrap 或 Normal 阶段均可）：
 
 ```rust
 pub struct RedisCheckpointPlugin {
@@ -1323,7 +1323,7 @@ pub struct RedisCheckpointPlugin {
 #[async_trait]
 impl Plugin for RedisCheckpointPlugin {
     fn metadata(&self) -> &PluginMetadata {
-        &self.metadata  // category: Bootstrap
+        &self.metadata  // Bootstrap 或 Normal 均可
     }
 
     async fn register(&self, ctx: &mut PluginContext) -> Result<(), PluginError> {
@@ -1334,10 +1334,12 @@ impl Plugin for RedisCheckpointPlugin {
 }
 ```
 
-`WorkflowRunnerBuilder` 在 Bootstrap 阶段后检查是否有插件提供的 `CheckpointStore`：
+**为什么不限定 Bootstrap？** CheckpointStore 仅在 `Dispatcher::run()` 时消费，而 `run()` 在所有插件阶段（Bootstrap + Normal）完成之后才开始。没有其他插件在注册期间依赖 CheckpointStore，因此无需强制提前注册。插件作者可根据自身情况选择阶段。
+
+`WorkflowRunnerBuilder` 在所有插件阶段完成后检查是否有插件提供的 `CheckpointStore`：
 
 ```rust
-// scheduler.rs 中，plugin bootstrap 完成后
+// scheduler.rs 中，所有插件注册完成后
 if builder.checkpoint_store.is_none() {
     if let Some(store) = plugin_registry.query_service::<Arc<dyn CheckpointStore>>() {
         builder.checkpoint_store = Some(store);
