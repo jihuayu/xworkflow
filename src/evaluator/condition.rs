@@ -174,8 +174,8 @@ fn segment_type_name(seg: &Segment) -> &'static str {
         Segment::String(_) => "string",
         Segment::Integer(_) | Segment::Float(_) => "number",
         Segment::Boolean(_) => "boolean",
-        Segment::Object(_) => "object",
-        Segment::ArrayString(_) | Segment::Array(_) => "array",
+        Segment::Object(_) | Segment::File(_) => "object",
+        Segment::ArrayString(_) | Segment::Array(_) | Segment::ArrayFile(_) => "array",
         Segment::Stream(_) => "stream",
     }
 }
@@ -194,6 +194,7 @@ fn eval_contains(actual: &Segment, expected: &Value) -> bool {
         Segment::String(s) => s.contains(&e),
         Segment::ArrayString(arr) => arr.iter().any(|s| s == &e),
         Segment::Array(arr) => arr.iter().any(|s| s.to_display_string() == e),
+        Segment::ArrayFile(arr) => arr.iter().any(|f| f.name == e),
         _ => false,
     }
 }
@@ -213,6 +214,10 @@ fn eval_all_of(actual: &Segment, expected: &Value) -> bool {
         Segment::Array(arr) => {
             let actual_strs: Vec<String> = arr.iter().map(|s| s.to_display_string()).collect();
             expected_items.iter().all(|e| actual_strs.contains(e))
+        }
+        Segment::ArrayFile(arr) => {
+            let actual_names: Vec<String> = arr.iter().map(|f| f.name.clone()).collect();
+            expected_items.iter().all(|e| actual_names.contains(e))
         }
         _ => false,
     }

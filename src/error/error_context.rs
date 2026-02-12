@@ -62,6 +62,13 @@ pub enum ErrorCode {
     InputValidationError,
     OutputTooLarge,
     ResourceLimitExceeded,
+
+    // Document extraction
+    DocumentUnsupportedFormat,
+    DocumentExtractionFailed,
+    DocumentFileTooLarge,
+    DocumentPasswordProtected,
+    DocumentDownloadFailed,
 }
 
 /// Structured error context
@@ -176,6 +183,11 @@ mod tests {
             ErrorCode::InputValidationError,
             ErrorCode::OutputTooLarge,
             ErrorCode::ResourceLimitExceeded,
+            ErrorCode::DocumentUnsupportedFormat,
+            ErrorCode::DocumentExtractionFailed,
+            ErrorCode::DocumentFileTooLarge,
+            ErrorCode::DocumentPasswordProtected,
+            ErrorCode::DocumentDownloadFailed,
         ];
         for code in codes {
             let json = serde_json::to_string(&code).unwrap();

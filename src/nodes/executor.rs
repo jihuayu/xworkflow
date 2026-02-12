@@ -4,10 +4,13 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+#[cfg(feature = "builtin-docextract-node")]
+use std::sync::Arc;
 use parking_lot::Mutex;
 
+use crate::compiler::CompiledNodeConfig;
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::VariablePool;
+use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
 use crate::llm::LlmProviderRegistry;
@@ -24,6 +27,18 @@ pub trait NodeExecutor: Send + Sync {
         variable_pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError>;
+
+    /// Execute using a compiled node config when available.
+    async fn execute_compiled(
+        &self,
+        node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        self.execute(node_id, compiled_config.as_value(), variable_pool, context)
+            .await
+    }
 }
 
 /// Registry of node executors by node type string
@@ -68,6 +83,7 @@ impl NodeExecutorRegistry {
                 "variable-aggregator",
                 Box::new(super::data_transform::VariableAggregatorExecutor),
             );
+            registry.register("gather", Box::new(super::gather::GatherExecutor));
             registry.register(
                 "variable-assigner",
                 Box::new(super::data_transform::LegacyVariableAggregatorExecutor),
@@ -107,7 +123,28 @@ impl NodeExecutorRegistry {
         registry.register("question-classifier", Box::new(StubExecutor("question-classifier")));
         registry.register("parameter-extractor", Box::new(StubExecutor("parameter-extractor")));
         registry.register("tool", Box::new(StubExecutor("tool")));
-        registry.register("document-extractor", Box::new(StubExecutor("document-extractor")));
+        #[cfg(feature = "builtin-docextract-node")]
+        {
+            let provider = Arc::new(
+                xworkflow_docextract_builtin::BuiltinDocExtractProvider::new(),
+            );
+            let router = Arc::new(
+                super::document_extract::ExtractorRouter::from_providers(&[provider]),
+            );
+            registry.register_lazy("document-extractor", Box::new(move || {
+                Box::new(super::document_extract::DocumentExtractorExecutor::new(
+                    router.clone(),
+                ))
+            }));
+        }
+
+        #[cfg(not(feature = "builtin-docextract-node"))]
+        {
+            registry.register(
+                "document-extractor",
+                Box::new(StubExecutor("document-extractor")),
+            );
+        }
         registry.register("agent", Box::new(StubExecutor("agent")));
         registry.register("human-input", Box::new(StubExecutor("human-input")));
         registry
@@ -196,7 +233,7 @@ impl NodeExecutor for StubExecutor {
                 let mut m = HashMap::new();
                 m.insert(
                     "text".to_string(),
-                    Value::String(format!("[Stub: {} node {} not implemented]", self.0, node_id)),
+                    Segment::String(format!("[Stub: {} node {} not implemented]", self.0, node_id)),
                 );
                 m
             }),
@@ -227,6 +264,7 @@ mod tests {
         // built-in transform nodes
         assert!(registry.get("template-transform").is_some());
         assert!(registry.get("variable-aggregator").is_some());
+        assert!(registry.get("gather").is_some());
         assert!(registry.get("variable-assigner").is_some());
         assert!(registry.get("assigner").is_some());
         // built-in http node

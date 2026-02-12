@@ -6,9 +6,11 @@
 //! propagation.
 
 use serde_json::Value;
-use std::collections::HashMap;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
+use tokio::task::{AbortHandle, JoinSet};
 use tokio::sync::mpsc;
 use parking_lot::RwLock;
 
@@ -19,10 +21,11 @@ use crate::core::runtime_context::RuntimeContext;
 use crate::core::security_gate::SecurityGate;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::{
-  BackoffStrategy, ErrorStrategyConfig, ErrorStrategyType, NodeRunResult,
-  RetryConfig, WorkflowNodeExecutionStatus, WriteMode,
+  BackoffStrategy, ErrorStrategyConfig, ErrorStrategyType, GatherNodeData, JoinMode,
+  NodeRunResult, RetryConfig, TimeoutStrategy, WorkflowNodeExecutionStatus, WriteMode,
 };
 use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
+use crate::compiler::CompiledNodeConfigMap;
 use crate::graph::types::{EdgeTraversalState, Graph};
 use crate::nodes::executor::NodeExecutorRegistry;
 #[cfg(feature = "plugin-system")]
@@ -74,6 +77,14 @@ pub struct EngineConfig {
     pub max_execution_time_secs: u64,
     #[serde(default)]
     pub strict_template: bool,
+  #[serde(default = "default_parallel_enabled")]
+  pub parallel_enabled: bool,
+  #[serde(default)]
+  pub max_concurrency: usize,
+}
+
+fn default_parallel_enabled() -> bool {
+  true
 }
 
 impl Default for EngineConfig {
@@ -82,10 +93,13 @@ impl Default for EngineConfig {
             max_steps: 500,
             max_execution_time_secs: 600,
       strict_template: false,
+            parallel_enabled: true,
+          max_concurrency: 1,
         }
     }
 }
 
+#[derive(Clone)]
 struct NodeInfo {
   node_type: String,
   node_title: String,
@@ -97,11 +111,26 @@ struct NodeInfo {
   timeout_secs: Option<u64>,
 }
 
+struct NodeExecOutcome {
+  exec_id: String,
+  node_id: String,
+  info: NodeInfo,
+  result: Result<NodeRunResult, NodeError>,
+}
+
+struct GatherTimeoutAction {
+  node_id: String,
+  timeout_secs: u64,
+  timeout_strategy: TimeoutStrategy,
+  cancel_remaining: bool,
+}
+
 /// The main workflow dispatcher: drives graph execution
 pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> {
     graph: Arc<RwLock<Graph>>,
     variable_pool: Arc<RwLock<VariablePool>>,
     registry: Arc<NodeExecutorRegistry>,
+    compiled_node_configs: Option<Arc<CompiledNodeConfigMap>>,
   event_emitter: EventEmitter,
     config: EngineConfig,
     exceptions_count: i32,
@@ -176,6 +205,7 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             graph,
             variable_pool,
             registry: Arc::new(registry),
+          compiled_node_configs: None,
             event_emitter,
             config,
             exceptions_count: 0,
@@ -223,6 +253,7 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             graph,
             variable_pool,
             registry,
+          compiled_node_configs: None,
             event_emitter,
             config,
             exceptions_count: 0,
@@ -235,10 +266,57 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
         }
     }
 
+  pub fn new_with_registry_and_compiled(
+        graph: Graph,
+        variable_pool: VariablePool,
+        registry: Arc<NodeExecutorRegistry>,
+      event_emitter: EventEmitter,
+        config: EngineConfig,
+        context: Arc<RuntimeContext>,
+        compiled_node_configs: Arc<CompiledNodeConfigMap>,
+      #[cfg(feature = "plugin-system")]
+      plugin_registry: Option<Arc<PluginRegistry>>,
+    ) -> Self {
+        let graph = Arc::new(RwLock::new(graph));
+        let variable_pool = Arc::new(RwLock::new(variable_pool));
+        let plugin_gate: Arc<dyn PluginGate> = {
+          #[cfg(feature = "plugin-system")]
+          {
+            crate::core::plugin_gate::new_plugin_gate_with_registry(
+              variable_pool.clone(),
+              event_emitter.clone(),
+              plugin_registry,
+            )
+          }
+
+          #[cfg(not(feature = "plugin-system"))]
+          {
+            crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+          }
+        };
+        let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+          context.clone(),
+          variable_pool.clone(),
+        );
+        WorkflowDispatcher {
+            graph,
+            variable_pool,
+            registry,
+            compiled_node_configs: Some(compiled_node_configs),
+            event_emitter,
+            config,
+            exceptions_count: 0,
+            final_outputs: HashMap::new(),
+            context,
+            plugin_gate,
+            security_gate,
+      debug_gate: NoopGate,
+      debug_hook: NoopHook,
+        }
+    }
   }
 
-
-impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
+  impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   #[doc(hidden)]
   pub fn debug_resources(&self) -> DispatcherResourceWeak {
     DispatcherResourceWeak {
@@ -281,10 +359,63 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       context.clone(),
       variable_pool.clone(),
     );
+
     WorkflowDispatcher {
       graph,
       variable_pool,
       registry,
+        compiled_node_configs: None,
+      event_emitter,
+      config,
+      exceptions_count: 0,
+      final_outputs: HashMap::new(),
+      context,
+      plugin_gate,
+      security_gate,
+      debug_gate,
+      debug_hook,
+    }
+  }
+
+  pub fn new_with_debug_and_compiled(
+    graph: Graph,
+    variable_pool: VariablePool,
+    registry: Arc<NodeExecutorRegistry>,
+    event_emitter: EventEmitter,
+    config: EngineConfig,
+    context: Arc<RuntimeContext>,
+    compiled_node_configs: Arc<CompiledNodeConfigMap>,
+    #[cfg(feature = "plugin-system")]
+    plugin_registry: Option<Arc<PluginRegistry>>,
+    debug_gate: G,
+    debug_hook: H,
+  ) -> Self {
+    let graph = Arc::new(RwLock::new(graph));
+    let variable_pool = Arc::new(RwLock::new(variable_pool));
+    let plugin_gate: Arc<dyn PluginGate> = {
+      #[cfg(feature = "plugin-system")]
+      {
+        crate::core::plugin_gate::new_plugin_gate_with_registry(
+          variable_pool.clone(),
+          event_emitter.clone(),
+          plugin_registry,
+        )
+      }
+
+      #[cfg(not(feature = "plugin-system"))]
+      {
+        crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+      }
+    };
+    let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+      context.clone(),
+      variable_pool.clone(),
+    );
+    WorkflowDispatcher {
+      graph,
+      variable_pool,
+      registry,
+      compiled_node_configs: Some(compiled_node_configs),
       event_emitter,
       config,
       exceptions_count: 0,
@@ -351,7 +482,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     info: &NodeInfo,
     result: NodeRunResult,
     queue: &mut Vec<String>,
-  ) -> WorkflowResult<()> {
+  ) -> WorkflowResult<Vec<String>> {
     self
       .emit_after_node_hooks(node_id, &info.node_type, &info.node_title, &result)
       .await?;
@@ -369,17 +500,17 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       }
     }
 
-    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Value)> = None;
+    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Segment)> = None;
     if info.node_type == "assigner" {
       let write_mode = outputs_for_write
         .get("write_mode")
-        .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
+        .and_then(|v| serde_json::from_value::<WriteMode>(v.to_value()).ok())
         .unwrap_or(WriteMode::Overwrite);
       let assigned_sel: crate::core::variable_pool::Selector = outputs_for_write
         .get("assigned_variable_selector")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .and_then(|v| serde_json::from_value(v.to_value()).ok())
         .unwrap_or_else(|| crate::core::variable_pool::Selector::new("__scope__", "output"));
-      let mut output_val = outputs_for_write.get("output").cloned().unwrap_or(Value::Null);
+      let mut output_val = outputs_for_write.get("output").cloned().unwrap_or(Segment::None);
 
       self
         .apply_before_variable_write_hooks(node_id, &assigned_sel, &mut output_val)
@@ -398,10 +529,10 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       if let Some((write_mode, assigned_sel, output_val)) = assigner_meta {
         match write_mode {
           WriteMode::Overwrite => {
-            pool.set(&assigned_sel, Segment::from_value(&output_val));
+            pool.set(&assigned_sel, output_val);
           }
           WriteMode::Append => {
-            pool.append(&assigned_sel, Segment::from_value(&output_val));
+            pool.append(&assigned_sel, output_val);
           }
           WriteMode::Clear => {
             pool.clear(&assigned_sel);
@@ -424,7 +555,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     // Track final outputs for end/answer nodes
     if info.node_type == "end" || info.node_type == "answer" {
       for (k, v) in &outputs_for_write {
-        self.final_outputs.insert(k.clone(), v.clone());
+        self.final_outputs.insert(k.clone(), v.to_value());
       }
     }
 
@@ -464,6 +595,21 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     }
 
     let downstream = self.advance_graph_after_success(node_id, info.is_branch, &result.edge_source_handle)?;
+    let mut cancelled_sources = Vec::new();
+    if info.node_type == "gather" {
+      let gather = serde_json::from_value::<GatherNodeData>(info.node_config.clone()).unwrap_or(GatherNodeData {
+        variables: Vec::new(),
+        join_mode: JoinMode::All,
+        cancel_remaining: true,
+        timeout_secs: None,
+        timeout_strategy: TimeoutStrategy::ProceedWithAvailable,
+      });
+      let mut graph = self.graph.write();
+      let sources = graph.finalize_gather(node_id, gather.cancel_remaining);
+      if gather.cancel_remaining {
+        cancelled_sources = sources;
+      }
+    }
 
     // [DEBUG] Hook after node execute
     if should_pause_after {
@@ -489,7 +635,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     }
 
     queue.extend(downstream);
-    Ok(())
+    Ok(cancelled_sources)
   }
 
   async fn handle_node_failure(
@@ -555,7 +701,10 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       node_title: node.title.clone(),
       node_config: node.config.clone(),
       is_branch: g.is_branch_node(node_id),
-      is_skipped: node.state == EdgeTraversalState::Skipped,
+      is_skipped: matches!(
+        g.node_state(node_id),
+        Some(EdgeTraversalState::Skipped | EdgeTraversalState::Cancelled)
+      ),
       error_strategy: node.error_strategy.clone(),
       retry_config: node.retry_config.clone(),
       timeout_secs: node.timeout_secs,
@@ -564,9 +713,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
   fn skip_node_and_collect_ready(&self, node_id: &str, is_branch: bool) -> Vec<String> {
     let mut g = self.graph.write();
-    if let Some(node) = g.nodes.get_mut(node_id) {
-      node.state = EdgeTraversalState::Skipped;
-    }
+    g.set_node_state(node_id, EdgeTraversalState::Skipped);
     if is_branch {
       g.process_branch_edges(
         node_id,
@@ -590,25 +737,12 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   ) -> WorkflowResult<Vec<String>> {
     let mut g = self.graph.write();
 
-    if let Some(node) = g.nodes.get_mut(node_id) {
-      node.state = EdgeTraversalState::Taken;
-    }
+    g.set_node_state(node_id, EdgeTraversalState::Taken);
 
     if is_branch {
       match edge_handle {
         crate::dsl::schema::EdgeHandle::Branch(handle) => {
-          let valid = g
-            .out_edges
-            .get(node_id)
-            .map(|eids| {
-              eids.iter().any(|eid| {
-                g.edges
-                  .get(eid)
-                  .and_then(|e| e.source_handle.as_deref())
-                  == Some(handle.as_str())
-              })
-            })
-            .unwrap_or(false);
+          let valid = g.has_branch_handle(node_id, handle.as_str());
           if !valid {
             return Err(WorkflowError::GraphValidationError(format!(
               "Node {} returned branch handle '{}' but no matching edge found",
@@ -677,7 +811,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     &self,
     node_id: &str,
     selector: &crate::core::variable_pool::Selector,
-    value: &mut Value,
+    value: &mut Segment,
   ) -> WorkflowResult<()> {
     self
       .plugin_gate
@@ -685,8 +819,11 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       .await
   }
 
-  async fn execute_node_with_retry(
-    &mut self,
+  async fn execute_node_with_retry_inner(
+    registry: Arc<NodeExecutorRegistry>,
+    compiled_node_configs: Option<Arc<CompiledNodeConfigMap>>,
+    context: Arc<RuntimeContext>,
+    event_emitter: EventEmitter,
     exec_id: &str,
     node_id: &str,
     node_type: &str,
@@ -697,13 +834,18 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     retry_config: &Option<RetryConfig>,
     node_timeout: Option<u64>,
   ) -> Result<NodeRunResult, NodeError> {
-    let executor = self.registry.get(node_type);
+    let executor = registry.get(node_type);
     if executor.is_none() {
       return Err(NodeError::ConfigError(format!(
         "No executor for node type: {}",
         node_type
       )));
     }
+
+    let compiled_config = compiled_node_configs
+      .as_ref()
+      .and_then(|map| map.get(node_id))
+      .cloned();
 
     let max_retries = retry_config
       .as_ref()
@@ -719,10 +861,17 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     let mut result = None;
 
     for attempt in 0..=max_retries {
-      let exec_future = executor
-        .as_ref()
-        .expect("executor checked")
-        .execute(node_id, node_config, pool_snapshot, &self.context);
+      let exec_future = if let Some(config) = compiled_config.as_deref() {
+        executor
+          .as_ref()
+          .expect("executor checked")
+          .execute_compiled(node_id, config, pool_snapshot, &context)
+      } else {
+        executor
+          .as_ref()
+          .expect("executor checked")
+          .execute(node_id, node_config, pool_snapshot, &context)
+      };
       let exec_result = if let Some(timeout_secs) = node_timeout {
         match tokio::time::timeout(
           std::time::Duration::from_secs(timeout_secs),
@@ -758,8 +907,8 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
           if should_retry {
             let interval = calculate_retry_interval(retry_config, attempt, &e);
-            if self.event_emitter.is_active() {
-              self.event_emitter
+            if event_emitter.is_active() {
+              event_emitter
                 .emit(GraphEngineEvent::NodeRunRetry {
                   id: exec_id.to_string(),
                   node_id: node_id.to_string(),
@@ -799,7 +948,6 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
         match error_strategy.as_ref().map(|es| &es.strategy_type) {
           Some(ErrorStrategyType::FailBranch) => {
-            self.exceptions_count += 1;
             Ok(NodeRunResult {
               status: WorkflowNodeExecutionStatus::Exception,
               error: Some(error_info),
@@ -808,11 +956,13 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
             })
           }
           Some(ErrorStrategyType::DefaultValue) => {
-            self.exceptions_count += 1;
             let defaults = error_strategy
               .as_ref()
               .and_then(|es| es.default_value.clone())
-              .unwrap_or_default();
+              .unwrap_or_default()
+              .into_iter()
+              .map(|(k, v)| (k, Segment::from_value(&v)))
+              .collect();
             Ok(NodeRunResult {
               status: WorkflowNodeExecutionStatus::Exception,
               outputs: crate::dsl::schema::NodeOutputs::Sync(defaults),
@@ -882,163 +1032,515 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   async fn record_llm_usage(&self, result: &NodeRunResult) {
     self.security_gate.record_llm_usage(result).await
   }
-  /// Run the workflow to completion
-  pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
-    // Emit graph started
-    self.event_emitter.emit(GraphEngineEvent::GraphRunStarted).await;
 
-    self.emit_before_workflow_hooks().await?;
+  async fn begin_node_execution(
+    &self,
+    node_id: &str,
+    info: &NodeInfo,
+    predecessor_node_id: Option<&str>,
+    parallel_group_id: Option<&str>,
+  ) -> WorkflowResult<String> {
+    let exec_id = self.context.id_generator.next_id();
 
-    let root_id = {
-      let g = self.graph.read();
-      g.root_node_id.clone()
-    };
-
-    let mut queue: Vec<String> = vec![root_id];
-    let mut step_count: i32 = 0;
-    let start_time = self.context.time_provider.now_timestamp();
-    let (max_steps, max_exec_time) = self.effective_limits();
-
-    while let Some(node_id) = queue.pop() {
-      self
-        .check_limits(&mut step_count, max_steps, start_time, max_exec_time)
-        .await?;
-
-      let info = self.load_node_info(&node_id)?;
-      if info.is_skipped {
-        continue;
-      }
-
-      // 合并 pool 读取：debug-before 与执行共用一次快照（仅在需要 debug-before 时复用）
-      let mut pool_snapshot_for_exec: Option<VariablePool> = None;
-
-      // [DEBUG] Hook before node execute
-      if self.debug_gate.should_pause_before(&node_id) {
-        let pool_snapshot = self.variable_pool.read().clone();
-        let action = self
-          .debug_hook
-          .before_node_execute(&node_id, &info.node_type, &info.node_title, &pool_snapshot)
-          .await?;
-
-        match self.apply_debug_action(action).await? {
-          DebugActionResult::Continue => {
-            pool_snapshot_for_exec = Some(pool_snapshot);
-          }
-          DebugActionResult::Abort(reason) => {
-            return Err(WorkflowError::Aborted(reason));
-          }
-          DebugActionResult::SkipNode => {
-            let downstream = self.skip_node_and_collect_ready(&node_id, info.is_branch);
-            queue.extend(downstream);
-            continue;
-          }
-        }
-      }
-
-      let exec_id = self.context.id_generator.next_id();
-
-      if let Err(e) = self
-        .check_security_before_node(&node_id, &info.node_type, &info.node_config)
-        .await
-      {
-        let error_detail = e.to_structured_json();
-        let error_info = crate::dsl::schema::NodeErrorInfo {
-          message: e.to_string(),
-          error_type: Some(e.error_code()),
-          detail: Some(error_detail.clone()),
-        };
-        if self.event_emitter.is_active() {
-          self
-            .event_emitter
-            .emit(GraphEngineEvent::NodeRunFailed {
-              id: exec_id.clone(),
-              node_id: node_id.clone(),
-              node_type: info.node_type.clone(),
-              node_run_result: NodeRunResult {
-                status: WorkflowNodeExecutionStatus::Failed,
-                error: Some(error_info.clone()),
-                ..Default::default()
-              },
-              error: e.to_string(),
-            })
-            .await;
-
-          self
-            .event_emitter
-            .emit(GraphEngineEvent::GraphRunFailed {
-              error: e.to_string(),
-              exceptions_count: self.exceptions_count,
-            })
-            .await;
-        }
-
-        return Err(WorkflowError::NodeExecutionError {
-          node_id,
-          error: e.to_string(),
-          error_detail: Some(error_detail),
-        });
-      }
-
-      // Emit NodeRunStarted
+    if let Err(e) = self
+      .check_security_before_node(node_id, &info.node_type, &info.node_config)
+      .await
+    {
+      let error_detail = e.to_structured_json();
+      let error_info = crate::dsl::schema::NodeErrorInfo {
+        message: e.to_string(),
+        error_type: Some(e.error_code()),
+        detail: Some(error_detail.clone()),
+      };
       if self.event_emitter.is_active() {
         self
           .event_emitter
-          .emit(GraphEngineEvent::NodeRunStarted {
+          .emit(GraphEngineEvent::NodeRunFailed {
             id: exec_id.clone(),
-            node_id: node_id.clone(),
+            node_id: node_id.to_string(),
             node_type: info.node_type.clone(),
-            node_title: info.node_title.clone(),
-            predecessor_node_id: None,
+            node_run_result: NodeRunResult {
+              status: WorkflowNodeExecutionStatus::Failed,
+              error: Some(error_info),
+              ..Default::default()
+            },
+            error: e.to_string(),
+          })
+          .await;
+
+        self
+          .event_emitter
+          .emit(GraphEngineEvent::GraphRunFailed {
+            error: e.to_string(),
+            exceptions_count: self.exceptions_count,
           })
           .await;
       }
 
+      return Err(WorkflowError::NodeExecutionError {
+        node_id: node_id.to_string(),
+        error: e.to_string(),
+        error_detail: Some(error_detail),
+      });
+    }
+
+    if self.event_emitter.is_active() {
       self
-        .emit_before_node_hooks(&node_id, &info.node_type, &info.node_title, &info.node_config)
+        .event_emitter
+        .emit(GraphEngineEvent::NodeRunStarted {
+          id: exec_id.clone(),
+          node_id: node_id.to_string(),
+          node_type: info.node_type.clone(),
+          node_title: info.node_title.clone(),
+          predecessor_node_id: predecessor_node_id.map(str::to_string),
+          parallel_group_id: parallel_group_id.map(str::to_string),
+        })
+        .await;
+    }
+
+    self
+      .emit_before_node_hooks(node_id, &info.node_type, &info.node_title, &info.node_config)
+      .await?;
+
+    Ok(exec_id)
+  }
+
+  async fn execute_node_serial(
+    &mut self,
+    node_id: String,
+    predecessor_node_id: Option<String>,
+    ready: &mut Vec<String>,
+    ready_predecessor: &mut HashMap<String, String>,
+    step_count: &mut i32,
+    max_steps: i32,
+    start_time: i64,
+    max_exec_time: u64,
+  ) -> WorkflowResult<()> {
+    self
+      .check_limits(step_count, max_steps, start_time, max_exec_time)
+      .await?;
+
+    let info = self.load_node_info(&node_id)?;
+    if info.is_skipped {
+      return Ok(());
+    }
+
+    let mut pool_snapshot_for_exec: Option<VariablePool> = None;
+    if self.debug_gate.should_pause_before(&node_id) {
+      let pool_snapshot = self.variable_pool.read().clone();
+      let action = self
+        .debug_hook
+        .before_node_execute(&node_id, &info.node_type, &info.node_title, &pool_snapshot)
         .await?;
 
-      // Execute the node
-      let pool_snapshot = match pool_snapshot_for_exec {
-        Some(s) => s,
-        None => self.variable_pool.read().clone(),
-      };
-      let run_result = self
-        .execute_node_with_retry(
-          &exec_id,
-          &node_id,
-          &info.node_type,
-          &info.node_title,
-          &info.node_config,
-          &pool_snapshot,
-          &info.error_strategy,
-          &info.retry_config,
-          info.timeout_secs,
-        )
-        .await;
+      match self.apply_debug_action(action).await? {
+        DebugActionResult::Continue => {
+          pool_snapshot_for_exec = Some(pool_snapshot);
+        }
+        DebugActionResult::Abort(reason) => {
+          return Err(WorkflowError::Aborted(reason));
+        }
+        DebugActionResult::SkipNode => {
+          let downstream = self.skip_node_and_collect_ready(&node_id, info.is_branch);
+          for downstream_node_id in &downstream {
+            ready_predecessor.insert(downstream_node_id.clone(), node_id.clone());
+          }
+          ready.extend(downstream);
+          return Ok(());
+        }
+      }
+    }
 
-      let run_result = match run_result {
+    let exec_id = self
+      .begin_node_execution(
+        &node_id,
+        &info,
+        predecessor_node_id.as_deref(),
+        None,
+      )
+      .await?;
+    let pool_snapshot = pool_snapshot_for_exec.unwrap_or_else(|| self.variable_pool.read().clone());
+
+    let run_result = Self::execute_node_with_retry_inner(
+      self.registry.clone(),
+      self.compiled_node_configs.clone(),
+      self.context.clone(),
+      self.event_emitter.clone(),
+      &exec_id,
+      &node_id,
+      &info.node_type,
+      &info.node_title,
+      &info.node_config,
+      &pool_snapshot,
+      &info.error_strategy,
+      &info.retry_config,
+      info.timeout_secs,
+    )
+    .await;
+
+    let run_result = match run_result {
+      Ok(result) => self
+        .enforce_output_limits(&node_id, &info.node_type, result)
+        .await,
+      Err(e) => Err(e),
+    };
+
+    match run_result {
+      Ok(result) => {
+        if matches!(result.status, WorkflowNodeExecutionStatus::Exception) {
+          self.exceptions_count += 1;
+        }
+        let ready_len_before = ready.len();
+        let cancelled_sources = self
+          .handle_node_success(&exec_id, &node_id, &info, result, ready)
+          .await?;
+        for downstream_node_id in ready.iter().skip(ready_len_before) {
+          ready_predecessor.insert(downstream_node_id.clone(), node_id.clone());
+        }
+        if !cancelled_sources.is_empty() {
+          let mut g = self.graph.write();
+          for source in cancelled_sources {
+            g.set_node_state(&source, EdgeTraversalState::Cancelled);
+          }
+        }
+      }
+      Err(e) => {
+        let err = self.handle_node_failure(exec_id, node_id, &info, e).await;
+        return Err(err);
+      }
+    }
+
+    Ok(())
+  }
+
+  fn collect_timed_out_gathers(
+    &self,
+    wait_started: &mut HashMap<String, i64>,
+  ) -> Vec<GatherTimeoutAction> {
+    let now = self.context.time_provider.now_timestamp();
+    let mut active = HashSet::new();
+    let mut actions = Vec::new();
+
+    let graph = self.graph.read();
+    for (node_id, node) in &graph.topology.nodes {
+      if node.node_type != "gather" {
+        continue;
+      }
+
+      let gather = serde_json::from_value::<GatherNodeData>(node.config.clone()).unwrap_or(GatherNodeData {
+        variables: Vec::new(),
+        join_mode: JoinMode::All,
+        cancel_remaining: true,
+        timeout_secs: None,
+        timeout_strategy: TimeoutStrategy::ProceedWithAvailable,
+      });
+
+      let Some(timeout_secs) = gather.timeout_secs else {
+        wait_started.remove(node_id);
+        continue;
+      };
+
+      let is_pending = matches!(graph.node_state(node_id), Some(EdgeTraversalState::Pending));
+      let is_ready = graph.is_node_ready(node_id);
+      if !is_pending || is_ready {
+        wait_started.remove(node_id);
+        continue;
+      }
+
+      active.insert(node_id.clone());
+      let started = *wait_started.entry(node_id.clone()).or_insert(now);
+      if self.context.time_provider.elapsed_secs(started) >= timeout_secs {
+        actions.push(GatherTimeoutAction {
+          node_id: node_id.clone(),
+          timeout_secs,
+          timeout_strategy: gather.timeout_strategy,
+          cancel_remaining: gather.cancel_remaining,
+        });
+      }
+    }
+    drop(graph);
+
+    wait_started.retain(|node_id, _| active.contains(node_id));
+    actions
+  }
+
+  /// Run the workflow to completion
+  pub async fn run(&mut self) -> WorkflowResult<HashMap<String, Value>> {
+    self.event_emitter.emit(GraphEngineEvent::GraphRunStarted).await;
+    self.emit_before_workflow_hooks().await?;
+
+    let root_id = {
+      let g = self.graph.read();
+      g.root_node_id().to_string()
+    };
+
+    let mut ready: Vec<String> = vec![root_id];
+    let mut ready_predecessor: HashMap<String, String> = HashMap::new();
+    let mut join_set: JoinSet<NodeExecOutcome> = JoinSet::new();
+    let mut running: HashMap<String, AbortHandle> = HashMap::new();
+    let mut gather_wait_started: HashMap<String, i64> = HashMap::new();
+
+    let mut step_count: i32 = 0;
+    let start_time = self.context.time_provider.now_timestamp();
+    let (max_steps, max_exec_time) = self.effective_limits();
+    let max_concurrency = if !self.config.parallel_enabled {
+      1
+    } else {
+      self.config.max_concurrency
+    };
+
+    loop {
+      let timeout_actions = self.collect_timed_out_gathers(&mut gather_wait_started);
+      if !timeout_actions.is_empty() {
+        for action in timeout_actions {
+          gather_wait_started.remove(&action.node_id);
+
+          match action.timeout_strategy {
+            TimeoutStrategy::ProceedWithAvailable => {
+              let (cancelled_sources, should_enqueue) = {
+                let mut graph = self.graph.write();
+                let cancelled_sources = graph.finalize_gather(&action.node_id, action.cancel_remaining);
+                let should_enqueue = graph.is_node_ready(&action.node_id)
+                  && matches!(graph.node_state(&action.node_id), Some(EdgeTraversalState::Pending));
+                (cancelled_sources, should_enqueue)
+              };
+
+              if action.cancel_remaining && !cancelled_sources.is_empty() {
+                {
+                  let mut graph = self.graph.write();
+                  for source in &cancelled_sources {
+                    graph.set_node_state(source, EdgeTraversalState::Cancelled);
+                  }
+                }
+                for source in cancelled_sources {
+                  if let Some(handle) = running.remove(&source) {
+                    handle.abort();
+                  }
+                }
+              }
+
+              if should_enqueue
+                && !ready.iter().any(|id| id == &action.node_id)
+                && !running.contains_key(&action.node_id)
+              {
+                ready_predecessor.remove(&action.node_id);
+                ready.push(action.node_id);
+              }
+            }
+            TimeoutStrategy::Fail => {
+              join_set.abort_all();
+              while let Some(joined) = join_set.join_next().await {
+                if let Ok(outcome) = joined {
+                  running.remove(&outcome.node_id);
+                }
+              }
+
+              let info = self.load_node_info(&action.node_id)?;
+              let error = NodeError::Timeout.with_context(ErrorContext::non_retryable(
+                ErrorCode::Timeout,
+                format!(
+                  "Gather node '{}' timed out after {}s",
+                  action.node_id, action.timeout_secs
+                ),
+              ));
+              let err = self
+                .handle_node_failure(
+                  self.context.id_generator.next_id(),
+                  action.node_id,
+                  &info,
+                  error,
+                )
+                .await;
+              return Err(err);
+            }
+          }
+        }
+
+        continue;
+      }
+
+      let debug_index = ready.iter().rposition(|id| {
+        self.debug_gate.should_pause_before(id) || self.debug_gate.should_pause_after(id)
+      });
+
+      if join_set.is_empty() {
+        if let Some(index) = debug_index {
+          let node_id = ready.swap_remove(index);
+          let predecessor_node_id = ready_predecessor.remove(&node_id);
+          self
+            .execute_node_serial(
+              node_id,
+              predecessor_node_id,
+              &mut ready,
+              &mut ready_predecessor,
+              &mut step_count,
+              max_steps,
+              start_time,
+              max_exec_time,
+            )
+            .await?;
+          continue;
+        }
+      }
+
+      let parallel_group_id = if ready.is_empty() {
+        None
+      } else {
+        Some(self.context.id_generator.next_id())
+      };
+
+      while !ready.is_empty() && (max_concurrency == 0 || join_set.len() < max_concurrency) {
+        let index = ready.iter().rposition(|id| {
+          !(self.debug_gate.should_pause_before(id) || self.debug_gate.should_pause_after(id))
+        });
+        let Some(index) = index else {
+          break;
+        };
+
+        let node_id = ready.remove(index);
+        if running.contains_key(&node_id) {
+          continue;
+        }
+
+        self
+          .check_limits(&mut step_count, max_steps, start_time, max_exec_time)
+          .await?;
+
+        let info = self.load_node_info(&node_id)?;
+        if info.is_skipped {
+          continue;
+        }
+
+        let predecessor_node_id = ready_predecessor.remove(&node_id);
+        let exec_id = self
+          .begin_node_execution(
+            &node_id,
+            &info,
+            predecessor_node_id.as_deref(),
+            parallel_group_id.as_deref(),
+          )
+          .await?;
+        let pool_snapshot = self.variable_pool.read().clone();
+
+        let registry = self.registry.clone();
+        let compiled_node_configs = self.compiled_node_configs.clone();
+        let context = self.context.clone();
+        let event_emitter = self.event_emitter.clone();
+        let task_node_id = node_id.clone();
+        let task_info = info.clone();
+        let abort_handle = join_set.spawn(async move {
+          let result = WorkflowDispatcher::<G, H>::execute_node_with_retry_inner(
+            registry,
+            compiled_node_configs,
+            context,
+            event_emitter,
+            &exec_id,
+            &task_node_id,
+            &task_info.node_type,
+            &task_info.node_title,
+            &task_info.node_config,
+            &pool_snapshot,
+            &task_info.error_strategy,
+            &task_info.retry_config,
+            task_info.timeout_secs,
+          )
+          .await;
+
+          NodeExecOutcome {
+            exec_id,
+            node_id: task_node_id,
+            info: task_info,
+            result,
+          }
+        });
+
+        running.insert(node_id, abort_handle);
+      }
+
+      if join_set.is_empty() {
+        if ready.is_empty() {
+          break;
+        }
+        continue;
+      }
+
+      let Some(joined) = join_set.join_next().await else {
+        continue;
+      };
+
+      let outcome = match joined {
+        Ok(outcome) => outcome,
+        Err(join_error) => {
+          if join_error.is_cancelled() {
+            continue;
+          }
+          return Err(WorkflowError::InternalError(format!(
+            "node task join error: {}",
+            join_error
+          )));
+        }
+      };
+
+      running.remove(&outcome.node_id);
+
+      let run_result = match outcome.result {
         Ok(result) => self
-          .enforce_output_limits(&node_id, &info.node_type, result)
+          .enforce_output_limits(&outcome.node_id, &outcome.info.node_type, result)
           .await,
         Err(e) => Err(e),
       };
 
       match run_result {
         Ok(result) => {
-          self
-            .handle_node_success(&exec_id, &node_id, &info, result, &mut queue)
+          if matches!(result.status, WorkflowNodeExecutionStatus::Exception) {
+            self.exceptions_count += 1;
+          }
+
+          let ready_len_before = ready.len();
+          let cancelled_sources = self
+            .handle_node_success(
+              &outcome.exec_id,
+              &outcome.node_id,
+              &outcome.info,
+              result,
+              &mut ready,
+            )
             .await?;
+          for downstream_node_id in ready.iter().skip(ready_len_before) {
+            ready_predecessor.insert(downstream_node_id.clone(), outcome.node_id.clone());
+          }
+
+          if !cancelled_sources.is_empty() {
+            {
+              let mut graph = self.graph.write();
+              for source in &cancelled_sources {
+                graph.set_node_state(source, EdgeTraversalState::Cancelled);
+              }
+            }
+
+            for source in cancelled_sources {
+              if let Some(handle) = running.remove(&source) {
+                handle.abort();
+              }
+            }
+          }
         }
         Err(e) => {
+          join_set.abort_all();
+          while let Some(joined) = join_set.join_next().await {
+            if let Ok(outcome) = joined {
+              running.remove(&outcome.node_id);
+            }
+          }
+
           let err = self
-            .handle_node_failure(exec_id, node_id, &info, e)
+            .handle_node_failure(outcome.exec_id, outcome.node_id, &outcome.info, e)
             .await;
           return Err(err);
         }
       }
     }
 
-    // Emit final event
     if self.event_emitter.is_active() {
       if self.exceptions_count > 0 {
         self
@@ -1395,6 +1897,7 @@ edges:
           max_steps: 0,
           max_execution_time_secs: 600,
           strict_template: false,
+          ..Default::default()
         };
         let context = Arc::new(RuntimeContext::default());
         let mut dispatcher = WorkflowDispatcher::new(
@@ -1600,6 +2103,8 @@ edges:
         assert_eq!(config.max_steps, 500);
         assert_eq!(config.max_execution_time_secs, 600);
         assert!(!config.strict_template);
+      assert!(config.parallel_enabled);
+      assert_eq!(config.max_concurrency, 1);
     }
 
     #[test]
@@ -1608,6 +2113,7 @@ edges:
             max_steps: 100,
             max_execution_time_secs: 30,
             strict_template: true,
+          ..Default::default()
         };
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["max_steps"], 100);

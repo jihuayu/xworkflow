@@ -15,7 +15,8 @@ use im::HashMap as ImHashMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::ops::{Deref, Index};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use tokio::sync::{Notify, RwLock};
@@ -174,6 +175,8 @@ pub enum Segment {
     ArrayString(Arc<Vec<String>>),
     Array(Arc<SegmentArray>),
     Stream(SegmentStream),
+    File(Arc<FileSegment>),
+    ArrayFile(Arc<Vec<FileSegment>>),
 }
 
 /// A heterogeneous array of [`Segment`] values with a lazily-cached JSON
@@ -291,36 +294,157 @@ impl Deref for SegmentObject {
 }
 
 /// Serializable file reference used by File-type variables.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FileTransferMethod {
+    #[default]
+    RemoteUrl,
+    LocalFile,
+    ToolFile,
+    InternalStorage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileCategory {
+    Image,
+    Document,
+    Audio,
+    Video,
+    Other,
+}
+
+fn default_mime_type() -> String {
+    "application/octet-stream".to_string()
+}
+
+/// Serializable file reference used by File-type variables.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSegment {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default = "default_mime_type")]
+    pub mime_type: String,
+    #[serde(default)]
+    pub transfer_method: FileTransferMethod,
+
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
-    pub tenant_id: String,
-    #[serde(default)]
-    pub transfer_method: String,
-    #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
-    pub filename: Option<String>,
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<String>,
-    #[serde(default)]
-    pub size: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<serde_json::Map<String, Value>>,
+}
+
+impl Default for FileSegment {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            size: 0,
+            mime_type: default_mime_type(),
+            transfer_method: FileTransferMethod::RemoteUrl,
+            id: None,
+            url: None,
+            extension: None,
+            last_modified: None,
+            hash: None,
+            extra: None,
+        }
+    }
 }
 
 impl FileSegment {
-    /// Convert this file metadata into a [`Segment::Object`].
+    /// Convert this file metadata into a [`Segment::File`].
     pub fn to_segment(&self) -> Segment {
-        let value = serde_json::to_value(self).unwrap_or(Value::Null);
-        Segment::from_value(&value)
+        Segment::File(Arc::new(self.clone()))
     }
 
     /// Try to reconstruct a `FileSegment` from a [`Segment`] snapshot.
     pub fn from_segment(seg: &Segment) -> Option<Self> {
-        serde_json::from_value(seg.snapshot_to_value()).ok()
+        match seg {
+            Segment::File(file) => Some(file.as_ref().clone()),
+            _ => None,
+        }
+    }
+
+    pub fn from_url(url: String, name: String, mime_type: String, size: u64) -> Self {
+        Self {
+            name,
+            size,
+            mime_type,
+            transfer_method: FileTransferMethod::RemoteUrl,
+            url: Some(url),
+            extension: None,
+            id: None,
+            last_modified: None,
+            hash: None,
+            extra: None,
+        }
+    }
+
+    pub fn from_local_path(path: String, name: String, mime_type: String, size: u64) -> Self {
+        Self {
+            name,
+            size,
+            mime_type,
+            transfer_method: FileTransferMethod::LocalFile,
+            id: Some(path),
+            url: None,
+            extension: None,
+            last_modified: None,
+            hash: None,
+            extra: None,
+        }
+    }
+
+    pub fn from_storage_id(id: String, name: String, mime_type: String, size: u64) -> Self {
+        Self {
+            name,
+            size,
+            mime_type,
+            transfer_method: FileTransferMethod::InternalStorage,
+            id: Some(id),
+            url: None,
+            extension: None,
+            last_modified: None,
+            hash: None,
+            extra: None,
+        }
+    }
+
+    pub fn extension(&self) -> Option<&str> {
+        self
+            .extension
+            .as_deref()
+            .or_else(|| Path::new(self.name.as_str()).extension().and_then(|s| s.to_str()))
+    }
+
+    pub fn file_category(&self) -> FileCategory {
+        let mime = self.mime_type.to_lowercase();
+        if mime.starts_with("image/") {
+            return FileCategory::Image;
+        }
+        if mime.starts_with("audio/") {
+            return FileCategory::Audio;
+        }
+        if mime.starts_with("video/") {
+            return FileCategory::Video;
+        }
+        if mime.starts_with("text/")
+            || mime == "application/pdf"
+            || mime.starts_with("application/vnd.")
+            || mime.starts_with("application/msword")
+        {
+            return FileCategory::Document;
+        }
+        FileCategory::Other
     }
 }
 
@@ -603,6 +727,11 @@ impl StreamWriter {
         self.notify_readers();
     }
 
+    /// Finalize the stream without a final value.
+    pub async fn finish(&self) {
+        self.end(Segment::None).await;
+    }
+
     /// Mark the stream as failed with an error message.
     pub async fn error(&self, message: String) {
         let mut state = self.state.write().await;
@@ -753,6 +882,8 @@ impl Segment {
             Segment::ArrayString(_) => SegmentType::ArrayString,
             Segment::Array(_) => SegmentType::Array,
             Segment::Stream(_) => SegmentType::Any,
+            Segment::File(_) => SegmentType::File,
+            Segment::ArrayFile(_) => SegmentType::ArrayFile,
         }
     }
 
@@ -760,10 +891,10 @@ impl Segment {
     pub fn matches_type(&self, t: &SegmentType) -> bool {
         match t {
             SegmentType::Any => true,
-            SegmentType::File => matches!(self, Segment::Object(_)),
+            SegmentType::File => matches!(self, Segment::File(_)),
+            SegmentType::ArrayFile => matches!(self, Segment::ArrayFile(_)),
             SegmentType::ArrayNumber
             | SegmentType::ArrayObject
-            | SegmentType::ArrayFile
             | SegmentType::Array => matches!(self, Segment::Array(_) | Segment::ArrayString(_)),
             _ => self.segment_type() == *t,
         }
@@ -807,6 +938,13 @@ impl Segment {
             Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
             Segment::Array(v) => v.to_value(),
             Segment::Stream(_) => self.snapshot_to_value(),
+            Segment::File(file) => serde_json::to_value(file.as_ref()).unwrap_or(Value::Null),
+            Segment::ArrayFile(files) => Value::Array(
+                files
+                    .iter()
+                    .map(|f| serde_json::to_value(f).unwrap_or(Value::Null))
+                    .collect(),
+            ),
         }
     }
 
@@ -837,6 +975,13 @@ impl Segment {
                 let snapshot = stream.snapshot_segment();
                 snapshot.snapshot_to_value()
             }
+            Segment::File(file) => serde_json::to_value(file.as_ref()).unwrap_or(Value::Null),
+            Segment::ArrayFile(files) => Value::Array(
+                files
+                    .iter()
+                    .map(|f| serde_json::to_value(f).unwrap_or(Value::Null))
+                    .collect(),
+            ),
         }
     }
 
@@ -907,6 +1052,50 @@ impl Segment {
         }
     }
 
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Segment::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Segment::Integer(i) => Some(*i),
+            Segment::Float(f) => Some(*f as i64),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        self.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None })
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Segment::Boolean(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<Segment>> {
+        match self {
+            Segment::Array(items) => Some(items.deref()),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&HashMap<String, Segment>> {
+        match self {
+            Segment::Object(map) => Some(map.deref()),
+            _ => None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Segment> {
+        self.as_object().and_then(|m| m.get(key))
+    }
+
     /// Return a human-readable display string, resolving streams if needed.
     pub fn to_display_string(&self) -> String {
         match self {
@@ -951,6 +1140,8 @@ impl Segment {
             Segment::Array(v) => v.is_empty(),
             Segment::Object(map) => map.is_empty(),
             Segment::Stream(stream) => stream.is_empty(),
+            Segment::File(_) => false,
+            Segment::ArrayFile(v) => v.is_empty(),
             _ => false,
         }
     }
@@ -968,6 +1159,27 @@ impl Segment {
                 .map(|(k, v)| k.len() + v.estimate_bytes())
                 .sum(),
             Segment::Stream(stream) => stream.snapshot_segment().estimate_bytes(),
+            Segment::File(file) => {
+                file.name.len()
+                    + file.mime_type.len()
+                    + file.extension.as_ref().map(|v| v.len()).unwrap_or(0)
+                    + file.url.as_ref().map(|v| v.len()).unwrap_or(0)
+                    + file.id.as_ref().map(|v| v.len()).unwrap_or(0)
+                    + file.hash.as_ref().map(|v| v.len()).unwrap_or(0)
+                    + 32
+            }
+            Segment::ArrayFile(files) => files
+                .iter()
+                .map(|f| {
+                    f.name.len()
+                        + f.mime_type.len()
+                        + f.extension.as_ref().map(|v| v.len()).unwrap_or(0)
+                        + f.url.as_ref().map(|v| v.len()).unwrap_or(0)
+                        + f.id.as_ref().map(|v| v.len()).unwrap_or(0)
+                        + f.hash.as_ref().map(|v| v.len()).unwrap_or(0)
+                        + 32
+                })
+                .sum(),
         }
     }
 }
@@ -984,6 +1196,79 @@ impl PartialEq for Segment {
             }
             (Segment::ArrayString(a), Segment::ArrayString(b)) => a == b,
             _ => self.snapshot_to_value() == other.snapshot_to_value(),
+        }
+    }
+}
+
+impl PartialEq<Value> for Segment {
+    fn eq(&self, other: &Value) -> bool {
+        self.snapshot_to_value() == *other
+    }
+}
+
+impl PartialEq<&Value> for Segment {
+    fn eq(&self, other: &&Value) -> bool {
+        self.snapshot_to_value() == **other
+    }
+}
+
+impl PartialEq<Segment> for Value {
+    fn eq(&self, other: &Segment) -> bool {
+        *self == other.snapshot_to_value()
+    }
+}
+
+impl PartialEq<Segment> for &Value {
+    fn eq(&self, other: &Segment) -> bool {
+        **self == other.snapshot_to_value()
+    }
+}
+
+impl PartialEq<i32> for Segment {
+    fn eq(&self, other: &i32) -> bool {
+        self.as_i64() == Some(*other as i64)
+    }
+}
+
+impl PartialEq<i64> for Segment {
+    fn eq(&self, other: &i64) -> bool {
+        self.as_i64() == Some(*other)
+    }
+}
+
+impl PartialEq<u64> for Segment {
+    fn eq(&self, other: &u64) -> bool {
+        self.as_u64() == Some(*other)
+    }
+}
+
+impl PartialEq<usize> for Segment {
+    fn eq(&self, other: &usize) -> bool {
+        self.as_u64() == Some(*other as u64)
+    }
+}
+
+impl PartialEq<bool> for Segment {
+    fn eq(&self, other: &bool) -> bool {
+        self.as_bool() == Some(*other)
+    }
+}
+
+impl PartialEq<&str> for Segment {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == Some(*other)
+    }
+}
+
+impl Index<&str> for Segment {
+    type Output = Segment;
+
+    fn index(&self, index: &str) -> &Self::Output {
+        match self {
+            Segment::Object(map) => map
+                .get(index)
+                .unwrap_or_else(|| panic!("key '{}' not found in Segment::Object", index)),
+            _ => panic!("cannot index Segment with key '{}': not an object", index),
         }
     }
 }
@@ -1157,7 +1442,7 @@ impl VariablePool {
     }
 
     /// Set node outputs as (node_id, key) -> value
-    pub fn set_node_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Value>) {
+    pub fn set_node_value_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Value>) {
         for (key, val) in outputs {
             let seg = Segment::from_value(val);
             self.variables.insert(Self::make_key(node_id, key), seg);
@@ -1165,7 +1450,7 @@ impl VariablePool {
     }
 
     /// Set node outputs from Segment map
-    pub fn set_node_segment_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Segment>) {
+    pub fn set_node_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Segment>) {
         for (key, val) in outputs {
             self.variables
                 .insert(Self::make_key(node_id, key), val.clone());
@@ -1295,7 +1580,7 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert("text".to_string(), Value::String("result".to_string()));
         outputs.insert("count".to_string(), serde_json::json!(42));
-        pool.set_node_outputs("node_llm", &outputs);
+        pool.set_node_value_outputs("node_llm", &outputs);
 
         let text = pool.get(&Selector::new("node_llm", "text"));
         assert!(matches!(text, Segment::String(s) if s == "result"));
@@ -1344,14 +1629,19 @@ mod tests {
 
     #[test]
     fn test_file_segment_roundtrip() {
-        let mut file = FileSegment::default();
-        file.transfer_method = "local".into();
-        file.url = Some("/tmp/a.txt".into());
+        let file = FileSegment {
+            name: "a.txt".into(),
+            size: 12,
+            mime_type: "text/plain".into(),
+            transfer_method: FileTransferMethod::LocalFile,
+            id: Some("/tmp/a.txt".into()),
+            ..Default::default()
+        };
         let seg = file.to_segment();
-        assert!(matches!(seg, Segment::Object(_)));
+        assert!(matches!(seg, Segment::File(_)));
 
         let back = FileSegment::from_segment(&seg).unwrap();
-        assert_eq!(back.url, file.url);
+        assert_eq!(back.id, file.id);
         assert_eq!(back.transfer_method, file.transfer_method);
     }
 
@@ -1633,7 +1923,7 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert("x".to_string(), Segment::Integer(10));
         outputs.insert("y".to_string(), Segment::String("hi".into()));
-        pool.set_node_segment_outputs("node1", &outputs);
+        pool.set_node_outputs("node1", &outputs);
         assert_eq!(pool.get(&Selector::new("node1", "x")), Segment::Integer(10));
         assert_eq!(pool.get(&Selector::new("node1", "y")), Segment::String("hi".into()));
     }
@@ -1831,8 +2121,8 @@ mod tests {
     fn test_file_segment_default() {
         let fs = FileSegment::default();
         assert!(fs.url.is_none());
-        assert!(fs.filename.is_none());
-        assert_eq!(fs.transfer_method, "");
+        assert!(fs.name.is_empty());
+        assert_eq!(fs.transfer_method, FileTransferMethod::RemoteUrl);
     }
 
     #[cfg(feature = "security")]

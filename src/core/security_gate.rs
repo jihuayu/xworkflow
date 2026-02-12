@@ -408,24 +408,17 @@ mod tests {
   async fn test_real_security_gate_effective_limits_with_group() {
     use crate::security::resource_group::{ResourceGroup, ResourceQuota};
     use crate::security::policy::SecurityLevel;
-    use crate::core::runtime_context::SecurityContext;
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: Some(ResourceGroup {
-        group_id: "test".into(),
-        group_name: None,
-        security_level: SecurityLevel::Standard,
-        quota: ResourceQuota {
-          max_steps: 50,
-          max_execution_time_secs: 120,
-          ..Default::default()
-        },
-        credential_refs: std::collections::HashMap::new(),
-      }),
-      security_policy: None,
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
+    context.set_resource_group(ResourceGroup {
+      group_id: "test".into(),
+      group_name: None,
+      security_level: SecurityLevel::Standard,
+      quota: ResourceQuota {
+        max_steps: 50,
+        max_execution_time_secs: 120,
+        ..Default::default()
+      },
+      credential_refs: std::collections::HashMap::new(),
     });
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
@@ -501,7 +494,6 @@ mod tests {
     use crate::security::resource_group::ResourceQuota;
     use crate::security::policy::SecurityLevel;
     use crate::security::governor::InMemoryResourceGovernor;
-    use crate::core::runtime_context::SecurityContext;
 
     let quota = ResourceQuota::default();
     let mut quotas = std::collections::HashMap::new();
@@ -509,19 +501,14 @@ mod tests {
     let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
 
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: Some(ResourceGroup {
-        group_id: "grp1".into(),
-        group_name: None,
-        security_level: SecurityLevel::Standard,
-        quota,
-        credential_refs: std::collections::HashMap::new(),
-      }),
-      security_policy: None,
-      resource_governor: Some(governor),
-      credential_provider: None,
-      audit_logger: None,
+    context.set_resource_group(ResourceGroup {
+      group_id: "grp1".into(),
+      group_name: None,
+      security_level: SecurityLevel::Standard,
+      quota,
+      credential_refs: std::collections::HashMap::new(),
     });
+    context.set_resource_governor(governor);
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
     let gate = new_security_gate(context, pool);
@@ -536,7 +523,6 @@ mod tests {
     use crate::security::resource_group::ResourceQuota;
     use crate::security::policy::SecurityLevel;
     use crate::security::governor::InMemoryResourceGovernor;
-    use crate::core::runtime_context::SecurityContext;
 
     let quota = ResourceQuota::default();
     let mut quotas = std::collections::HashMap::new();
@@ -544,19 +530,14 @@ mod tests {
     let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
 
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: Some(ResourceGroup {
-        group_id: "grp1".into(),
-        group_name: None,
-        security_level: SecurityLevel::Standard,
-        quota,
-        credential_refs: std::collections::HashMap::new(),
-      }),
-      security_policy: None,
-      resource_governor: Some(governor),
-      credential_provider: None,
-      audit_logger: None,
+    context.set_resource_group(ResourceGroup {
+      group_id: "grp1".into(),
+      group_name: None,
+      security_level: SecurityLevel::Standard,
+      quota,
+      credential_refs: std::collections::HashMap::new(),
     });
+    context.set_resource_governor(governor);
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
     let gate = new_security_gate(context, pool);
@@ -571,7 +552,6 @@ mod tests {
     use crate::security::resource_group::ResourceQuota;
     use crate::security::policy::SecurityLevel;
     use crate::security::governor::InMemoryResourceGovernor;
-    use crate::core::runtime_context::SecurityContext;
 
     let quota = ResourceQuota::default();
     let mut quotas = std::collections::HashMap::new();
@@ -579,19 +559,14 @@ mod tests {
     let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
 
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: Some(ResourceGroup {
-        group_id: "grp1".into(),
-        group_name: None,
-        security_level: SecurityLevel::Standard,
-        quota,
-        credential_refs: std::collections::HashMap::new(),
-      }),
-      security_policy: None,
-      resource_governor: Some(governor),
-      credential_provider: None,
-      audit_logger: None,
+    context.set_resource_group(ResourceGroup {
+      group_id: "grp1".into(),
+      group_name: None,
+      security_level: SecurityLevel::Standard,
+      quota,
+      credential_refs: std::collections::HashMap::new(),
     });
+    context.set_resource_governor(governor);
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
     let gate = new_security_gate(context, pool);
@@ -604,7 +579,6 @@ mod tests {
   #[tokio::test]
   async fn test_real_security_gate_enforce_output_with_policy_under_limit() {
     use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
-    use crate::core::runtime_context::SecurityContext;
     use crate::dsl::schema::{NodeOutputs, NodeRunResult};
     use std::time::Duration;
 
@@ -624,19 +598,13 @@ mod tests {
     };
 
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: None,
-      security_policy: Some(policy),
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
-    });
+    context.set_security_policy(policy);
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
     let gate = new_security_gate(context, pool);
 
     let mut ready = std::collections::HashMap::new();
-    ready.insert("result".to_string(), serde_json::json!("small output"));
+    ready.insert("result".to_string(), crate::core::variable_pool::Segment::String("small output".to_string()));
     let outputs = NodeOutputs::Sync(ready);
     let result = NodeRunResult { outputs, ..Default::default() };
     let enforced = gate.enforce_output_limits("n1", "code", result).await;
@@ -647,7 +615,6 @@ mod tests {
   #[tokio::test]
   async fn test_real_security_gate_enforce_output_too_large() {
     use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
-    use crate::core::runtime_context::SecurityContext;
     use crate::dsl::schema::{NodeOutputs, NodeRunResult};
     use std::time::Duration;
 
@@ -667,19 +634,16 @@ mod tests {
     };
 
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: None,
-      security_policy: Some(policy),
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
-    });
+    context.set_security_policy(policy);
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
     let gate = new_security_gate(context, pool);
 
     let mut ready = std::collections::HashMap::new();
-    ready.insert("result".to_string(), serde_json::json!("this is a long output that exceeds 10 bytes"));
+    ready.insert(
+      "result".to_string(),
+      crate::core::variable_pool::Segment::String("this is a long output that exceeds 10 bytes".to_string()),
+    );
     let outputs = NodeOutputs::Sync(ready);
     let result = NodeRunResult { outputs, ..Default::default() };
     let enforced = gate.enforce_output_limits("n1", "code", result).await;
@@ -693,7 +657,6 @@ mod tests {
   #[tokio::test]
   async fn test_real_security_gate_enforce_output_no_node_type_limits() {
     use crate::security::policy::{SecurityLevel, SecurityPolicy, NodeResourceLimits};
-    use crate::core::runtime_context::SecurityContext;
     use std::time::Duration;
 
     let mut node_limits = std::collections::HashMap::new();
@@ -712,13 +675,7 @@ mod tests {
     };
 
     let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: None,
-      security_policy: Some(policy),
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
-    });
+    context.set_security_policy(policy);
     let context = Arc::new(context);
     let pool = Arc::new(RwLock::new(VariablePool::new()));
     let gate = new_security_gate(context, pool);

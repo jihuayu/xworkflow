@@ -300,7 +300,7 @@ impl NodeExecutor for TestEchoExecutor {
             .and_then(|v| v.as_str())
             .unwrap_or("ok");
         let mut outputs = HashMap::new();
-        outputs.insert("result".to_string(), Value::String(message.to_string()));
+        outputs.insert("result".to_string(), Segment::String(message.to_string()));
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
             outputs: xworkflow::dsl::NodeOutputs::Sync(outputs),

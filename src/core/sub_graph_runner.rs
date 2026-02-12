@@ -11,8 +11,7 @@ use std::collections::HashMap;
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
-use crate::graph::types::{EdgeTraversalState, Graph, GraphEdge, GraphNode};
-use crate::nodes::executor::NodeExecutorRegistry;
+use crate::graph::types::{Graph, GraphEdge, GraphNode, GraphTopology};
 use crate::nodes::subgraph::{SubGraphDefinition, SubGraphError, SubGraphNode};
 use crate::nodes::utils::selector_from_str;
 use std::sync::atomic::AtomicBool;
@@ -60,10 +59,7 @@ async fn execute_sub_graph_default(
     inject_scope_vars(&mut scoped_pool, scope_vars)?;
 
     let graph = build_sub_graph(sub_graph)?;
-    let registry = context
-        .node_executor_registry()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(NodeExecutorRegistry::new()));
+    let registry = Arc::clone(context.node_executor_registry());
     let (tx, _rx) = mpsc::channel(16);
     let active = Arc::new(AtomicBool::new(false));
     let emitter = EventEmitter::new(tx.clone(), active);
@@ -158,7 +154,6 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
             title: n.title.clone().unwrap_or_else(|| format!("node_{}", idx)),
             config: Value::Object(config),
             version: "1".to_string(),
-            state: EdgeTraversalState::Pending,
             error_strategy: None,
             retry_config: None,
             timeout_secs: None,
@@ -204,7 +199,6 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
             source_node_id: e.source.clone(),
             target_node_id: e.target.clone(),
             source_handle: e.source_handle.clone(),
-            state: EdgeTraversalState::Pending,
         };
 
         in_edges.entry(e.target.clone()).or_default().push(edge_id.clone());
@@ -212,11 +206,13 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
         edges.insert(edge_id, edge);
     }
 
-    Ok(Graph {
+    let topology = GraphTopology {
         nodes,
         edges,
         in_edges,
         out_edges,
         root_node_id,
-    })
+    };
+
+    Ok(Graph::from_topology(Arc::new(topology)))
 }

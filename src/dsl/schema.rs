@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::core::variable_pool::{Selector, SegmentStream};
+use crate::core::variable_pool::{Selector, Segment, SegmentStream};
 
 // ================================
 // Variable Selector
@@ -197,6 +197,7 @@ pub enum NodeType {
     HttpRequest,
     Tool,
     VariableAggregator,
+    Gather,
     #[serde(rename = "variable-assigner")]
     LegacyVariableAggregator,
     Loop,
@@ -450,6 +451,20 @@ pub struct HttpRequestNodeData {
     pub fail_on_error_status: Option<bool>,
 }
 
+// ================================
+// Document Extractor Node Config
+// ================================
+
+/// Configuration for a Document Extractor node.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DocumentExtractorNodeData {
+    pub variables: Vec<VariableMapping>,
+    #[serde(default)]
+    pub output_format: Option<String>,
+    #[serde(default)]
+    pub extract_options: Option<Value>,
+}
+
 /// HTTP method for requests.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]
@@ -508,6 +523,63 @@ pub struct VariableAggregatorNodeData {
     pub variables: Vec<VariableSelector>,
     #[serde(default)]
     pub output_type: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GatherNodeData {
+    #[serde(default)]
+    pub variables: Vec<VariableSelector>,
+    #[serde(default)]
+    pub join_mode: JoinMode,
+    #[serde(default = "default_cancel_remaining")]
+    pub cancel_remaining: bool,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub timeout_strategy: TimeoutStrategy,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JoinMode {
+    All,
+    Any,
+    NOfM { n: usize },
+}
+
+impl Default for JoinMode {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutStrategy {
+    ProceedWithAvailable,
+    Fail,
+}
+
+impl Default for TimeoutStrategy {
+    fn default() -> Self {
+        Self::ProceedWithAvailable
+    }
+}
+
+fn default_cancel_remaining() -> bool {
+    true
+}
+
+fn default_parallel_enabled() -> bool {
+    true
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ParallelConfig {
+    #[serde(default = "default_parallel_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub max_concurrency: usize,
 }
 
 // ================================
@@ -665,7 +737,7 @@ pub enum WorkflowNodeExecutionStatus {
 #[derive(Debug, Clone)]
 pub struct NodeRunResult {
     pub status: WorkflowNodeExecutionStatus,
-    pub inputs: HashMap<String, Value>,
+    pub inputs: HashMap<String, Segment>,
     pub outputs: NodeOutputs,
     pub metadata: HashMap<String, Value>,
     pub llm_usage: Option<LlmUsage>,
@@ -707,16 +779,16 @@ impl Default for EdgeHandle {
 #[derive(Debug, Clone)]
 pub enum NodeOutputs {
     /// All outputs are ready
-    Sync(HashMap<String, Value>),
+    Sync(HashMap<String, Segment>),
     /// Some outputs are streaming; ready holds non-stream values
     Stream {
-        ready: HashMap<String, Value>,
+        ready: HashMap<String, Segment>,
         streams: HashMap<String, SegmentStream>,
     },
 }
 
 impl NodeOutputs {
-    pub fn ready(&self) -> &HashMap<String, Value> {
+    pub fn ready(&self) -> &HashMap<String, Segment> {
         match self {
             NodeOutputs::Sync(map) => map,
             NodeOutputs::Stream { ready, .. } => ready,
@@ -730,11 +802,19 @@ impl NodeOutputs {
         }
     }
 
-    pub fn into_parts(self) -> (HashMap<String, Value>, HashMap<String, SegmentStream>) {
+    pub fn into_parts(self) -> (HashMap<String, Segment>, HashMap<String, SegmentStream>) {
         match self {
             NodeOutputs::Sync(map) => (map, HashMap::new()),
             NodeOutputs::Stream { ready, streams } => (ready, streams),
         }
+    }
+
+    pub fn to_value_map(&self) -> HashMap<String, Value> {
+        self
+            .ready()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.to_value()))
+            .collect()
     }
 }
 
@@ -819,12 +899,12 @@ mod tests {
     #[test]
     fn test_node_outputs_sync() {
         let mut m = HashMap::new();
-        m.insert("key".into(), Value::Number(42.into()));
+        m.insert("key".into(), Segment::Integer(42));
         let out = NodeOutputs::Sync(m);
-        assert_eq!(out.ready()["key"], 42);
+        assert_eq!(out.ready()["key"], Segment::Integer(42));
         assert!(out.streams().is_none());
         let (ready, streams) = out.into_parts();
-        assert_eq!(ready["key"], 42);
+        assert_eq!(ready["key"], Segment::Integer(42));
         assert!(streams.is_empty());
     }
 
@@ -832,11 +912,11 @@ mod tests {
     fn test_node_outputs_stream() {
         let (stream, _writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut ready = HashMap::new();
-        ready.insert("r".into(), Value::Bool(true));
+        ready.insert("r".into(), Segment::Boolean(true));
         let mut streams = HashMap::new();
         streams.insert("s".into(), stream);
         let out = NodeOutputs::Stream { ready, streams };
-        assert_eq!(out.ready()["r"], true);
+        assert_eq!(out.ready()["r"], Segment::Boolean(true));
         assert!(out.streams().is_some());
         assert_eq!(out.streams().unwrap().len(), 1);
     }
@@ -893,6 +973,7 @@ mod tests {
             NodeType::HttpRequest,
             NodeType::TemplateTransform,
             NodeType::VariableAggregator,
+            NodeType::Gather,
             NodeType::VariableAssigner,
             NodeType::Iteration,
             NodeType::Loop,

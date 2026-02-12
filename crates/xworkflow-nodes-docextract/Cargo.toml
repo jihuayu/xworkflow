@@ -1,0 +1,9 @@
+[package]
+name = "xworkflow-nodes-docextract"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+xworkflow = { path = "../..", features = ["plugin-system"] }
+xworkflow-types = { path = "../xworkflow-types" }

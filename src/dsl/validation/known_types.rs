@@ -6,6 +6,17 @@ pub const RESERVED_NAMESPACES: &[&str] = &["sys", "env", "conversation", "loop"]
 
 pub const BRANCH_NODE_TYPES: &[&str] = &["if-else", "question-classifier"];
 
+#[cfg(feature = "builtin-docextract-node")]
+pub const STUB_NODE_TYPES: &[&str] = &[
+    "knowledge-retrieval",
+    "question-classifier",
+    "parameter-extractor",
+    "tool",
+    "agent",
+    "human-input",
+];
+
+#[cfg(not(feature = "builtin-docextract-node"))]
 pub const STUB_NODE_TYPES: &[&str] = &[
     "knowledge-retrieval",
     "question-classifier",
@@ -53,6 +64,7 @@ mod tests {
         assert!(STUB_NODE_TYPES.contains(&"question-classifier"));
         assert!(STUB_NODE_TYPES.contains(&"parameter-extractor"));
         assert!(STUB_NODE_TYPES.contains(&"tool"));
+        #[cfg(not(feature = "builtin-docextract-node"))]
         assert!(STUB_NODE_TYPES.contains(&"document-extractor"));
         assert!(STUB_NODE_TYPES.contains(&"agent"));
         assert!(STUB_NODE_TYPES.contains(&"human-input"));
@@ -69,6 +81,7 @@ mod tests {
         assert!(is_known_node_type("http-request"));
         assert!(is_known_node_type("llm"));
         assert!(is_known_node_type("answer"));
+        assert!(is_known_node_type("gather"));
     }
 
     #[test]

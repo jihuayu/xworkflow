@@ -40,6 +40,7 @@ pub enum GraphEngineEvent {
         node_type: String,
         node_title: String,
         predecessor_node_id: Option<String>,
+        parallel_group_id: Option<String>,
     },
     NodeRunSucceeded {
         id: String,
@@ -196,13 +197,20 @@ impl GraphEngineEvent {
                 "type": "graph_run_aborted",
                 "data": { "reason": reason, "outputs": outputs }
             }),
-            GraphEngineEvent::NodeRunStarted { id, node_id, node_type, node_title, predecessor_node_id } => serde_json::json!({
+            GraphEngineEvent::NodeRunStarted { id, node_id, node_type, node_title, predecessor_node_id, parallel_group_id } => serde_json::json!({
                 "type": "node_run_started",
-                "data": { "id": id, "node_id": node_id, "node_type": node_type, "node_title": node_title, "predecessor_node_id": predecessor_node_id }
+                "data": {
+                    "id": id,
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "node_title": node_title,
+                    "predecessor_node_id": predecessor_node_id,
+                    "parallel_group_id": parallel_group_id,
+                }
             }),
             GraphEngineEvent::NodeRunSucceeded { id, node_id, node_type, node_run_result } => serde_json::json!({
                 "type": "node_run_succeeded",
-                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs.ready() }
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs.to_value_map() }
             }),
             GraphEngineEvent::NodeRunFailed { id, node_id, node_type, node_run_result, error } => serde_json::json!({
                 "type": "node_run_failed",
@@ -394,11 +402,13 @@ mod tests {
             node_type: "code".into(),
             node_title: "Code Node".into(),
             predecessor_node_id: Some("n0".into()),
+            parallel_group_id: Some("pg1".into()),
         };
         let j = e.to_json();
         assert_eq!(j["type"], "node_run_started");
         assert_eq!(j["data"]["node_id"], "n1");
         assert_eq!(j["data"]["predecessor_node_id"], "n0");
+        assert_eq!(j["data"]["parallel_group_id"], "pg1");
     }
 
     #[test]
