@@ -628,7 +628,10 @@ mod tests {
         let context = RuntimeContext::default();
         
         let result = executor.execute("test", &config, &pool, &context).await;
-        // Just verify it errors - the exact error type depends on what segment is returned
+        // The exact error type depends on what segment type is returned from the empty pool.
+        // When the variable doesn't exist, VariablePool returns Segment::None, which will fail
+        // in segment_to_files with either TypeError or in the file validation with InputValidationError.
+        // Both outcomes are valid error conditions we're testing for.
         assert!(result.is_err());
     }
 
@@ -804,8 +807,9 @@ mod tests {
         };
         let result = map_extract_error(err);
         
-        // Verify it's a NodeError - the exact variant depends on with_context implementation
-        let _ = result;
+        // Verify the error message contains the expected information
+        let error_msg = result.to_string();
+        assert!(error_msg.contains("UnsupportedFormat") || error_msg.contains("unsupported"));
     }
 
     #[test]
