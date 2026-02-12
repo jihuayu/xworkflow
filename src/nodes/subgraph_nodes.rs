@@ -739,13 +739,35 @@ impl ListOperatorNodeExecutor {
         let mut unique = Vec::new();
 
         for item in items {
-            let key = serde_json::to_string(item).unwrap_or_default();
+            // Convert to canonical JSON for comparison (handles key order differences)
+            let canonical = Self::canonicalize_value(item);
+            let key = serde_json::to_string(&canonical).unwrap_or_default();
             if seen.insert(key) {
                 unique.push(item.clone());
             }
         }
 
         Ok(Value::Array(unique))
+    }
+
+    // Helper function to create a canonical representation of a Value for comparison
+    fn canonicalize_value(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut pairs: Vec<_> = map.iter().collect();
+                pairs.sort_by_key(|(k, _)| *k);
+                let canonical_map: serde_json::Map<String, Value> = pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), Self::canonicalize_value(v)))
+                    .collect();
+                Value::Object(canonical_map)
+            }
+            Value::Array(arr) => {
+                let canonical_arr: Vec<Value> = arr.iter().map(Self::canonicalize_value).collect();
+                Value::Array(canonical_arr)
+            }
+            other => other.clone(),
+        }
     }
 
     fn execute_reverse(&self, input: &Value) -> Result<Value, NodeError> {
