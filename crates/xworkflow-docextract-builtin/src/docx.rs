@@ -23,7 +23,7 @@ pub fn extract_docx(request: &ExtractionRequest) -> Result<ExtractionResult, Ext
         })?;
 
     let mut reader = Reader::from_str(&xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text(true);
 
     let mut buf = Vec::new();
     let mut blocks: Vec<String> = Vec::new();

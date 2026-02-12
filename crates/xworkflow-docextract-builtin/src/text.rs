@@ -114,3 +114,34 @@ fn strip_rtf(input: &str) -> String {
 fn unexpected_format(format: &str, message: &str) -> ExtractError {
     extraction_failed(format, message)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_request(content: &str, filename: Option<&str>, format: OutputFormat) -> ExtractionRequest {
+        ExtractionRequest {
+            content: content.as_bytes().to_vec(),
+            mime_type: "text/plain".to_string(),
+            filename: filename.map(|s| s.to_string()),
+            output_format: format,
+            options: json!({}),
+        }
+    }
+
+    #[test]
+    fn test_extract_text_plain() {
+        let request = make_request("hello", None, OutputFormat::Text);
+        let result = extract_text(&request).unwrap();
+        assert_eq!(result.text, "hello");
+    }
+
+    #[test]
+    fn test_extract_text_markdown_codeblock() {
+        let request = make_request("fn main() {}", Some("main.rs"), OutputFormat::Markdown);
+        let result = extract_text(&request).unwrap();
+        assert!(result.text.starts_with("```rust"));
+        assert!(result.text.contains("fn main()"));
+    }
+}

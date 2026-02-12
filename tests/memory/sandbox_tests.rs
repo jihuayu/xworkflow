@@ -9,6 +9,7 @@ use xworkflow::sandbox::{CodeLanguage, ExecutionConfig, SandboxRequest};
 #[cfg(any(feature = "builtin-sandbox-js", feature = "builtin-sandbox-wasm"))]
 use serde_json::json;
 
+#[cfg(feature = "builtin-sandbox-wasm")]
 use super::helpers::dhat_guard;
 
 #[cfg(feature = "builtin-sandbox-wasm")]

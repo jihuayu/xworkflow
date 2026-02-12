@@ -32,7 +32,7 @@ pub fn extract_yaml(request: &ExtractionRequest) -> Result<ExtractionResult, Ext
 
 pub fn extract_xml(request: &ExtractionRequest) -> Result<ExtractionResult, ExtractError> {
     let mut reader = Reader::from_reader(Cursor::new(&request.content));
-    reader.trim_text(true);
+    reader.config_mut().trim_text(true);
 
     let mut buf = Vec::new();
     let mut out = String::new();
@@ -49,7 +49,7 @@ pub fn extract_xml(request: &ExtractionRequest) -> Result<ExtractionResult, Extr
                 }
             }
             Ok(Event::CData(e)) => {
-                let text = e.unescape().unwrap_or_default().to_string();
+                let text = String::from_utf8_lossy(e.as_ref()).to_string();
                 if !text.is_empty() {
                     if !out.is_empty() {
                         out.push('\n');
@@ -68,4 +68,40 @@ pub fn extract_xml(request: &ExtractionRequest) -> Result<ExtractionResult, Extr
         text: out,
         metadata: metadata("builtin-xml", None),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xworkflow_types::OutputFormat;
+
+    #[test]
+    fn test_extract_json_pretty() {
+        let request = ExtractionRequest {
+            content: br#"{"a":1,"b":"x"}"#.to_vec(),
+            mime_type: "application/json".to_string(),
+            filename: Some("sample.json".to_string()),
+            output_format: OutputFormat::Text,
+            options: serde_json::json!({}),
+        };
+
+        let result = extract_json(&request).unwrap();
+        assert!(result.text.contains("\"a\": 1"));
+        assert!(result.text.contains("\"b\": \"x\""));
+    }
+
+    #[test]
+    fn test_extract_xml_text_nodes() {
+        let request = ExtractionRequest {
+            content: br#"<root><a>hello</a><b>world</b></root>"#.to_vec(),
+            mime_type: "application/xml".to_string(),
+            filename: Some("sample.xml".to_string()),
+            output_format: OutputFormat::Text,
+            options: serde_json::json!({}),
+        };
+
+        let result = extract_xml(&request).unwrap();
+        assert!(result.text.contains("hello"));
+        assert!(result.text.contains("world"));
+    }
 }

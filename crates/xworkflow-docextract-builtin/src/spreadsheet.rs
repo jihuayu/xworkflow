@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use calamine::{DataType, Reader};
+use calamine::{Data, Reader};
 use xworkflow_types::{ExtractError, ExtractionRequest, ExtractionResult, OutputFormat};
 
 use crate::table::{render_markdown_table, render_text_table};
@@ -82,7 +82,7 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                         continue;
                     }
                 }
-                if let Some(Ok(range)) = workbook.worksheet_range(name) {
+                if let Ok(range) = workbook.worksheet_range(name) {
                     let table = range_to_table(range, include_header, max_rows, request.output_format);
                     if !table.is_empty() {
                         if request.output_format == OutputFormat::Markdown {
@@ -105,7 +105,7 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                         continue;
                     }
                 }
-                if let Some(Ok(range)) = workbook.worksheet_range(name) {
+                if let Ok(range) = workbook.worksheet_range(name) {
                     let table = range_to_table(range, include_header, max_rows, request.output_format);
                     if !table.is_empty() {
                         if request.output_format == OutputFormat::Markdown {
@@ -128,7 +128,7 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                         continue;
                     }
                 }
-                if let Some(Ok(range)) = workbook.worksheet_range(name) {
+                if let Ok(range) = workbook.worksheet_range(name) {
                     let table = range_to_table(range, include_header, max_rows, request.output_format);
                     if !table.is_empty() {
                         if request.output_format == OutputFormat::Markdown {
@@ -156,7 +156,7 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
 }
 
 fn range_to_table(
-    range: calamine::Range<DataType>,
+    range: calamine::Range<Data>,
     include_header: bool,
     max_rows: usize,
     output_format: OutputFormat,
@@ -184,14 +184,34 @@ fn range_to_table(
     text
 }
 
-fn cell_to_string(cell: &DataType) -> String {
-    match cell {
-        DataType::Empty => String::new(),
-        DataType::String(s) => s.clone(),
-        DataType::Float(f) => f.to_string(),
-        DataType::Int(i) => i.to_string(),
-        DataType::Bool(b) => b.to_string(),
-        DataType::Error(e) => format!("#ERR({:?})", e),
-        DataType::DateTime(f) => f.to_string(),
+fn cell_to_string(cell: &Data) -> String {
+    cell.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_csv_markdown() {
+        let content = "name,age\nAlice,30\nBob,40\n";
+        let request = ExtractionRequest {
+            content: content.as_bytes().to_vec(),
+            mime_type: "text/csv".to_string(),
+            filename: Some("sample.csv".to_string()),
+            output_format: OutputFormat::Markdown,
+            options: json!({
+                "spreadsheet": {
+                    "include_header": true,
+                    "max_rows": 100
+                }
+            }),
+        };
+
+        let result = extract_csv(&request).unwrap();
+        assert!(result.text.contains("| name | age |"));
+        assert!(result.text.contains("Alice"));
+        assert!(result.text.contains("Bob"));
     }
 }

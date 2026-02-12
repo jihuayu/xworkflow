@@ -36,9 +36,9 @@ pub fn decode_text(content: &[u8], preferred: Option<&str>) -> Result<DecodedTex
         });
     }
 
-    let (text, _, _) = encoding_rs::ISO_8859_1.decode(content);
+    let (text, _, _) = encoding_rs::WINDOWS_1252.decode(content);
     Ok(DecodedText {
         text: text.to_string(),
-        encoding: Some("iso-8859-1".to_string()),
+        encoding: Some("windows-1252".to_string()),
     })
 }
