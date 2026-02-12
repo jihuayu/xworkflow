@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 
 use crate::compiler::CompiledNodeConfig;
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::VariablePool;
+use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
 use crate::llm::LlmProviderRegistry;
@@ -232,7 +232,7 @@ impl NodeExecutor for StubExecutor {
                 let mut m = HashMap::new();
                 m.insert(
                     "text".to_string(),
-                    Value::String(format!("[Stub: {} node {} not implemented]", self.0, node_id)),
+                    Segment::String(format!("[Stub: {} node {} not implemented]", self.0, node_id)),
                 );
                 m
             }),

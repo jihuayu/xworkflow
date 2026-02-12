@@ -100,7 +100,7 @@ fn bench_data_ops(c: &mut Criterion) {
         let mut pool = VariablePool::new();
         let mut outputs = HashMap::new();
         for i in 0..5 {
-            outputs.insert(format!("k{}", i), serde_json::Value::String(format!("v{}", i)));
+            outputs.insert(format!("k{}", i), Segment::String(format!("v{}", i)));
         }
         b.iter(|| {
             pool.set_node_outputs("node", black_box(&outputs));

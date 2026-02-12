@@ -474,17 +474,17 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       }
     }
 
-    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Value)> = None;
+    let mut assigner_meta: Option<(WriteMode, crate::core::variable_pool::Selector, Segment)> = None;
     if info.node_type == "assigner" {
       let write_mode = outputs_for_write
         .get("write_mode")
-        .and_then(|v| serde_json::from_value::<WriteMode>(v.clone()).ok())
+        .and_then(|v| serde_json::from_value::<WriteMode>(v.to_value()).ok())
         .unwrap_or(WriteMode::Overwrite);
       let assigned_sel: crate::core::variable_pool::Selector = outputs_for_write
         .get("assigned_variable_selector")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .and_then(|v| serde_json::from_value(v.to_value()).ok())
         .unwrap_or_else(|| crate::core::variable_pool::Selector::new("__scope__", "output"));
-      let mut output_val = outputs_for_write.get("output").cloned().unwrap_or(Value::Null);
+      let mut output_val = outputs_for_write.get("output").cloned().unwrap_or(Segment::None);
 
       self
         .apply_before_variable_write_hooks(node_id, &assigned_sel, &mut output_val)
@@ -503,10 +503,10 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       if let Some((write_mode, assigned_sel, output_val)) = assigner_meta {
         match write_mode {
           WriteMode::Overwrite => {
-            pool.set(&assigned_sel, Segment::from_value(&output_val));
+            pool.set(&assigned_sel, output_val);
           }
           WriteMode::Append => {
-            pool.append(&assigned_sel, Segment::from_value(&output_val));
+            pool.append(&assigned_sel, output_val);
           }
           WriteMode::Clear => {
             pool.clear(&assigned_sel);
@@ -529,7 +529,7 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
     // Track final outputs for end/answer nodes
     if info.node_type == "end" || info.node_type == "answer" {
       for (k, v) in &outputs_for_write {
-        self.final_outputs.insert(k.clone(), v.clone());
+        self.final_outputs.insert(k.clone(), v.to_value());
       }
     }
 
@@ -767,7 +767,7 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
     &self,
     node_id: &str,
     selector: &crate::core::variable_pool::Selector,
-    value: &mut Value,
+    value: &mut Segment,
   ) -> WorkflowResult<()> {
     self
       .plugin_gate
@@ -915,7 +915,10 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             let defaults = error_strategy
               .as_ref()
               .and_then(|es| es.default_value.clone())
-              .unwrap_or_default();
+              .unwrap_or_default()
+              .into_iter()
+              .map(|(k, v)| (k, Segment::from_value(&v)))
+              .collect();
             Ok(NodeRunResult {
               status: WorkflowNodeExecutionStatus::Exception,
               outputs: crate::dsl::schema::NodeOutputs::Sync(defaults),

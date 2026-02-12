@@ -137,7 +137,10 @@ impl NodeExecutor for IterationNodeExecutor {
         };
 
         let mut outputs = HashMap::new();
-        outputs.insert(config.output_variable.clone(), Value::Array(results));
+        outputs.insert(
+            config.output_variable.clone(),
+            Segment::from_value(&Value::Array(results)),
+        );
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -388,8 +391,11 @@ impl NodeExecutor for LoopNodeExecutor {
         }
 
         let mut outputs = HashMap::new();
-        outputs.insert(config.output_variable.clone(), Value::Object(loop_vars.into_iter().collect()));
-        outputs.insert("_iterations".to_string(), serde_json::json!(iteration_count));
+        outputs.insert(
+            config.output_variable.clone(),
+            Segment::from_value(&Value::Object(loop_vars.into_iter().collect())),
+        );
+        outputs.insert("_iterations".to_string(), Segment::Integer(iteration_count as i64));
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -495,7 +501,7 @@ impl NodeExecutor for ListOperatorNodeExecutor {
         };
 
         let mut outputs = HashMap::new();
-        outputs.insert(config.output_variable.clone(), result);
+        outputs.insert(config.output_variable.clone(), Segment::from_value(&result));
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -860,11 +866,14 @@ mod tests {
         });
 
         let result = executor.execute("iter1", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("results"), Some(&serde_json::json!([
-            {"value": 1},
-            {"value": 2},
-            {"value": 3}
-        ])));
+        assert_eq!(
+            result.outputs.ready().get("results"),
+            Some(&Segment::from_value(&serde_json::json!([
+                {"value": 1},
+                {"value": 2},
+                {"value": 3}
+            ])))
+        );
     }
 
     #[tokio::test]
@@ -900,7 +909,7 @@ mod tests {
         assert!(result.outputs.ready().contains_key("loop_result"));
         assert_eq!(
             result.outputs.ready().get("_iterations"),
-            Some(&serde_json::json!(0))
+            Some(&Segment::Integer(0))
         );
     }
 
@@ -1015,7 +1024,7 @@ mod tests {
             "output_variable": "first_item"
         });
         let result = executor.execute("ls4", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("first_item"), Some(&serde_json::json!(1)));
+        assert_eq!(result.outputs.ready().get("first_item"), Some(&Segment::Integer(1)));
     }
 
     #[tokio::test]
@@ -1028,7 +1037,7 @@ mod tests {
             "output_variable": "last_item"
         });
         let result = executor.execute("ls5", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("last_item"), Some(&serde_json::json!(3)));
+        assert_eq!(result.outputs.ready().get("last_item"), Some(&Segment::Integer(3)));
     }
 
     #[tokio::test]
@@ -1115,7 +1124,7 @@ mod tests {
             "output_variable": "len"
         });
         let result = executor.execute("ls10", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("len"), Some(&serde_json::json!(3)));
+        assert_eq!(result.outputs.ready().get("len"), Some(&Segment::Integer(3)));
     }
 
     #[tokio::test]
@@ -1133,7 +1142,7 @@ mod tests {
             "output_variable": "first_item"
         });
         let result = executor.execute("ls11", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("first_item"), Some(&Value::Null));
+        assert_eq!(result.outputs.ready().get("first_item"), Some(&Segment::None));
     }
 
     #[tokio::test]

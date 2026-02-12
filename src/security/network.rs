@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 /// How the network policy filters outbound requests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum NetworkPolicyMode {
     /// All domains are allowed (denies are still checked).
     AllowAll,
@@ -18,7 +18,7 @@ pub enum NetworkPolicyMode {
 }
 
 /// Network security policy controlling outbound HTTP requests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct NetworkPolicy {
     pub mode: NetworkPolicyMode,
     pub allowed_domains: Vec<String>,
@@ -251,7 +251,7 @@ fn validate_redirect_url_sync(url: &Url, policy: &NetworkPolicy) -> Result<(), N
 pub struct SecureHttpClientFactory;
 
 impl SecureHttpClientFactory {
-    pub fn build(policy: &NetworkPolicy, timeout: std::time::Duration) -> Result<reqwest::Client, NetworkError> {
+    pub fn builder(policy: &NetworkPolicy, timeout: std::time::Duration) -> reqwest::ClientBuilder {
         let resolver = SafeDnsResolver::new(policy.clone());
         let policy_clone = policy.clone();
 
@@ -277,7 +277,13 @@ impl SecureHttpClientFactory {
             builder = builder.pool_max_idle_per_host(0);
         }
 
-        builder.build().map_err(|e| NetworkError::ClientBuildFailed(e.to_string()))
+        builder
+    }
+
+    pub fn build(policy: &NetworkPolicy, timeout: std::time::Duration) -> Result<reqwest::Client, NetworkError> {
+        Self::builder(policy, timeout)
+            .build()
+            .map_err(|e| NetworkError::ClientBuildFailed(e.to_string()))
     }
 }
 

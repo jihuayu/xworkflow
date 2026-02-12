@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use serde_json::Value;
 
 use xworkflow::core::variable_pool::{Segment, SegmentArray, Selector, VariablePool};
 
@@ -40,7 +39,7 @@ fn bench_variable_pool(c: &mut Criterion) {
         let mut pool = VariablePool::new();
         let mut outputs = HashMap::new();
         for i in 0..5 {
-            outputs.insert(format!("k{}", i), Value::String(format!("v{}", i)));
+            outputs.insert(format!("k{}", i), Segment::String(format!("v{}", i)));
         }
         b.iter(|| {
             pool.set_node_outputs("node", black_box(&outputs));

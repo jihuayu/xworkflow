@@ -202,7 +202,7 @@ impl GraphEngineEvent {
             }),
             GraphEngineEvent::NodeRunSucceeded { id, node_id, node_type, node_run_result } => serde_json::json!({
                 "type": "node_run_succeeded",
-                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs.ready() }
+                "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs.to_value_map() }
             }),
             GraphEngineEvent::NodeRunFailed { id, node_id, node_type, node_run_result, error } => serde_json::json!({
                 "type": "node_run_failed",

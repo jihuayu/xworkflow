@@ -303,10 +303,10 @@ impl NodeExecutor for WasmNodeExecutorAdapter {
         let mut outputs = std::collections::HashMap::new();
         if let Value::Object(obj) = &output {
             for (k, v) in obj {
-                outputs.insert(k.clone(), v.clone());
+                outputs.insert(k.clone(), Segment::from_value(v));
             }
         } else {
-            outputs.insert("result".to_string(), output);
+            outputs.insert("result".to_string(), Segment::from_value(&output));
         }
 
         Ok(NodeRunResult {
