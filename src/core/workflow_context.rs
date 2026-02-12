@@ -496,14 +496,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_channel_full() {
-        let (tx, _rx) = mpsc::channel::<GraphEngineEvent>(1);
+        let (tx, rx) = mpsc::channel::<GraphEngineEvent>(1);
         let ctx = WorkflowContext::default().with_event_tx(tx);
         
         if let Some(event_tx) = ctx.event_tx() {
             // Fill the channel
             event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
             
-            // Next send should wait or fail depending on configuration
+            // Keep receiver alive but don't consume - this tests backpressure
             let send_future = event_tx.send(GraphEngineEvent::GraphRunStarted);
             tokio::select! {
                 _ = send_future => {},
@@ -512,6 +512,9 @@ mod tests {
                 }
             }
         }
+        
+        // Drop receiver to clean up
+        drop(rx);
     }
 
     #[test]

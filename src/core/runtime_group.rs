@@ -375,24 +375,6 @@ mod tests {
         assert!(group.security_policy.is_some());
     }
 
-    #[cfg(feature = "security")]
-    #[test]
-    fn test_runtime_group_builder_credential_provider() {
-        // Removed - requires complex trait implementation
-    }
-
-    #[cfg(feature = "security")]
-    #[test]
-    fn test_runtime_group_builder_resource_governor() {
-        // Removed - requires complex trait implementation
-    }
-
-    #[cfg(feature = "security")]
-    #[test]
-    fn test_runtime_group_builder_audit_logger() {
-        // Removed - requires complex trait implementation
-    }
-
     #[test]
     fn test_runtime_group_builder_chaining() {
         let group = RuntimeGroup::builder()
