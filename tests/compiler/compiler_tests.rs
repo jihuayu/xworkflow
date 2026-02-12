@@ -166,6 +166,82 @@ mod cache_tests {
         assert_eq!(stats.group_count, 0);
         assert_eq!(stats.total_entries, 0);
     }
+
+    #[test]
+    fn test_cache_yaml_format() {
+        let config = WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        };
+        
+        let cache = WorkflowCache::new(config);
+        
+        let workflow = r#"
+nodes:
+  - id: start
+    type: start
+  - id: end
+    type: end
+    data:
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        
+        let result = cache.get_or_compile("test", workflow, DslFormat::Yaml);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let config = WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        };
+        
+        let cache = WorkflowCache::new(config);
+        
+        let initial_stats = cache.get_stats();
+        assert_eq!(initial_stats.group_count, 0);
+        assert_eq!(initial_stats.total_entries, 0);
+    }
+
+    #[test]
+    fn test_cache_group_stats_nonexistent() {
+        let config = WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        };
+        
+        let cache = WorkflowCache::new(config);
+        let stats = cache.get_group_stats("nonexistent");
+        assert!(stats.is_none());
+    }
+
+    #[test]
+    fn test_cache_clear_group() {
+        let config = WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        };
+        
+        let cache = WorkflowCache::new(config);
+        
+        let workflow = r#"{"nodes": [{"id": "start", "type": "start"}], "edges": []}"#;
+        
+        let _ = cache.get_or_compile("group1", workflow, DslFormat::Json);
+        let _ = cache.get_or_compile("group2", workflow, DslFormat::Json);
+        
+        cache.clear_group("group1");
+        
+        let stats = cache.get_stats();
+        assert_eq!(stats.group_count, 1);
+    }
 }
 
 #[cfg(feature = "compiler")]
