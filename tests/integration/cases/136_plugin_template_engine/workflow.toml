@@ -1,0 +1,41 @@
+# Plugin: Custom template engine via plugin.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "name"
+label = "Name"
+type = "string"
+required = true
+
+[[nodes]]
+id = "template1"
+
+[nodes.data]
+type = "template-transform"
+title = "Greet"
+template = "Hello, {{#start.name#}}!"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "greeting"
+value_selector = [ "template1", "output",]
+
+[[edges]]
+source = "start"
+target = "template1"
+
+[[edges]]
+source = "template1"
+target = "end"

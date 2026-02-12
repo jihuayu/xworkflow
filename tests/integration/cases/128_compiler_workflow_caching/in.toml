@@ -1,0 +1,4 @@
+# Compiler: Compiled workflow caching for performance.
+# File: Input variables supplied to the workflow
+
+input = "test data"

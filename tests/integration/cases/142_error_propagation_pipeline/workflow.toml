@@ -1,0 +1,72 @@
+# Error: Error propagates through multi-node pipeline.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Step 1"
+code = "function main(inputs) { return { val: 10 }; }"
+language = "javascript"
+
+[[nodes]]
+id = "code2"
+
+[nodes.data]
+type = "code"
+title = "Step 2 Fails"
+code = "function main(inputs) { throw new Error('step2 failed'); }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "val"
+value_selector = [ "code1", "val",]
+
+[nodes.data.error_strategy]
+on_error = "none"
+
+[[nodes]]
+id = "code3"
+
+[nodes.data]
+type = "code"
+title = "Step 3"
+code = "function main(inputs) { return { final: inputs.val + 5 }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "val"
+value_selector = [ "code2", "result",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "final"
+value_selector = [ "code3", "final",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "code2"
+
+[[edges]]
+source = "code2"
+target = "code3"
+
+[[edges]]
+source = "code3"
+target = "end"

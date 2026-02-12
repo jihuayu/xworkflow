@@ -1,0 +1,4 @@
+# Plugin: Custom template engine via plugin.
+# File: Input variables supplied to the workflow
+
+name = "World"

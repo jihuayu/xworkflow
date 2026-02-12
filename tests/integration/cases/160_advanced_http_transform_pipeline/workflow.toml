@@ -1,0 +1,100 @@
+# Advanced: HTTP request followed by complex transformations.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+
+[[nodes]]
+id = "http1"
+
+[nodes.data]
+type = "http-request"
+title = "Fetch Data"
+method = "GET"
+url = "{{#sys.base_url#}}/api/data"
+timeout = 10
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Parse"
+code = "function main(inputs) { const data = JSON.parse(inputs.body); return { items: data.items }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "body"
+value_selector = [ "http1", "body",]
+
+[[nodes]]
+id = "iter1"
+
+[nodes.data]
+type = "iteration"
+title = "Process Items"
+input_selector = [ "code1", "items",]
+parallel = true
+output_variable = "results"
+
+[nodes.data.sub_graph]
+[[nodes.data.sub_graph.nodes]]
+id = "sg_start"
+type = "start"
+title = "SG Start"
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_template"
+type = "template-transform"
+title = "Format"
+
+[nodes.data.sub_graph.nodes.data]
+template = "Item: {{#__scope__.item.name#}}"
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_end"
+type = "end"
+title = "SG End"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "formatted"
+value_selector = [ "sg_template", "output",]
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_start"
+target = "sg_template"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_template"
+target = "sg_end"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "results"
+value_selector = [ "iter1", "results",]
+
+[[edges]]
+source = "start"
+target = "http1"
+
+[[edges]]
+source = "http1"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "iter1"
+
+[[edges]]
+source = "iter1"
+target = "end"

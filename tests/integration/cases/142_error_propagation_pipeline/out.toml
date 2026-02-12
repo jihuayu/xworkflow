@@ -1,0 +1,6 @@
+# Error: Error propagates through multi-node pipeline.
+# File: Expected execution result and output values
+
+status = "failed"
+partial_match = false
+error_contains = "step2 failed"

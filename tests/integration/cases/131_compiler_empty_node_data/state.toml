@@ -1,0 +1,2 @@
+# Compiler: Handles nodes with minimal configuration.
+# File: Runtime state: engine config, mock server, fake time/id, etc.

@@ -1,0 +1,8 @@
+# Security: Code node runs in isolated sandbox.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+msg = "hello from sandbox"

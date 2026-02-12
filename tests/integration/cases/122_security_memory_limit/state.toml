@@ -1,0 +1,8 @@
+# Security: Memory limit enforcement via resource governor.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[engine_config.security]
+enable_resource_governor = true
+
+[engine_config.security.resource_limits]
+max_memory_bytes = 104857600

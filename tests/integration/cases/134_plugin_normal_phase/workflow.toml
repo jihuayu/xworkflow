@@ -1,0 +1,45 @@
+# Plugin: Normal phase plugin with node executor.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "input"
+label = "Input"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Process"
+code = "function main(inputs) { return { output: inputs.input.toUpperCase() }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "input"
+value_selector = [ "start", "input",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "output"
+value_selector = [ "code1", "output",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"

@@ -1,0 +1,4 @@
+# Security: Security gate validates input before execution.
+# File: Input variables supplied to the workflow
+
+user_input = "safe data"

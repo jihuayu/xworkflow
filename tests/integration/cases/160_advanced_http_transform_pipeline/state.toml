@@ -1,0 +1,12 @@
+# Advanced: HTTP request followed by complex transformations.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/data"
+response_status = 200
+response_body = '{"items": [{"name": "A"}, {"name": "B"}]}'
+expect = 1
+
+[mock_server.response_headers]
+content-type = "application/json"

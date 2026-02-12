@@ -1,0 +1,8 @@
+# Error: Code node with syntax error fails gracefully.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+x = 0

@@ -1,0 +1,8 @@
+# Error: Ifelse node handles error in condition evaluation.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "false"

@@ -1,0 +1,8 @@
+# Advanced: Workflow with multiple end nodes based on conditions.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+output = "fast result"

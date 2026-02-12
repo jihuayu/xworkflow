@@ -1,0 +1,41 @@
+# Advanced: Complex Jinja2 template with filters and macros.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "users"
+label = "Users"
+type = "array[object]"
+required = true
+
+[[nodes]]
+id = "template1"
+
+[nodes.data]
+type = "template-transform"
+title = "Format Users"
+template = "{% for user in #start.users# %}{{ user.name|upper }}: {{ user.score * 10 }}{% if not loop.last %}, {% endif %}{% endfor %}"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "output"
+value_selector = [ "template1", "output",]
+
+[[edges]]
+source = "start"
+target = "template1"
+
+[[edges]]
+source = "template1"
+target = "end"

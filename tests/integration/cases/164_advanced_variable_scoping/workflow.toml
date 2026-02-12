@@ -1,0 +1,101 @@
+# Advanced: Variable scoping across nested sub-graph boundaries.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "outer"
+label = "Outer"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Set Middle"
+code = "function main(inputs) { return { middle: 'mid_' + inputs.outer }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "outer"
+value_selector = [ "start", "outer",]
+
+[[nodes]]
+id = "iter1"
+
+[nodes.data]
+type = "iteration"
+title = "Iteration"
+input_selector = [ "start", "items",]
+parallel = false
+output_variable = "results"
+
+[nodes.data.sub_graph]
+[[nodes.data.sub_graph.nodes]]
+id = "sg_start"
+type = "start"
+title = "SG Start"
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_code"
+type = "code"
+title = "Access Scopes"
+
+[nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { return { inner: inputs.outer + '_' + inputs.middle + '_' + inputs.item }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "outer"
+value_selector = [ "start", "outer",]
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "middle"
+value_selector = [ "code1", "middle",]
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "item"
+value_selector = [ "__scope__", "item",]
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_end"
+type = "end"
+title = "SG End"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "inner"
+value_selector = [ "sg_code", "inner",]
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_start"
+target = "sg_code"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_code"
+target = "sg_end"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "results"
+value_selector = [ "iter1", "results",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "iter1"
+
+[[edges]]
+source = "iter1"
+target = "end"

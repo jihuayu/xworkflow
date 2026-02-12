@@ -1,0 +1,8 @@
+# Error: Error handler captures workflow variables.
+# File: Expected execution result and output values
+
+status = "failed_with_recovery"
+partial_match = false
+
+[outputs]
+msg = "Error in payment processing: failed"

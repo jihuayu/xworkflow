@@ -1,0 +1,113 @@
+# Advanced: Aggregator with template transformations.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "a"
+label = "A"
+type = "number"
+required = true
+[[nodes.data.variables]]
+variable = "b"
+label = "B"
+type = "number"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Process A"
+code = "function main(inputs) { return { result: inputs.a * 10 }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "a"
+value_selector = [ "start", "a",]
+
+[[nodes]]
+id = "code2"
+
+[nodes.data]
+type = "code"
+title = "Process B"
+code = "function main(inputs) { return { result: inputs.b * 20 }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "b"
+value_selector = [ "start", "b",]
+
+[[nodes]]
+id = "template1"
+
+[nodes.data]
+type = "template-transform"
+title = "Format A"
+template = "A = {{#code1.result#}}"
+
+[[nodes]]
+id = "template2"
+
+[nodes.data]
+type = "template-transform"
+title = "Format B"
+template = "B = {{#code2.result#}}"
+
+[[nodes]]
+id = "agg"
+
+[nodes.data]
+type = "variable-aggregator"
+title = "Collect"
+
+[[nodes.data.variables]]
+variable = "parts"
+value_selector = [ "template1", "output",]
+
+[[nodes.data.variables]]
+variable = "parts"
+value_selector = [ "template2", "output",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "parts"
+value_selector = [ "agg", "parts",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "start"
+target = "code2"
+
+[[edges]]
+source = "code1"
+target = "template1"
+
+[[edges]]
+source = "code2"
+target = "template2"
+
+[[edges]]
+source = "template1"
+target = "agg"
+
+[[edges]]
+source = "template2"
+target = "agg"
+
+[[edges]]
+source = "agg"
+target = "end"

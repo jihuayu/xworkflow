@@ -1,0 +1,5 @@
+# Advanced: Aggregator with template transformations.
+# File: Input variables supplied to the workflow
+
+a = 5
+b = 3

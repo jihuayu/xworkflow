@@ -1,0 +1,7 @@
+# Advanced: Multiple parallel execution paths with synchronized merge.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]

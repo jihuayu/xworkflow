@@ -1,0 +1,8 @@
+# Advanced: Extensive use of system variables in workflow.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[fake_time]
+timestamp = "2024-01-01T00:00:00Z"
+
+[fake_id]
+workflow_id = "test-wf-001"

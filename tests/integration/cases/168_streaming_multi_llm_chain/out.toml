@@ -1,0 +1,8 @@
+# Streaming: Multiple LLM nodes with streaming propagation.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+final = "AI response chunk 1 AI response chunk 2"

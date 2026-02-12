@@ -1,0 +1,87 @@
+# Streaming: Event bus propagation through conditional branches.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "branch"
+label = "Branch"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM Generate"
+model = "gpt-3.5-turbo"
+prompt_template = "Generate content"
+enable_streaming = true
+
+[[nodes]]
+id = "ifelse1"
+
+[nodes.data]
+type = "if-else"
+title = "Route"
+
+[[nodes.data.cases]]
+[nodes.data.cases.conditions]
+variable_selector = [ "start", "branch",]
+comparison_operator = "equals"
+value = "A"
+
+[[nodes]]
+id = "answer_a"
+
+[nodes.data]
+type = "answer"
+title = "Answer A"
+answer = "Path A: {{#llm1.output#}}"
+
+[[nodes]]
+id = "answer_b"
+
+[nodes.data]
+type = "answer"
+title = "Answer B"
+answer = "Path B: {{#llm1.output#}}"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "ifelse1"
+
+[[edges]]
+source = "ifelse1"
+target = "answer_a"
+source_handle = "true"
+
+[[edges]]
+source = "ifelse1"
+target = "answer_b"
+source_handle = "false"
+
+[[edges]]
+source = "answer_a"
+target = "end"
+
+[[edges]]
+source = "answer_b"
+target = "end"

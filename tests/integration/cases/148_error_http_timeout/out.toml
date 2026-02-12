@@ -1,0 +1,9 @@
+# Error: HTTP request timeout triggers error handling.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+body = "timeout fallback"
+status = 408

@@ -1,0 +1,13 @@
+# Error: HTTP request timeout triggers error handling.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/slow"
+response_status = 200
+response_body = "slow response"
+delay_ms = 5000
+expect = 1
+
+[mock_server.response_headers]
+content-type = "text/plain"

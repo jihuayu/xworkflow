@@ -1,0 +1,7 @@
+# Advanced: Aggregator with template transformations.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]

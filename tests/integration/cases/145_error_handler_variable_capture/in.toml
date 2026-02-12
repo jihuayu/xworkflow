@@ -1,0 +1,4 @@
+# Error: Error handler captures workflow variables.
+# File: Input variables supplied to the workflow
+
+context = "payment processing"

@@ -1,0 +1,8 @@
+# Compiler: Compiled workflow caching for performance.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+output = "Cached: test data"

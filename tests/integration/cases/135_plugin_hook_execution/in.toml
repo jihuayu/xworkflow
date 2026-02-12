@@ -1,0 +1,4 @@
+# Plugin: Hook execution modifies workflow behavior.
+# File: Input variables supplied to the workflow
+
+value = 7

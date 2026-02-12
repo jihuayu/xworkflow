@@ -1,0 +1,86 @@
+# Advanced: Workflow with multiple end nodes based on conditions.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "mode"
+label = "Mode"
+type = "string"
+required = true
+
+[[nodes]]
+id = "ifelse1"
+
+[nodes.data]
+type = "if-else"
+title = "Route"
+
+[[nodes.data.cases]]
+[nodes.data.cases.conditions]
+variable_selector = [ "start", "mode",]
+comparison_operator = "equals"
+value = "fast"
+
+[[nodes]]
+id = "fast_path"
+
+[nodes.data]
+type = "template-transform"
+title = "Fast"
+template = "fast result"
+
+[[nodes]]
+id = "slow_path"
+
+[nodes.data]
+type = "template-transform"
+title = "Slow"
+template = "slow result"
+
+[[nodes]]
+id = "end_fast"
+
+[nodes.data]
+type = "end"
+title = "Fast End"
+[[nodes.data.outputs]]
+variable = "output"
+value_selector = [ "fast_path", "output",]
+
+[[nodes]]
+id = "end_slow"
+
+[nodes.data]
+type = "end"
+title = "Slow End"
+[[nodes.data.outputs]]
+variable = "output"
+value_selector = [ "slow_path", "output",]
+
+[[edges]]
+source = "start"
+target = "ifelse1"
+
+[[edges]]
+source = "ifelse1"
+target = "fast_path"
+source_handle = "true"
+
+[[edges]]
+source = "ifelse1"
+target = "slow_path"
+source_handle = "false"
+
+[[edges]]
+source = "fast_path"
+target = "end_fast"
+
+[[edges]]
+source = "slow_path"
+target = "end_slow"

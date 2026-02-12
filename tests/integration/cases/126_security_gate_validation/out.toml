@@ -1,0 +1,8 @@
+# Security: Security gate validates input before execution.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+output = "User said: safe data"

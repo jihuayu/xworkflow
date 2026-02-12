@@ -1,0 +1,4 @@
+# Error: Nested error handlers in iteration sub-graph.
+# File: Input variables supplied to the workflow
+
+items = [5, -2, 10, -3, 7]

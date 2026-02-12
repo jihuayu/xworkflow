@@ -1,0 +1,142 @@
+# Advanced: Deeply nested iteration within loop.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "items"
+label = "Items"
+type = "array[array[number]]"
+required = true
+
+[[nodes]]
+id = "loop1"
+
+[nodes.data]
+type = "loop"
+title = "Outer Loop"
+max_iterations = 3
+output_variable = "results"
+
+[nodes.data.condition]
+variable_selector = [ "loop", "idx",]
+comparison_operator = "less_than"
+value = 2
+
+[nodes.data.initial_vars]
+idx = 0
+total = 0
+
+[nodes.data.sub_graph]
+[[nodes.data.sub_graph.nodes]]
+id = "loop_start"
+type = "start"
+title = "Loop Start"
+
+[[nodes.data.sub_graph.nodes]]
+id = "iter1"
+type = "iteration"
+title = "Inner Iteration"
+
+[nodes.data.sub_graph.nodes.data]
+input_selector = [ "loop", "items", "{{#loop.idx#}}",]
+parallel = false
+output_variable = "processed"
+
+[[nodes.data.sub_graph.nodes.data.sub_graph.nodes]]
+id = "iter_start"
+type = "start"
+title = "Iter Start"
+
+[[nodes.data.sub_graph.nodes.data.sub_graph.nodes]]
+id = "iter_code"
+type = "code"
+title = "Process Item"
+
+[nodes.data.sub_graph.nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { return { result: inputs.item * 10 }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.sub_graph.nodes.data.variables]]
+variable = "item"
+value_selector = [ "__scope__", "item",]
+
+[[nodes.data.sub_graph.nodes.data.sub_graph.nodes]]
+id = "iter_end"
+type = "end"
+title = "Iter End"
+
+[nodes.data.sub_graph.nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.sub_graph.nodes.data.outputs]]
+variable = "result"
+value_selector = [ "iter_code", "result",]
+
+[[nodes.data.sub_graph.nodes.data.sub_graph.edges]]
+source = "iter_start"
+target = "iter_code"
+
+[[nodes.data.sub_graph.nodes.data.sub_graph.edges]]
+source = "iter_code"
+target = "iter_end"
+
+[[nodes.data.sub_graph.nodes]]
+id = "loop_code"
+type = "code"
+title = "Update"
+
+[nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { return { idx: inputs.idx + 1, total: inputs.total + 1 }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "idx"
+value_selector = [ "loop", "idx",]
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "total"
+value_selector = [ "loop", "total",]
+
+[[nodes.data.sub_graph.nodes]]
+id = "loop_end"
+type = "end"
+title = "Loop End"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "idx"
+value_selector = [ "loop_code", "idx",]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "total"
+value_selector = [ "loop_code", "total",]
+
+[[nodes.data.sub_graph.edges]]
+source = "loop_start"
+target = "iter1"
+
+[[nodes.data.sub_graph.edges]]
+source = "iter1"
+target = "loop_code"
+
+[[nodes.data.sub_graph.edges]]
+source = "loop_code"
+target = "loop_end"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "iterations"
+value_selector = [ "loop1", "_iterations",]
+
+[[edges]]
+source = "start"
+target = "loop1"
+
+[[edges]]
+source = "loop1"
+target = "end"

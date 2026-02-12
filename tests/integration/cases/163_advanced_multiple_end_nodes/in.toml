@@ -1,0 +1,4 @@
+# Advanced: Workflow with multiple end nodes based on conditions.
+# File: Input variables supplied to the workflow
+
+mode = "fast"

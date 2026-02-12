@@ -1,0 +1,71 @@
+# Streaming: Debug mode captures streaming events.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = true
+
+[[nodes]]
+id = "llm1"
+
+[nodes.data]
+type = "llm"
+title = "LLM"
+model = "gpt-3.5-turbo"
+prompt_template = "{{#start.query#}}"
+enable_streaming = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Process"
+code = "function main(inputs) { return { length: inputs.text.length }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "text"
+value_selector = [ "llm1", "output",]
+
+[[nodes]]
+id = "answer1"
+
+[nodes.data]
+type = "answer"
+title = "Result"
+answer = "Length: {{#code1.length#}}"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "length"
+value_selector = [ "code1", "length",]
+
+[[edges]]
+source = "start"
+target = "llm1"
+
+[[edges]]
+source = "llm1"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "answer1"
+
+[[edges]]
+source = "answer1"
+target = "end"

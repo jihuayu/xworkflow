@@ -1,0 +1,4 @@
+# Advanced: Variable assigner with append and overwrite operations.
+# File: Input variables supplied to the workflow
+
+base = ["item1", "item2"]

@@ -1,0 +1,4 @@
+# Security: Audit logging captures workflow execution events.
+# File: Input variables supplied to the workflow
+
+action = "admin_access"

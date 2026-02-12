@@ -1,0 +1,4 @@
+# Compiler: Large workflow with many nodes compiles correctly.
+# File: Input variables supplied to the workflow
+
+x = 10

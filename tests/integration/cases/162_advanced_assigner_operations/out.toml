@@ -1,0 +1,8 @@
+# Advanced: Variable assigner with append and overwrite operations.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = 4

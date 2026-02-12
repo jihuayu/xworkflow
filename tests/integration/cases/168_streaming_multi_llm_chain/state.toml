@@ -1,0 +1,10 @@
+# Streaming: Multiple LLM nodes with streaming propagation.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[llm_mock]]
+model = "gpt-3.5-turbo"
+stream_chunks = ["AI response chunk 1 ", "AI response chunk 2"]
+
+[[llm_mock]]
+model = "gpt-3.5-turbo"
+stream_chunks = ["AI response chunk 1 ", "AI response chunk 2"]

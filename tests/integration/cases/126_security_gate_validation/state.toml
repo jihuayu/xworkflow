@@ -1,0 +1,6 @@
+# Security: Security gate validates input before execution.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[engine_config.security]
+enable_security_gate = true
+max_input_size_bytes = 10485760

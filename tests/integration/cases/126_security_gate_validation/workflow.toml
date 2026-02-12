@@ -1,0 +1,41 @@
+# Security: Security gate validates input before execution.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "user_input"
+label = "Input"
+type = "string"
+required = true
+
+[[nodes]]
+id = "template1"
+
+[nodes.data]
+type = "template-transform"
+title = "Transform"
+template = "User said: {{#start.user_input#}}"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "output"
+value_selector = [ "template1", "output",]
+
+[[edges]]
+source = "start"
+target = "template1"
+
+[[edges]]
+source = "template1"
+target = "end"

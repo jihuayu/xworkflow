@@ -1,0 +1,4 @@
+# Plugin: Normal phase plugin with node executor.
+# File: Input variables supplied to the workflow
+
+input = "hello"

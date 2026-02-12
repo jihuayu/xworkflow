@@ -1,0 +1,72 @@
+# Error: Error handler with nested sub-graph recovery.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Fail"
+code = "function main(inputs) { throw new Error('critical'); }"
+language = "javascript"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "status"
+value_selector = [ "code1", "result",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"
+
+[error_handler]
+mode = "recover"
+
+[error_handler.sub_graph]
+[[error_handler.sub_graph.nodes]]
+id = "eh_start"
+type = "start"
+title = "EH Start"
+
+[[error_handler.sub_graph.nodes]]
+id = "eh_template"
+type = "template-transform"
+title = "Recovery"
+
+[error_handler.sub_graph.nodes.data]
+template = "recovered from {{#__error__.message#}}"
+
+[[error_handler.sub_graph.nodes]]
+id = "eh_end"
+type = "end"
+title = "EH End"
+
+[error_handler.sub_graph.nodes.data]
+[[error_handler.sub_graph.nodes.data.outputs]]
+variable = "result"
+value_selector = [ "eh_template", "output",]
+
+[[error_handler.sub_graph.edges]]
+source = "eh_start"
+target = "eh_template"
+
+[[error_handler.sub_graph.edges]]
+source = "eh_template"
+target = "eh_end"

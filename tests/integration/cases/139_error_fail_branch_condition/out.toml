@@ -1,0 +1,8 @@
+# Error: Fail branch based on error condition.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "failed as expected"

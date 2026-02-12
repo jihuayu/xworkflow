@@ -1,0 +1,7 @@
+# Compiler: Handles nodes with minimal configuration.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
