@@ -66,7 +66,10 @@ xworkflow-sandbox-js = { path = "crates/xworkflow-sandbox-js", optional = true }
 xworkflow-sandbox-wasm = { path = "crates/xworkflow-sandbox-wasm", optional = true }
 xworkflow-plugin-wasm = { path = "crates/xworkflow-plugin-wasm", optional = true }
 xworkflow-docextract-builtin = { path = "crates/xworkflow-docextract-builtin", optional = true }
-minijinja = { version = "2.0", features = ["builtins", "fuel"], optional = true }
+minijinja = { version = "2.0", features = [
+	"builtins",
+	"fuel",
+], optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -115,8 +118,8 @@ members = [
 	"crates/xworkflow-plugin-wasm",
 	"crates/xworkflow-nodes-code",
 	"crates/xworkflow-nodes-code-dylib",
-"crates/xworkflow-nodes-docextract",
-"crates/xworkflow-docextract-builtin",
+	"crates/xworkflow-nodes-docextract",
+	"crates/xworkflow-docextract-builtin",
 ]
 
 [[bench]]
