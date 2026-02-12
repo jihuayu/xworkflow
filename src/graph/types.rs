@@ -1,10 +1,10 @@
 //! Graph data structures.
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::dsl::schema::{EdgeHandle, ErrorStrategyConfig, RetryConfig};
+use crate::dsl::schema::{EdgeHandle, ErrorStrategyConfig, GatherNodeData, JoinMode, RetryConfig};
 
 // ================================
 // Edge Traversal State
@@ -19,6 +19,8 @@ pub enum EdgeTraversalState {
     Taken,
     /// The edge was skipped (e.g. IfElse branch not selected).
     Skipped,
+    /// The edge was cancelled by runtime strategy (e.g. gather any/n-of-m).
+    Cancelled,
 }
 
 // ================================
@@ -144,6 +146,21 @@ impl Graph {
             None => return node_id == self.root_node_id(), // root has no in-edges
             _ => return node_id == self.root_node_id(),
         };
+
+        let gather = self
+            .topology
+            .nodes
+            .get(node_id)
+            .filter(|n| n.node_type == "gather")
+            .and_then(|n| serde_json::from_value::<GatherNodeData>(n.config.clone()).ok());
+
+        match gather {
+            Some(cfg) => self.is_gather_ready(edge_ids, &cfg.join_mode),
+            None => self.is_standard_ready(edge_ids),
+        }
+    }
+
+    fn is_standard_ready(&self, edge_ids: &[String]) -> bool {
         let (mut all_resolved, mut any_taken) = (true, false);
         for eid in edge_ids {
             match self.edge_state(eid) {
@@ -158,6 +175,31 @@ impl Graph {
             }
         }
         all_resolved && any_taken
+    }
+
+    fn is_gather_ready(&self, edge_ids: &[String], join_mode: &JoinMode) -> bool {
+        let mut taken_count = 0usize;
+        let mut resolved_count = 0usize;
+        let total = edge_ids.len();
+
+        for eid in edge_ids {
+            match self.edge_state(eid) {
+                Some(EdgeTraversalState::Taken) => {
+                    taken_count += 1;
+                    resolved_count += 1;
+                }
+                Some(EdgeTraversalState::Skipped | EdgeTraversalState::Cancelled) => {
+                    resolved_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        match join_mode {
+            JoinMode::All => resolved_count == total && taken_count > 0,
+            JoinMode::Any => taken_count >= 1,
+            JoinMode::NOfM { n } => taken_count >= *n,
+        }
     }
 
     /// Process normal (non-branch) edges after node completion: mark all out-edges as Taken
@@ -237,6 +279,105 @@ impl Graph {
         }
         for target in targets {
             self.propagate_skip(&target);
+        }
+    }
+
+    /// Mark pending in-edges of a gather node as cancelled.
+    ///
+    /// When `propagate_upstream` is true, cancellation is propagated to upstream
+    /// nodes that only contribute to the finalized gather path.
+    pub fn finalize_gather(&mut self, gather_node_id: &str, propagate_upstream: bool) -> Vec<String> {
+        let in_edges = self
+            .topology
+            .in_edges
+            .get(gather_node_id)
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+
+        let mut cancelled_sources = Vec::new();
+        for eid in &in_edges {
+            if !matches!(self.edge_state(eid), Some(EdgeTraversalState::Pending)) {
+                continue;
+            }
+            self.set_edge_state(eid, EdgeTraversalState::Cancelled);
+            if let Some(edge) = self.topology.edges.get(eid) {
+                cancelled_sources.push(edge.source_node_id.clone());
+            }
+        }
+
+        if !propagate_upstream {
+            return cancelled_sources;
+        }
+
+        let mut cancelled_nodes = HashSet::new();
+        for source in cancelled_sources {
+            self.propagate_cancel_upstream(&source, gather_node_id, &mut cancelled_nodes);
+        }
+
+        cancelled_nodes.into_iter().collect()
+    }
+
+    fn propagate_cancel_upstream(
+        &mut self,
+        node_id: &str,
+        gather_node_id: &str,
+        cancelled_nodes: &mut HashSet<String>,
+    ) {
+        if cancelled_nodes.contains(node_id) {
+            return;
+        }
+
+        let out_edges = self
+            .topology
+            .out_edges
+            .get(node_id)
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+
+        if out_edges.is_empty() {
+            return;
+        }
+
+        let all_cancelled_or_gather = out_edges.iter().all(|eid| {
+            let Some(edge) = self.topology.edges.get(eid) else {
+                return true;
+            };
+            if edge.target_node_id == gather_node_id {
+                return true;
+            }
+
+            if matches!(
+                self.node_state(&edge.target_node_id),
+                Some(EdgeTraversalState::Cancelled)
+            ) {
+                return true;
+            }
+
+            matches!(
+                self.edge_state(eid),
+                Some(EdgeTraversalState::Cancelled | EdgeTraversalState::Skipped)
+            )
+        });
+
+        if !all_cancelled_or_gather {
+            return;
+        }
+
+        self.set_node_state(node_id, EdgeTraversalState::Cancelled);
+        cancelled_nodes.insert(node_id.to_string());
+
+        let parent_nodes = self
+            .topology
+            .in_edges
+            .get(node_id)
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|eid| self.topology.edges.get(&eid).map(|e| e.source_node_id.clone()))
+            .collect::<Vec<_>>();
+
+        for parent_node_id in parent_nodes {
+            self.propagate_cancel_upstream(&parent_node_id, gather_node_id, cancelled_nodes);
         }
     }
 
@@ -383,5 +524,199 @@ mod tests {
         assert!(g.is_node_ready("a"));
         assert!(!g.is_node_ready("b"));
         assert_eq!(g.node_state("b"), Some(EdgeTraversalState::Skipped));
+    }
+
+    #[test]
+    fn test_gather_any_ready_with_single_taken() {
+        let mut nodes = HashMap::new();
+        nodes.insert("a".into(), GraphNode {
+            id: "a".into(), node_type: "code".into(), title: "A".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("b".into(), GraphNode {
+            id: "b".into(), node_type: "code".into(), title: "B".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("g".into(), GraphNode {
+            id: "g".into(), node_type: "gather".into(), title: "Gather".into(),
+            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+
+        let mut edges = HashMap::new();
+        edges.insert("e1".into(), GraphEdge {
+            id: "e1".into(), source_node_id: "a".into(), target_node_id: "g".into(), source_handle: None,
+        });
+        edges.insert("e2".into(), GraphEdge {
+            id: "e2".into(), source_node_id: "b".into(), target_node_id: "g".into(), source_handle: None,
+        });
+
+        let mut in_edges = HashMap::new();
+        in_edges.insert("g".into(), vec!["e1".into(), "e2".into()]);
+
+        let mut out_edges = HashMap::new();
+        out_edges.insert("a".into(), vec!["e1".into()]);
+        out_edges.insert("b".into(), vec!["e2".into()]);
+
+        let topology = GraphTopology { nodes, edges, in_edges, out_edges, root_node_id: "a".into() };
+        let mut g = Graph::from_topology(Arc::new(topology));
+        assert!(!g.is_node_ready("g"));
+
+        g.set_edge_state("e1", EdgeTraversalState::Taken);
+        assert!(g.is_node_ready("g"));
+    }
+
+    #[test]
+    fn test_finalize_gather_marks_pending_as_cancelled() {
+        let mut g = make_graph();
+        let mut nodes = g.topology.nodes.clone();
+        nodes.insert("mid".into(), GraphNode {
+            id: "mid".into(), node_type: "code".into(), title: "Mid".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("g".into(), GraphNode {
+            id: "g".into(), node_type: "gather".into(), title: "Gather".into(),
+            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+
+        let mut edges = HashMap::new();
+        edges.insert("ea".into(), GraphEdge {
+            id: "ea".into(), source_node_id: "start".into(), target_node_id: "g".into(), source_handle: None,
+        });
+        edges.insert("eb".into(), GraphEdge {
+            id: "eb".into(), source_node_id: "mid".into(), target_node_id: "g".into(), source_handle: None,
+        });
+
+        let mut in_edges = HashMap::new();
+        in_edges.insert("g".into(), vec!["ea".into(), "eb".into()]);
+
+        let mut out_edges = HashMap::new();
+        out_edges.insert("start".into(), vec!["ea".into()]);
+        out_edges.insert("mid".into(), vec!["eb".into()]);
+
+        g.topology = Arc::new(GraphTopology {
+            nodes,
+            edges,
+            in_edges,
+            out_edges,
+            root_node_id: "start".into(),
+        });
+        g.edge_states = g
+            .topology
+            .edges
+            .keys()
+            .map(|id| (id.clone(), EdgeTraversalState::Pending))
+            .collect();
+
+        g.set_edge_state("ea", EdgeTraversalState::Taken);
+        let cancelled = g.finalize_gather("g", true);
+        assert_eq!(g.edge_state("eb"), Some(EdgeTraversalState::Cancelled));
+        assert_eq!(cancelled, vec!["mid".to_string()]);
+    }
+
+    #[test]
+    fn test_finalize_gather_propagates_cancel_upstream() {
+        let mut nodes = HashMap::new();
+        nodes.insert("u".into(), GraphNode {
+            id: "u".into(), node_type: "code".into(), title: "U".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("v".into(), GraphNode {
+            id: "v".into(), node_type: "code".into(), title: "V".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("g".into(), GraphNode {
+            id: "g".into(), node_type: "gather".into(), title: "G".into(),
+            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+
+        let mut edges = HashMap::new();
+        edges.insert("e_uv".into(), GraphEdge {
+            id: "e_uv".into(), source_node_id: "u".into(), target_node_id: "v".into(), source_handle: None,
+        });
+        edges.insert("e_vg".into(), GraphEdge {
+            id: "e_vg".into(), source_node_id: "v".into(), target_node_id: "g".into(), source_handle: None,
+        });
+
+        let mut in_edges = HashMap::new();
+        in_edges.insert("v".into(), vec!["e_uv".into()]);
+        in_edges.insert("g".into(), vec!["e_vg".into()]);
+
+        let mut out_edges = HashMap::new();
+        out_edges.insert("u".into(), vec!["e_uv".into()]);
+        out_edges.insert("v".into(), vec!["e_vg".into()]);
+
+        let topology = GraphTopology {
+            nodes,
+            edges,
+            in_edges,
+            out_edges,
+            root_node_id: "u".into(),
+        };
+        let mut g = Graph::from_topology(Arc::new(topology));
+
+        let cancelled = g.finalize_gather("g", true);
+        assert_eq!(g.edge_state("e_vg"), Some(EdgeTraversalState::Cancelled));
+        assert_eq!(g.node_state("v"), Some(EdgeTraversalState::Cancelled));
+        assert_eq!(g.node_state("u"), Some(EdgeTraversalState::Cancelled));
+        assert!(cancelled.contains(&"v".to_string()));
+        assert!(cancelled.contains(&"u".to_string()));
+    }
+
+    #[test]
+    fn test_finalize_gather_without_propagation_only_returns_direct_sources() {
+        let mut nodes = HashMap::new();
+        nodes.insert("u".into(), GraphNode {
+            id: "u".into(), node_type: "code".into(), title: "U".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("v".into(), GraphNode {
+            id: "v".into(), node_type: "code".into(), title: "V".into(),
+            config: Value::Null, version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+        nodes.insert("g".into(), GraphNode {
+            id: "g".into(), node_type: "gather".into(), title: "G".into(),
+            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
+            error_strategy: None, retry_config: None, timeout_secs: None,
+        });
+
+        let mut edges = HashMap::new();
+        edges.insert("e_uv".into(), GraphEdge {
+            id: "e_uv".into(), source_node_id: "u".into(), target_node_id: "v".into(), source_handle: None,
+        });
+        edges.insert("e_vg".into(), GraphEdge {
+            id: "e_vg".into(), source_node_id: "v".into(), target_node_id: "g".into(), source_handle: None,
+        });
+
+        let mut in_edges = HashMap::new();
+        in_edges.insert("v".into(), vec!["e_uv".into()]);
+        in_edges.insert("g".into(), vec!["e_vg".into()]);
+
+        let mut out_edges = HashMap::new();
+        out_edges.insert("u".into(), vec!["e_uv".into()]);
+        out_edges.insert("v".into(), vec!["e_vg".into()]);
+
+        let topology = GraphTopology {
+            nodes,
+            edges,
+            in_edges,
+            out_edges,
+            root_node_id: "u".into(),
+        };
+        let mut g = Graph::from_topology(Arc::new(topology));
+
+        let cancelled = g.finalize_gather("g", false);
+        assert_eq!(cancelled, vec!["v".to_string()]);
+        assert_eq!(g.node_state("v"), Some(EdgeTraversalState::Pending));
+        assert_eq!(g.node_state("u"), Some(EdgeTraversalState::Pending));
     }
 }

@@ -23,7 +23,7 @@ use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_group::RuntimeGroup;
 use crate::core::workflow_context::WorkflowContext;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
-use crate::core::variable_pool::{Segment, SegmentType, VariablePool};
+use crate::core::variable_pool::{FileSegment, Segment, SegmentType, VariablePool};
 use crate::dsl::schema::{ErrorHandlingMode, StartVariable, WorkflowSchema};
 use crate::dsl::validation::{validate_schema, ValidationReport};
 use crate::error::WorkflowError;
@@ -198,18 +198,38 @@ fn error_type_name(error: &WorkflowError) -> &'static str {
 }
 
 pub(crate) fn segment_from_type(value: &Value, seg_type: Option<&SegmentType>) -> Segment {
-  if let Some(SegmentType::ArrayString) = seg_type {
-    if let Value::Array(items) = value {
-      let mut values = Vec::with_capacity(items.len());
-      for item in items {
-        if let Some(s) = item.as_str() {
-          values.push(s.to_string());
-        } else {
-          return Segment::from_value(value);
+  match seg_type {
+    Some(SegmentType::ArrayString) => {
+      if let Value::Array(items) = value {
+        let mut values = Vec::with_capacity(items.len());
+        for item in items {
+          if let Some(s) = item.as_str() {
+            values.push(s.to_string());
+          } else {
+            return Segment::from_value(value);
+          }
         }
+        return Segment::string_array(values);
       }
-      return Segment::string_array(values);
     }
+    Some(SegmentType::File) => {
+      if let Ok(file) = serde_json::from_value::<FileSegment>(value.clone()) {
+        return Segment::File(Arc::new(file));
+      }
+    }
+    Some(SegmentType::ArrayFile) => {
+      if let Value::Array(items) = value {
+        let mut files = Vec::with_capacity(items.len());
+        for item in items {
+          match serde_json::from_value::<FileSegment>(item.clone()) {
+            Ok(file) => files.push(file),
+            Err(_) => return Segment::from_value(value),
+          }
+        }
+        return Segment::ArrayFile(Arc::new(files));
+      }
+    }
+    _ => {}
   }
 
   Segment::from_value(value)
@@ -1196,6 +1216,41 @@ edges:
         let val = serde_json::json!("hello");
         let seg = segment_from_type(&val, None);
         assert!(matches!(seg, Segment::String(_)));
+    }
+
+    #[test]
+    fn test_segment_from_type_file() {
+      let val = serde_json::json!({
+        "name": "report.pdf",
+        "size": 123,
+        "mime_type": "application/pdf",
+        "transfer_method": "remote_url",
+        "url": "https://example.com/report.pdf"
+      });
+      let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::File));
+      assert!(matches!(seg, Segment::File(_)));
+    }
+
+    #[test]
+    fn test_segment_from_type_array_file() {
+      let val = serde_json::json!([
+        {
+          "name": "a.txt",
+          "size": 10,
+          "mime_type": "text/plain",
+          "transfer_method": "local_file",
+          "id": "C:/tmp/a.txt"
+        },
+        {
+          "name": "b.txt",
+          "size": 20,
+          "mime_type": "text/plain",
+          "transfer_method": "remote_url",
+          "url": "https://example.com/b.txt"
+        }
+      ]);
+      let seg = segment_from_type(&val, Some(&crate::core::variable_pool::SegmentType::ArrayFile));
+      assert!(matches!(seg, Segment::ArrayFile(_)));
     }
 
     #[test]

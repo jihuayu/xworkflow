@@ -28,6 +28,7 @@ pub mod plugin_gate;
 
 pub use variable_pool::{
 	FileSegment,
+	FileTransferMethod,
 	Segment,
 	SegmentStream,
 	SegmentType,

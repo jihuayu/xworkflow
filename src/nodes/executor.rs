@@ -83,6 +83,7 @@ impl NodeExecutorRegistry {
                 "variable-aggregator",
                 Box::new(super::data_transform::VariableAggregatorExecutor),
             );
+            registry.register("gather", Box::new(super::gather::GatherExecutor));
             registry.register(
                 "variable-assigner",
                 Box::new(super::data_transform::LegacyVariableAggregatorExecutor),
@@ -263,6 +264,7 @@ mod tests {
         // built-in transform nodes
         assert!(registry.get("template-transform").is_some());
         assert!(registry.get("variable-aggregator").is_some());
+        assert!(registry.get("gather").is_some());
         assert!(registry.get("variable-assigner").is_some());
         assert!(registry.get("assigner").is_some());
         // built-in http node

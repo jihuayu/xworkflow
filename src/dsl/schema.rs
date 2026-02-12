@@ -197,6 +197,7 @@ pub enum NodeType {
     HttpRequest,
     Tool,
     VariableAggregator,
+    Gather,
     #[serde(rename = "variable-assigner")]
     LegacyVariableAggregator,
     Loop,
@@ -522,6 +523,63 @@ pub struct VariableAggregatorNodeData {
     pub variables: Vec<VariableSelector>,
     #[serde(default)]
     pub output_type: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GatherNodeData {
+    #[serde(default)]
+    pub variables: Vec<VariableSelector>,
+    #[serde(default)]
+    pub join_mode: JoinMode,
+    #[serde(default = "default_cancel_remaining")]
+    pub cancel_remaining: bool,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub timeout_strategy: TimeoutStrategy,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JoinMode {
+    All,
+    Any,
+    NOfM { n: usize },
+}
+
+impl Default for JoinMode {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutStrategy {
+    ProceedWithAvailable,
+    Fail,
+}
+
+impl Default for TimeoutStrategy {
+    fn default() -> Self {
+        Self::ProceedWithAvailable
+    }
+}
+
+fn default_cancel_remaining() -> bool {
+    true
+}
+
+fn default_parallel_enabled() -> bool {
+    true
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ParallelConfig {
+    #[serde(default = "default_parallel_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub max_concurrency: usize,
 }
 
 // ================================
@@ -915,6 +973,7 @@ mod tests {
             NodeType::HttpRequest,
             NodeType::TemplateTransform,
             NodeType::VariableAggregator,
+            NodeType::Gather,
             NodeType::VariableAssigner,
             NodeType::Iteration,
             NodeType::Loop,

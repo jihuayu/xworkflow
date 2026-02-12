@@ -123,6 +123,8 @@ mod real {
             .max_execution_time_secs
             .min(group.quota.max_execution_time_secs),
           strict_template: config.strict_template,
+          parallel_enabled: config.parallel_enabled,
+          max_concurrency: config.max_concurrency,
         }
       } else {
         config
@@ -212,6 +214,7 @@ mod tests {
       max_steps: 100,
       max_execution_time_secs: 300,
       strict_template: false,
+      ..Default::default()
     };
     let effective = gate.effective_engine_config(&context, config.clone());
     assert_eq!(effective.max_steps, 100);
@@ -257,6 +260,7 @@ mod tests {
       max_steps: 200,
       max_execution_time_secs: 600,
       strict_template: true,
+      ..Default::default()
     };
     let effective = gate.effective_engine_config(&context, config);
     assert_eq!(effective.max_steps, 50);

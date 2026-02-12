@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::{FileSegment, Segment, VariablePool};
+use crate::core::variable_pool::{FileSegment, FileTransferMethod, Segment, VariablePool};
 use crate::dsl::schema::{EdgeHandle, NodeOutputs, NodeRunResult, VariableMapping, WorkflowNodeExecutionStatus};
 use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
@@ -193,18 +193,8 @@ fn build_outputs(texts: Vec<String>, metas: Vec<Value>, array_output: bool) -> N
 
 fn segment_to_files(seg: &Segment) -> Result<Vec<FileSegment>, NodeError> {
     match seg {
-        Segment::Object(_) => FileSegment::from_segment(seg)
-            .map(|f| vec![f])
-            .ok_or_else(|| NodeError::TypeError("invalid file object".to_string())),
-        Segment::Array(arr) => {
-            let mut files = Vec::new();
-            for item in arr.iter() {
-                let file = FileSegment::from_segment(item)
-                    .ok_or_else(|| NodeError::TypeError("invalid file in array".to_string()))?;
-                files.push(file);
-            }
-            Ok(files)
-        }
+        Segment::File(file) => Ok(vec![file.as_ref().clone()]),
+        Segment::ArrayFile(files) => Ok(files.as_ref().clone()),
         Segment::None => Ok(Vec::new()),
         _ => Err(NodeError::TypeError(
             "document-extractor expects file or array[file]".to_string(),
@@ -226,16 +216,27 @@ async fn process_file(
     let mime_type = detect_mime_type(&file, &content);
 
     let provider = router
-        .route(&mime_type, file.filename.as_deref())
+        .route(
+            &mime_type,
+            if file.name.is_empty() { None } else { Some(file.name.as_str()) },
+        )
         .ok_or_else(|| ExtractError::UnsupportedFormat {
             mime_type: mime_type.clone(),
-            filename: file.filename.clone(),
+            filename: if file.name.is_empty() {
+                None
+            } else {
+                Some(file.name.clone())
+            },
         })?;
 
     let request = ExtractionRequest {
         content,
         mime_type: mime_type.clone(),
-        filename: file.filename.clone(),
+        filename: if file.name.is_empty() {
+            None
+        } else {
+            Some(file.name.clone())
+        },
         output_format,
         options,
     };
@@ -245,7 +246,7 @@ async fn process_file(
         .map_err(|_| ExtractError::Timeout { seconds: timeout_secs })??;
 
     let metadata = serde_json::json!({
-        "filename": file.filename,
+        "filename": if file.name.is_empty() { Value::Null } else { Value::String(file.name.clone()) },
         "mime_type": mime_type,
         "page_count": result.metadata.page_count,
         "sheet_count": result.metadata.sheet_count,
@@ -264,13 +265,11 @@ async fn resolve_file_content(
     timeout_secs: u64,
     context: &RuntimeContext,
 ) -> Result<Vec<u8>, ExtractError> {
-    if let Some(size) = file.size {
-        if size > max_size_bytes as i64 {
-            return Err(ExtractError::FileTooLarge {
-                actual_mb: size as f64 / (1024.0 * 1024.0),
-                max_mb: max_size_bytes / (1024 * 1024),
-            });
-        }
+    if file.size > max_size_bytes {
+        return Err(ExtractError::FileTooLarge {
+            actual_mb: file.size as f64 / (1024.0 * 1024.0),
+            max_mb: max_size_bytes / (1024 * 1024),
+        });
     }
 
     if let Some(url) = &file.url {
@@ -280,7 +279,7 @@ async fn resolve_file_content(
         return download_http(url, max_size_bytes, timeout_secs, context).await;
     }
 
-    if file.transfer_method == "local" || file.transfer_method == "path" {
+    if matches!(file.transfer_method, FileTransferMethod::LocalFile) {
         if let Some(path) = &file.id {
             return read_local_path(path, max_size_bytes).await;
         }
@@ -380,19 +379,17 @@ async fn download_http(
 }
 
 fn detect_mime_type(file: &FileSegment, content: &[u8]) -> String {
-    if let Some(mime) = &file.mime_type {
-        if !mime.is_empty() {
-            return mime.to_string();
-        }
+    if !file.mime_type.is_empty() {
+        return file.mime_type.clone();
     }
 
-    if let Some(name) = &file.filename {
-        if let Some(mime) = mime_guess::from_path(name).first() {
+    if !file.name.is_empty() {
+        if let Some(mime) = mime_guess::from_path(&file.name).first() {
             return mime.essence_str().to_string();
         }
     }
 
-    if let Some(ext) = &file.extension {
+    if let Some(ext) = file.extension() {
         if let Some(mime) = mime_guess::from_ext(ext).first() {
             return mime.essence_str().to_string();
         }
@@ -431,13 +428,12 @@ fn enforce_output_limit(
 }
 
 fn error_metadata(file: &FileSegment, err: &ExtractError) -> Value {
-    let file_size = file.size.map(|s| if s < 0 { 0 } else { s as u64 });
     serde_json::json!({
-        "filename": file.filename,
+        "filename": if file.name.is_empty() { Value::Null } else { Value::String(file.name.clone()) },
         "mime_type": file.mime_type,
         "page_count": Value::Null,
         "sheet_count": Value::Null,
-        "file_size": file_size,
+        "file_size": file.size,
         "encoding": Value::Null,
         "extractor_used": "",
         "error": err.to_string(),
