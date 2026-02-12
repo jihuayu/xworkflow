@@ -453,8 +453,8 @@ mod tests {
 
   #[cfg(feature = "plugin-system")]
   #[test]
-  fn test_real_plugin_gate_debug() {
-    // Just test that gate can be created, we can't test Debug since it's not on the trait
+  fn test_real_plugin_gate_creation() {
+    // Test that RealSchedulerPluginGate can be created successfully
     let _gate = new_scheduler_plugin_gate();
   }
 

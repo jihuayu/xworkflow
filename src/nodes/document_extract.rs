@@ -628,11 +628,14 @@ mod tests {
         let context = RuntimeContext::default();
         
         let result = executor.execute("test", &config, &pool, &context).await;
-        // The exact error type depends on what segment type is returned from the empty pool.
-        // When the variable doesn't exist, VariablePool returns Segment::None, which will fail
-        // in segment_to_files with either TypeError or in the file validation with InputValidationError.
-        // Both outcomes are valid error conditions we're testing for.
+        // When the variable doesn't exist in the pool, VariablePool returns Segment::None.
+        // segment_to_files handles None by returning Ok(Vec::new()),
+        // which then triggers the "no files provided" validation error.
         assert!(result.is_err());
+        if let Err(e) = result {
+            // Just verify an error occurred - the exact type/message may vary
+            let _ = e.to_string();
+        }
     }
 
     #[test]
@@ -716,7 +719,8 @@ mod tests {
         let content = vec![];
         
         let mime = detect_mime_type(&file, &content);
-        // Since mime_type is empty, it will try mime_guess which should work for .pdf
+        // mime_guess may not always detect .pdf extension reliably depending on the system,
+        // so we accept either successful detection or fallback to octet-stream
         assert!(mime.contains("pdf") || mime == "application/octet-stream");
     }
 
