@@ -143,8 +143,8 @@ nodes:
     #[test]
     fn test_parse_toml_empty() {
         let result = parse_dsl("", DslFormat::Toml);
-        // Empty TOML might parse but fail schema validation
-        assert!(result.is_err() || result.is_ok());
+        // Empty TOML should fail schema validation
+        assert!(result.is_err());
     }
 
     #[test]

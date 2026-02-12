@@ -293,17 +293,16 @@ mod tests {
     }
 
     #[test]
-    fn test_jinja_compiled_render_error() {
+    fn test_jinja_compiled_render_with_null() {
         let engine = JinjaTemplateEngine::new();
-        let compiled = engine.compile("{{ items | length }}", None).unwrap();
+        let compiled = engine.compile("Value is {{ items }}", None).unwrap();
         
         let mut vars = HashMap::new();
         vars.insert("items".to_string(), Value::Null);
         
-        // Calling length on null/undefined should error
         let result = compiled.render(&vars);
-        // Actually minijinja might handle this gracefully, so just check it runs
-        assert!(result.is_ok() || result.is_err());
+        // Minijinja renders null as empty string
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -372,9 +371,14 @@ mod tests {
     }
 
     #[test]
-    fn test_compiled_template_drop() {
+    fn test_compiled_template_lifecycle() {
         let engine = JinjaTemplateEngine::new();
         let compiled = engine.compile("Test {{ x }}", None).unwrap();
-        drop(compiled); // Ensure Drop is called without panic
+        let mut vars = HashMap::new();
+        vars.insert("x".to_string(), Value::String("value".into()));
+        // Ensure template can be used before drop
+        assert!(compiled.render(&vars).is_ok());
+        drop(compiled);
+        // Template is now dropped and cleaned up
     }
 }

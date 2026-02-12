@@ -1478,9 +1478,10 @@ mod tests {
             "output_variable": "results"
         });
         
+        // With Continue mode, even if sub-graph has issues, iteration should succeed
         let result = executor.execute("iter_continue", &config, &pool, &context).await;
-        // Should succeed with Continue mode even if sub-graph has issues
-        assert!(result.is_ok() || result.is_err());
+        // The actual result depends on implementation - test just ensures it doesn't panic
+        let _ = result;
     }
 
     #[tokio::test]
@@ -1557,9 +1558,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_operator_invalid_operation() {
-        let _executor = ListOperatorNodeExecutor::new();
-        let _context = RuntimeContext::default();
-        
         // Invalid operation should fail during deserialization
         let config = serde_json::json!({
             "operation": "invalid_op",
