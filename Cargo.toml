@@ -51,6 +51,8 @@ libloading = { version = "0.8", optional = true }
 url = "2.5"
 compact_str = "0.8"
 im = "15"
+mime_guess = "2"
+infer = "0.16"
 
 # JavaScript sandbox engine and WASM runtime moved to plugin crates
 rand = "0.8"
@@ -62,6 +64,7 @@ xworkflow-types = { path = "crates/xworkflow-types" }
 xworkflow-sandbox-js = { path = "crates/xworkflow-sandbox-js", optional = true }
 xworkflow-sandbox-wasm = { path = "crates/xworkflow-sandbox-wasm", optional = true }
 xworkflow-plugin-wasm = { path = "crates/xworkflow-plugin-wasm", optional = true }
+xworkflow-docextract-builtin = { path = "crates/xworkflow-docextract-builtin", optional = true }
 minijinja = { version = "2.0", features = ["builtins", "fuel"], optional = true }
 
 [dev-dependencies]
@@ -92,6 +95,7 @@ builtin-core-nodes = []
 builtin-transform-nodes = ["builtin-template-jinja"]
 builtin-http-node = []
 builtin-code-node = ["builtin-sandbox-js"]
+builtin-docextract-node = ["dep:xworkflow-docextract-builtin"]
 builtin-subgraph-nodes = []
 builtin-llm-node = []
 
@@ -105,6 +109,8 @@ members = [
 	"crates/xworkflow-plugin-wasm",
 	"crates/xworkflow-nodes-code",
 	"crates/xworkflow-nodes-code-dylib",
+"crates/xworkflow-nodes-docextract",
+"crates/xworkflow-docextract-builtin",
 ]
 
 [[bench]]

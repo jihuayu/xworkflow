@@ -450,6 +450,20 @@ pub struct HttpRequestNodeData {
     pub fail_on_error_status: Option<bool>,
 }
 
+// ================================
+// Document Extractor Node Config
+// ================================
+
+/// Configuration for a Document Extractor node.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DocumentExtractorNodeData {
+    pub variables: Vec<VariableMapping>,
+    #[serde(default)]
+    pub output_format: Option<String>,
+    #[serde(default)]
+    pub extract_options: Option<Value>,
+}
+
 /// HTTP method for requests.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]

@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+#[cfg(feature = "builtin-docextract-node")]
+use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::core::runtime_context::RuntimeContext;
@@ -107,7 +109,28 @@ impl NodeExecutorRegistry {
         registry.register("question-classifier", Box::new(StubExecutor("question-classifier")));
         registry.register("parameter-extractor", Box::new(StubExecutor("parameter-extractor")));
         registry.register("tool", Box::new(StubExecutor("tool")));
-        registry.register("document-extractor", Box::new(StubExecutor("document-extractor")));
+        #[cfg(feature = "builtin-docextract-node")]
+        {
+            let provider = Arc::new(
+                xworkflow_docextract_builtin::BuiltinDocExtractProvider::new(),
+            );
+            let router = Arc::new(
+                super::document_extract::ExtractorRouter::from_providers(&[provider]),
+            );
+            registry.register_lazy("document-extractor", Box::new(move || {
+                Box::new(super::document_extract::DocumentExtractorExecutor::new(
+                    router.clone(),
+                ))
+            }));
+        }
+
+        #[cfg(not(feature = "builtin-docextract-node"))]
+        {
+            registry.register(
+                "document-extractor",
+                Box::new(StubExecutor("document-extractor")),
+            );
+        }
         registry.register("agent", Box::new(StubExecutor("agent")));
         registry.register("human-input", Box::new(StubExecutor("human-input")));
         registry
