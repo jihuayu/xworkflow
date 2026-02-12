@@ -386,4 +386,126 @@ mod tests {
     let mut context = WorkflowContext::default();
     gate.customize_context(&mut context);
   }
+
+  #[cfg(feature = "plugin-system")]
+  #[test]
+  fn test_scheduler_plugin_gate_set_plugin_config() {
+    use crate::plugin_system::PluginSystemConfig;
+    
+    let mut gate = new_scheduler_plugin_gate();
+    let config = PluginSystemConfig::default();
+    gate.set_plugin_config(config);
+  }
+
+  #[cfg(feature = "plugin-system")]
+  #[test]
+  fn test_scheduler_plugin_gate_take_plugin_registry_arc() {
+    let mut gate = new_scheduler_plugin_gate();
+    let registry = gate.take_plugin_registry_arc();
+    assert!(registry.is_none());
+  }
+
+  #[cfg(feature = "plugin-system")]
+  #[tokio::test]
+  async fn test_real_plugin_gate_should_init() {
+    use crate::plugin_system::PluginSystemConfig;
+    
+    let mut gate = new_scheduler_plugin_gate();
+    gate.set_plugin_config(PluginSystemConfig::default());
+    
+    let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"end"}]}"#;
+    let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
+    let mut report = crate::dsl::validation::ValidationReport {
+      is_valid: true,
+      diagnostics: vec![],
+    };
+    
+    let result = gate.init_and_extend_validation(&schema, &mut report).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(not(feature = "plugin-system"))]
+  #[tokio::test]
+  async fn test_noop_plugin_gate_init_and_validate() {
+    let mut gate = new_scheduler_plugin_gate();
+    let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"end"}]}"#;
+    let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
+    let mut report = crate::dsl::validation::ValidationReport {
+      is_valid: true,
+      diagnostics: vec![],
+    };
+    let result = gate.init_and_extend_validation(&schema, &mut report).await;
+    assert!(result.is_ok());
+    assert!(report.is_valid);
+  }
+
+  #[cfg(not(feature = "plugin-system"))]
+  #[tokio::test]
+  async fn test_noop_plugin_gate_after_dsl_validation() {
+    let gate = new_scheduler_plugin_gate();
+    let report = crate::dsl::validation::ValidationReport {
+      is_valid: false,
+      diagnostics: vec![],
+    };
+    let result = gate.after_dsl_validation(&report).await;
+    assert!(result.is_ok());
+  }
+
+  #[cfg(feature = "plugin-system")]
+  #[test]
+  fn test_real_plugin_gate_debug() {
+    // Just test that gate can be created, we can't test Debug since it's not on the trait
+    let _gate = new_scheduler_plugin_gate();
+  }
+
+  #[cfg(feature = "plugin-system")]
+  #[test]
+  fn test_real_plugin_gate_apply_node_executors_empty() {
+    let mut gate = new_scheduler_plugin_gate();
+    let mut registry = NodeExecutorRegistry::new();
+    
+    gate.apply_node_executors(&mut registry);
+  }
+
+  #[cfg(feature = "plugin-system")]
+  #[test]
+  fn test_real_plugin_gate_apply_llm_providers_empty() {
+    let gate = new_scheduler_plugin_gate();
+    let mut llm_registry = LlmProviderRegistry::new();
+    
+    gate.apply_llm_providers(&mut llm_registry);
+  }
+
+  #[cfg(feature = "plugin-system")]
+  #[test]
+  fn test_real_plugin_gate_customize_context_empty() {
+    let gate = new_scheduler_plugin_gate();
+    let mut context = WorkflowContext::default();
+    
+    gate.customize_context(&mut context);
+  }
+
+  #[tokio::test]
+  async fn test_init_and_extend_validation_invalid_schema() {
+    let mut gate = new_scheduler_plugin_gate();
+    let json = r#"{"version":"0.1.0","nodes":[],"edges":[]}"#;
+    let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
+    let mut report = crate::dsl::validation::ValidationReport {
+      is_valid: true,
+      diagnostics: vec![],
+    };
+    let result = gate.init_and_extend_validation(&schema, &mut report).await;
+    assert!(result.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_after_dsl_validation_with_invalid_report() {
+    let gate = new_scheduler_plugin_gate();
+    let report = crate::dsl::validation::ValidationReport {
+      is_valid: false,
+      diagnostics: vec![],
+    };
+    let result = gate.after_dsl_validation(&report).await;
+    assert!(result.is_ok());
+  }
 }

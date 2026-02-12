@@ -42,3 +42,39 @@ impl Plugin for JinjaTemplatePlugin {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jinja_template_plugin_new() {
+        let plugin = JinjaTemplatePlugin::new();
+        
+        assert_eq!(plugin.metadata().id, "xworkflow.template-jinja");
+        assert_eq!(plugin.metadata().name, "Jinja2 Template Engine");
+        assert_eq!(plugin.metadata().category, PluginCategory::Bootstrap);
+    }
+
+    #[test]
+    fn test_jinja_template_plugin_metadata() {
+        let plugin = JinjaTemplatePlugin::new();
+        
+        let metadata = plugin.metadata();
+        assert_eq!(metadata.description, "Jinja2 template engine via minijinja");
+    }
+
+    #[test]
+    fn test_jinja_template_plugin_as_any() {
+        let plugin = JinjaTemplatePlugin::new();
+        
+        assert!(plugin.as_any().is::<JinjaTemplatePlugin>());
+    }
+
+    #[test]
+    fn test_jinja_template_plugin_version() {
+        let plugin = JinjaTemplatePlugin::new();
+        
+        assert!(!plugin.metadata().version.is_empty());
+    }
+}
