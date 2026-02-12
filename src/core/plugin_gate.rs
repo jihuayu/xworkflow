@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::dispatcher::EventEmitter;
-use crate::core::variable_pool::{Selector, VariablePool};
+use crate::core::variable_pool::{Selector, Segment, VariablePool};
 use crate::dsl::schema::NodeRunResult;
 use crate::error::WorkflowResult;
 
@@ -46,7 +46,7 @@ pub trait PluginGate: Send + Sync {
     &self,
     node_id: &str,
     selector: &Selector,
-    value: &mut Value,
+    value: &mut Segment,
   ) -> WorkflowResult<()>;
 
   fn mark_pool_dirty(&self);
@@ -94,7 +94,7 @@ impl PluginGate for NoopPluginGate {
     &self,
     _node_id: &str,
     _selector: &Selector,
-    _value: &mut Value,
+    _value: &mut Segment,
   ) -> WorkflowResult<()> {
     Ok(())
   }
@@ -269,7 +269,7 @@ mod real {
       result: &NodeRunResult,
     ) -> WorkflowResult<()> {
       let status = format!("{:?}", result.status);
-      let outputs = result.outputs.ready().clone();
+      let outputs = result.outputs.to_value_map();
       let error = result.error.as_ref().map(|e| e.message.clone());
 
       let _ = self
@@ -292,11 +292,11 @@ mod real {
       &self,
       node_id: &str,
       selector: &Selector,
-      value: &mut Value,
+      value: &mut Segment,
     ) -> WorkflowResult<()> {
       let selector = selector.clone();
       let node_id = node_id.to_string();
-      let original = value.clone();
+      let original = value.to_value();
 
       let results = self
         .execute_hooks(HookPoint::BeforeVariableWrite, || {
@@ -310,7 +310,7 @@ mod real {
         .await?;
 
       if let Some(last) = results.into_iter().rev().find(|v| !v.is_null()) {
-        *value = last;
+        *value = Segment::from_value(&last);
       }
       Ok(())
     }
@@ -375,9 +375,9 @@ mod tests {
   async fn test_noop_plugin_gate_variable_write() {
     let gate = NoopPluginGate;
     let sel = Selector::new("n1", "out");
-    let mut val = serde_json::json!("test");
+    let mut val = Segment::String("test".to_string());
     assert!(gate.apply_before_variable_write_hooks("n1", &sel, &mut val).await.is_ok());
-    assert_eq!(val, serde_json::json!("test"));
+    assert_eq!(val, Segment::String("test".to_string()));
   }
 
   #[test]

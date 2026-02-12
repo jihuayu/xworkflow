@@ -604,7 +604,7 @@ mod tests {
     let gate = new_security_gate(context, pool);
 
     let mut ready = std::collections::HashMap::new();
-    ready.insert("result".to_string(), serde_json::json!("small output"));
+    ready.insert("result".to_string(), crate::core::variable_pool::Segment::String("small output".to_string()));
     let outputs = NodeOutputs::Sync(ready);
     let result = NodeRunResult { outputs, ..Default::default() };
     let enforced = gate.enforce_output_limits("n1", "code", result).await;
@@ -640,7 +640,10 @@ mod tests {
     let gate = new_security_gate(context, pool);
 
     let mut ready = std::collections::HashMap::new();
-    ready.insert("result".to_string(), serde_json::json!("this is a long output that exceeds 10 bytes"));
+    ready.insert(
+      "result".to_string(),
+      crate::core::variable_pool::Segment::String("this is a long output that exceeds 10 bytes".to_string()),
+    );
     let outputs = NodeOutputs::Sync(ready);
     let result = NodeRunResult { outputs, ..Default::default() };
     let enforced = gate.enforce_output_limits("n1", "code", result).await;

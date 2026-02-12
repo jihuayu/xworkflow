@@ -25,7 +25,7 @@ use crate::template::{
 use crate::template::render_jinja2_with_functions;
 use xworkflow_types::template::{TemplateEngine, TemplateFunction};
 #[cfg(feature = "security")]
-use crate::security::network::{validate_url, SecureHttpClientFactory};
+use crate::security::network::validate_url;
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 
@@ -197,7 +197,7 @@ impl TemplateTransformExecutor {
             };
 
             let mut outputs = HashMap::new();
-            outputs.insert("output".to_string(), Value::String(rendered));
+            outputs.insert("output".to_string(), Segment::String(rendered));
 
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
@@ -438,11 +438,11 @@ impl NodeExecutor for VariableAggregatorExecutor {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let mut result_val = Value::Null;
+        let mut result_val = Segment::None;
         for selector in &selectors {
             let val = variable_pool.get_resolved(selector).await;
             if !val.is_none() {
-                result_val = val.to_value();
+                result_val = val;
                 break;
             }
         }
@@ -504,23 +504,26 @@ impl NodeExecutor for VariableAssignerExecutor {
         // Get source value
         let source_value = if let Some(input_sel) = config.get("input_variable_selector") {
             if let Some(sel) = selector_from_value(input_sel) {
-                variable_pool.get_resolved_value(&sel).await
+                variable_pool.get_resolved(&sel).await
             } else {
-                Value::Null
+                Segment::None
             }
         } else if let Some(val) = config.get("value") {
-            val.clone()
+            Segment::from_value(val)
         } else {
-            Value::Null
+            Segment::None
         };
 
         // Note: actual write to pool is done by the dispatcher after execution
         let mut outputs = HashMap::new();
         outputs.insert("output".to_string(), source_value.clone());
-        outputs.insert("write_mode".to_string(), serde_json::to_value(&write_mode).unwrap_or(Value::Null));
+        outputs.insert(
+            "write_mode".to_string(),
+            Segment::from_value(&serde_json::to_value(&write_mode).unwrap_or(Value::Null)),
+        );
         outputs.insert(
             "assigned_variable_selector".to_string(),
-            serde_json::to_value(&assigned_sel).unwrap_or(Value::Null),
+            Segment::from_value(&serde_json::to_value(&assigned_sel).unwrap_or(Value::Null)),
         );
 
         Ok(NodeRunResult {
@@ -545,7 +548,7 @@ impl NodeExecutor for HttpRequestExecutor {
         node_id: &str,
         config: &Value,
         variable_pool: &VariablePool,
-        _context: &RuntimeContext,
+        context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let method = config.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         let url_template = config.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -559,7 +562,7 @@ impl NodeExecutor for HttpRequestExecutor {
         let url = render_template_async_with_config(
             url_template,
             variable_pool,
-            _context.strict_template(),
+            context.strict_template(),
         )
         .await
         .map_err(|e| NodeError::VariableNotFound(e.selector))?;
@@ -573,7 +576,7 @@ impl NodeExecutor for HttpRequestExecutor {
                 let val = render_template_async_with_config(
                     val,
                     variable_pool,
-                    _context.strict_template(),
+                    context.strict_template(),
                 )
                 .await
                 .map_err(|e| NodeError::VariableNotFound(e.selector))?;
@@ -611,39 +614,33 @@ impl NodeExecutor for HttpRequestExecutor {
 
         // Send request
         #[cfg(feature = "security")]
-        let client = {
-            if let Some(policy) = _context
-                .security_policy()
-                .and_then(|p| p.network.as_ref())
-            {
-                if let Err(err) = validate_url(&url, policy).await {
-                    audit_security_event(
-                        _context,
-                        SecurityEventType::SsrfBlocked {
-                            url: url.clone(),
-                            reason: err.to_string(),
-                        },
-                        EventSeverity::Warning,
-                        Some(node_id.to_string()),
-                    )
-                    .await;
-                    return Err(NodeError::InputValidationError(err.to_string()));
-                }
-                SecureHttpClientFactory::build(policy, std::time::Duration::from_secs(timeout))
-                    .map_err(|e| NodeError::HttpError(e.to_string()))?
-            } else {
-                reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(timeout))
-                    .build()
-                    .map_err(|e| NodeError::HttpError(e.to_string()))?
+        if let Some(policy) = context
+            .security_policy()
+            .and_then(|p| p.network.as_ref())
+        {
+            if let Err(err) = validate_url(&url, policy).await {
+                audit_security_event(
+                    context,
+                    SecurityEventType::SsrfBlocked {
+                        url: url.clone(),
+                        reason: err.to_string(),
+                    },
+                    EventSeverity::Warning,
+                    Some(node_id.to_string()),
+                )
+                .await;
+                return Err(NodeError::InputValidationError(err.to_string()));
             }
-        };
+        }
 
-        #[cfg(not(feature = "security"))]
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout))
-            .build()
-            .map_err(|e| NodeError::HttpError(e.to_string()))?;
+        let client = if let Some(provider) = context.http_client() {
+            provider.client_for_context(context)?
+        } else {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout))
+                .build()
+                .map_err(|e| NodeError::HttpError(e.to_string()))?
+        };
 
         let req_builder = match method.to_uppercase().as_str() {
             "POST" => client.post(&url),
@@ -662,7 +659,7 @@ impl NodeExecutor for HttpRequestExecutor {
                     let data = render_template_async_with_config(
                         data,
                         variable_pool,
-                        _context.strict_template(),
+                        context.strict_template(),
                     )
                     .await
                     .map_err(|e| NodeError::VariableNotFound(e.selector))?;
@@ -673,7 +670,7 @@ impl NodeExecutor for HttpRequestExecutor {
                     let data = render_template_async_with_config(
                         data,
                         variable_pool,
-                        _context.strict_template(),
+                        context.strict_template(),
                     )
                     .await
                     .map_err(|e| NodeError::VariableNotFound(e.selector))?;
@@ -688,6 +685,7 @@ impl NodeExecutor for HttpRequestExecutor {
         };
 
         let resp = req_builder
+            .timeout(std::time::Duration::from_secs(timeout))
             .headers(headers)
             .send()
             .await
@@ -698,10 +696,10 @@ impl NodeExecutor for HttpRequestExecutor {
         let resp_headers = format!("{:?}", headers_snapshot);
         #[cfg(feature = "security")]
         let max_response_bytes = {
-            let mut max = _context
+            let mut max = context
                 .resource_group()
                 .map(|g| g.quota.http_max_response_bytes);
-            if let Some(policy) = _context.security_policy() {
+            if let Some(policy) = context.security_policy() {
                 if let Some(limit) = policy.node_limits.get("http-request") {
                     max = Some(max.map(|m| m.min(limit.max_output_bytes)).unwrap_or(limit.max_output_bytes));
                 }
@@ -759,9 +757,9 @@ impl NodeExecutor for HttpRequestExecutor {
         }
 
         let mut outputs = HashMap::new();
-        outputs.insert("status_code".to_string(), serde_json::json!(status_code));
-        outputs.insert("body".to_string(), Value::String(resp_body));
-        outputs.insert("headers".to_string(), Value::String(resp_headers));
+        outputs.insert("status_code".to_string(), Segment::Integer(status_code as i64));
+        outputs.insert("body".to_string(), Segment::String(resp_body));
+        outputs.insert("headers".to_string(), Segment::String(resp_headers));
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -842,6 +840,24 @@ fn is_template_anomaly_error(message: &str) -> bool {
         || msg.contains("loop")
         || msg.contains("recursion")
         || msg.contains("timeout")
+}
+
+#[cfg(feature = "builtin-sandbox-js")]
+fn escape_js_string(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+#[cfg(feature = "builtin-sandbox-js")]
+fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
+    if result_str == "__undefined__" {
+        return Ok(None);
+    }
+    let val: Value = serde_json::from_str(result_str)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+    if val.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(val))
 }
 
 async fn execute_sandbox_with_audit(
@@ -1115,18 +1131,21 @@ impl NodeExecutor for CodeNodeExecutor {
 
                     let mut outputs = HashMap::new();
                     if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
-                        outputs.insert(output_key.to_string(), result.output);
+                        outputs.insert(output_key.to_string(), Segment::from_value(&result.output));
                     } else if let Value::Object(obj) = &result.output {
                         for (k, v) in obj {
-                            outputs.insert(k.clone(), v.clone());
+                            outputs.insert(k.clone(), Segment::from_value(v));
                         }
                     } else {
-                        outputs.insert("result".to_string(), result.output);
+                        outputs.insert("result".to_string(), Segment::from_value(&result.output));
                     }
 
                     return Ok(NodeRunResult {
                         status: WorkflowNodeExecutionStatus::Succeeded,
-                        inputs: resolved_inputs.into_iter().map(|(k, v)| (k, v)).collect(),
+                        inputs: resolved_inputs
+                            .into_iter()
+                            .map(|(k, v)| (k, Segment::from_value(&v)))
+                            .collect(),
                         outputs: NodeOutputs::Sync(outputs),
                         edge_source_handle: EdgeHandle::Default,
                         ..Default::default()
@@ -1135,13 +1154,13 @@ impl NodeExecutor for CodeNodeExecutor {
 
                 let mut outputs = HashMap::new();
                 if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
-                    outputs.insert(output_key.to_string(), initial_output.clone());
+                    outputs.insert(output_key.to_string(), Segment::from_value(&initial_output));
                 } else if let Value::Object(obj) = &initial_output {
                     for (k, v) in obj {
-                        outputs.insert(k.clone(), v.clone());
+                        outputs.insert(k.clone(), Segment::from_value(v));
                     }
                 } else {
-                    outputs.insert("result".to_string(), initial_output.clone());
+                    outputs.insert("result".to_string(), Segment::from_value(&initial_output));
                 }
 
                 let (output_stream, writer) = SegmentStream::channel();
@@ -1226,7 +1245,10 @@ impl NodeExecutor for CodeNodeExecutor {
 
                 return Ok(NodeRunResult {
                     status: WorkflowNodeExecutionStatus::Succeeded,
-                    inputs: inputs_map.into_iter().map(|(k, v)| (k, v)).collect(),
+                    inputs: inputs_map
+                        .into_iter()
+                        .map(|(k, v)| (k, Segment::from_value(&v)))
+                        .collect(),
                     outputs: NodeOutputs::Stream {
                         ready: outputs,
                         streams: stream_outputs,
@@ -1267,18 +1289,21 @@ impl NodeExecutor for CodeNodeExecutor {
 
             let mut outputs = HashMap::new();
             if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
-                outputs.insert(output_key.to_string(), result.output);
+                outputs.insert(output_key.to_string(), Segment::from_value(&result.output));
             } else if let Value::Object(obj) = &result.output {
                 for (k, v) in obj {
-                    outputs.insert(k.clone(), v.clone());
+                    outputs.insert(k.clone(), Segment::from_value(v));
                 }
             } else {
-                outputs.insert("result".to_string(), result.output);
+                outputs.insert("result".to_string(), Segment::from_value(&result.output));
             }
 
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
-                inputs: resolved_inputs.into_iter().map(|(k, v)| (k, v)).collect(),
+                inputs: resolved_inputs
+                    .into_iter()
+                    .map(|(k, v)| (k, Segment::from_value(&v)))
+                    .collect(),
                 outputs: NodeOutputs::Sync(outputs),
                 edge_source_handle: EdgeHandle::Default,
                 ..Default::default()
@@ -1304,20 +1329,20 @@ impl NodeExecutor for CodeNodeExecutor {
         // Convert output to HashMap
         let mut outputs = HashMap::new();
         if let Some(output_key) = config.get("output_variable").and_then(|v| v.as_str()) {
-            outputs.insert(output_key.to_string(), result.output);
+            outputs.insert(output_key.to_string(), Segment::from_value(&result.output));
         } else if let Value::Object(obj) = &result.output {
             for (k, v) in obj {
-                outputs.insert(k.clone(), v.clone());
+                outputs.insert(k.clone(), Segment::from_value(v));
             }
         } else {
-            outputs.insert("result".to_string(), result.output);
+            outputs.insert("result".to_string(), Segment::from_value(&result.output));
         }
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
             inputs: inputs_map
                 .into_iter()
-                .map(|(k, v)| (k, v))
+                .map(|(k, v)| (k, Segment::from_value(&v)))
                 .collect(),
             outputs: NodeOutputs::Sync(outputs),
             edge_source_handle: EdgeHandle::Default,
@@ -1350,7 +1375,7 @@ mod tests {
         let result = executor.execute("tt1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("output"),
-            Some(&Value::String("Hello World!".into()))
+            Some(&Segment::String("Hello World!".into()))
         );
     }
 
@@ -1372,7 +1397,7 @@ mod tests {
         let result = executor.execute("agg1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("output"),
-            Some(&Value::String("found".into()))
+            Some(&Segment::String("found".into()))
         );
     }
 
@@ -1386,7 +1411,7 @@ mod tests {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("agg1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&Value::Null));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::None));
     }
 
     #[tokio::test]
@@ -1408,7 +1433,7 @@ mod tests {
         let result = executor.execute("va1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("output"),
-            Some(&Value::String("data".into()))
+            Some(&Segment::String("data".into()))
         );
     }
 
@@ -1426,7 +1451,7 @@ mod tests {
         let result = executor.execute("code1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("result"),
-            Some(&Value::Number(serde_json::Number::from(42)))
+            Some(&Segment::Integer(42))
         );
     }
 
@@ -1447,7 +1472,7 @@ mod tests {
         let result = executor.execute("code2", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("doubled"),
-            Some(&Value::Number(serde_json::Number::from(20)))
+            Some(&Segment::Integer(20))
         );
     }
 
@@ -1503,7 +1528,7 @@ mod tests {
         let result = executor.execute("code_stream", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("result"),
-            Some(&Value::String("hi!".into()))
+            Some(&Segment::String("hi!".into()))
         );
     }
 
@@ -1567,7 +1592,7 @@ mod tests {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("va1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&Value::String("found".into())));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::String("found".into())));
     }
 
     #[tokio::test]
@@ -1580,7 +1605,7 @@ mod tests {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("va2", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&Value::Null));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::None));
     }
 
     #[tokio::test]
@@ -1591,7 +1616,7 @@ mod tests {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("va3", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&Value::Null));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::None));
     }
 
     #[tokio::test]
@@ -1603,7 +1628,7 @@ mod tests {
         let executor = LegacyVariableAggregatorExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("lva", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&serde_json::json!(99)));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::Integer(99)));
     }
 
     #[tokio::test]
@@ -1619,7 +1644,7 @@ mod tests {
         let executor = VariableAssignerExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("assign1", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&Value::String("hello".into())));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::String("hello".into())));
     }
 
     #[tokio::test]
@@ -1663,7 +1688,7 @@ mod tests {
         let executor = VariableAssignerExecutor;
         let context = RuntimeContext::default();
         let result = executor.execute("assign4", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("output"), Some(&serde_json::json!(42)));
+        assert_eq!(result.outputs.ready().get("output"), Some(&Segment::Integer(42)));
     }
 
     #[cfg(feature = "builtin-template-jinja")]
@@ -1680,7 +1705,7 @@ mod tests {
         let result = executor.execute("tt1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("output"),
-            Some(&Value::String("Hello World!".into()))
+            Some(&Segment::String("Hello World!".into()))
         );
     }
 
@@ -1704,7 +1729,7 @@ mod tests {
         let result = executor.execute("tt2", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("output"),
-            Some(&Value::String("John Doe".into()))
+            Some(&Segment::String("John Doe".into()))
         );
     }
 
@@ -1759,8 +1784,8 @@ mod tests {
         let context = RuntimeContext::default();
         let result = executor.execute("code_obj", &config, &pool, &context).await.unwrap();
         let obj = result.outputs.ready().get("obj").unwrap();
-        assert_eq!(obj.get("a"), Some(&serde_json::json!(1)));
-        assert_eq!(obj.get("b"), Some(&Value::String("x".into())));
+        assert_eq!(obj.get("a"), Some(&Segment::Integer(1)));
+        assert_eq!(obj.get("b"), Some(&Segment::String("x".into())));
     }
 
     #[cfg(feature = "builtin-sandbox-js")]
@@ -2190,7 +2215,7 @@ mod tests {
         let executor = CodeNodeExecutor::new();
         let context = RuntimeContext::default();
         let result = executor.execute("code_inp", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("doubled"), Some(&serde_json::json!(20)));
+        assert_eq!(result.outputs.ready().get("doubled"), Some(&Segment::Integer(20)));
     }
 
     #[cfg(feature = "builtin-sandbox-js")]
@@ -2264,7 +2289,7 @@ mod tests {
         let result = executor.execute("tt_int", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("output"),
-            Some(&Value::String("Count is 42".into()))
+            Some(&Segment::String("Count is 42".into()))
         );
     }
 

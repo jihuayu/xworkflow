@@ -15,7 +15,7 @@ use im::HashMap as ImHashMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::ops::{Deref, Index};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use tokio::sync::{Notify, RwLock};
@@ -912,6 +912,50 @@ impl Segment {
         }
     }
 
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Segment::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Segment::Integer(i) => Some(*i),
+            Segment::Float(f) => Some(*f as i64),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        self.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None })
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Segment::Boolean(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<Segment>> {
+        match self {
+            Segment::Array(items) => Some(items.deref()),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&HashMap<String, Segment>> {
+        match self {
+            Segment::Object(map) => Some(map.deref()),
+            _ => None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Segment> {
+        self.as_object().and_then(|m| m.get(key))
+    }
+
     /// Return a human-readable display string, resolving streams if needed.
     pub fn to_display_string(&self) -> String {
         match self {
@@ -989,6 +1033,79 @@ impl PartialEq for Segment {
             }
             (Segment::ArrayString(a), Segment::ArrayString(b)) => a == b,
             _ => self.snapshot_to_value() == other.snapshot_to_value(),
+        }
+    }
+}
+
+impl PartialEq<Value> for Segment {
+    fn eq(&self, other: &Value) -> bool {
+        self.snapshot_to_value() == *other
+    }
+}
+
+impl PartialEq<&Value> for Segment {
+    fn eq(&self, other: &&Value) -> bool {
+        self.snapshot_to_value() == **other
+    }
+}
+
+impl PartialEq<Segment> for Value {
+    fn eq(&self, other: &Segment) -> bool {
+        *self == other.snapshot_to_value()
+    }
+}
+
+impl PartialEq<Segment> for &Value {
+    fn eq(&self, other: &Segment) -> bool {
+        **self == other.snapshot_to_value()
+    }
+}
+
+impl PartialEq<i32> for Segment {
+    fn eq(&self, other: &i32) -> bool {
+        self.as_i64() == Some(*other as i64)
+    }
+}
+
+impl PartialEq<i64> for Segment {
+    fn eq(&self, other: &i64) -> bool {
+        self.as_i64() == Some(*other)
+    }
+}
+
+impl PartialEq<u64> for Segment {
+    fn eq(&self, other: &u64) -> bool {
+        self.as_u64() == Some(*other)
+    }
+}
+
+impl PartialEq<usize> for Segment {
+    fn eq(&self, other: &usize) -> bool {
+        self.as_u64() == Some(*other as u64)
+    }
+}
+
+impl PartialEq<bool> for Segment {
+    fn eq(&self, other: &bool) -> bool {
+        self.as_bool() == Some(*other)
+    }
+}
+
+impl PartialEq<&str> for Segment {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == Some(*other)
+    }
+}
+
+impl Index<&str> for Segment {
+    type Output = Segment;
+
+    fn index(&self, index: &str) -> &Self::Output {
+        match self {
+            Segment::Object(map) => map
+                .get(index)
+                .unwrap_or_else(|| panic!("key '{}' not found in Segment::Object", index)),
+            _ => panic!("cannot index Segment with key '{}': not an object", index),
         }
     }
 }
@@ -1162,7 +1279,7 @@ impl VariablePool {
     }
 
     /// Set node outputs as (node_id, key) -> value
-    pub fn set_node_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Value>) {
+    pub fn set_node_value_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Value>) {
         for (key, val) in outputs {
             let seg = Segment::from_value(val);
             self.variables.insert(Self::make_key(node_id, key), seg);
@@ -1170,7 +1287,7 @@ impl VariablePool {
     }
 
     /// Set node outputs from Segment map
-    pub fn set_node_segment_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Segment>) {
+    pub fn set_node_outputs(&mut self, node_id: &str, outputs: &HashMap<String, Segment>) {
         for (key, val) in outputs {
             self.variables
                 .insert(Self::make_key(node_id, key), val.clone());
@@ -1300,7 +1417,7 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert("text".to_string(), Value::String("result".to_string()));
         outputs.insert("count".to_string(), serde_json::json!(42));
-        pool.set_node_outputs("node_llm", &outputs);
+        pool.set_node_value_outputs("node_llm", &outputs);
 
         let text = pool.get(&Selector::new("node_llm", "text"));
         assert!(matches!(text, Segment::String(s) if s == "result"));
@@ -1638,7 +1755,7 @@ mod tests {
         let mut outputs = HashMap::new();
         outputs.insert("x".to_string(), Segment::Integer(10));
         outputs.insert("y".to_string(), Segment::String("hi".into()));
-        pool.set_node_segment_outputs("node1", &outputs);
+        pool.set_node_outputs("node1", &outputs);
         assert_eq!(pool.get(&Selector::new("node1", "x")), Segment::Integer(10));
         assert_eq!(pool.get(&Selector::new("node1", "y")), Segment::String("hi".into()));
     }

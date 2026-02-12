@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use crate::core::event_bus::GraphEngineEvent;
+use crate::core::http_client::HttpClientProvider;
 use crate::core::runtime_group::RuntimeGroup;
 use crate::core::sub_graph_runner::SubGraphRunner;
 use crate::llm::LlmProviderRegistry;
@@ -106,6 +107,10 @@ impl WorkflowContext {
 
     pub fn llm_provider_registry(&self) -> &Arc<LlmProviderRegistry> {
         &self.runtime_group.llm_provider_registry
+    }
+
+    pub fn http_client(&self) -> Option<&Arc<HttpClientProvider>> {
+        self.runtime_group.http_client_provider.as_ref()
     }
 
     pub fn strict_template(&self) -> bool {

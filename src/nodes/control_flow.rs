@@ -45,16 +45,16 @@ impl NodeExecutor for StartNodeExecutor {
                 for var in &vars {
                     let sel = Selector::new(node_id, var.variable.clone());
                     let val = variable_pool.get(&sel);
-                    outputs.insert(var.variable.clone(), val.to_value());
+                    outputs.insert(var.variable.clone(), val);
                 }
             }
         }
 
         // System variables
         let sys_query = variable_pool.get(&Selector::new("sys", "query"));
-        outputs.insert("sys.query".to_string(), sys_query.to_value());
+        outputs.insert("sys.query".to_string(), sys_query);
         let sys_files = variable_pool.get(&Selector::new("sys", "files"));
-        outputs.insert("sys.files".to_string(), sys_files.to_value());
+        outputs.insert("sys.files".to_string(), sys_files);
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -79,13 +79,13 @@ impl NodeExecutor for StartNodeExecutor {
         for var in &config.parsed.variables {
             let sel = Selector::new(node_id, var.variable.clone());
             let val = variable_pool.get(&sel);
-            outputs.insert(var.variable.clone(), val.to_value());
+            outputs.insert(var.variable.clone(), val);
         }
 
         let sys_query = variable_pool.get(&Selector::new("sys", "query"));
-        outputs.insert("sys.query".to_string(), sys_query.to_value());
+        outputs.insert("sys.query".to_string(), sys_query);
         let sys_files = variable_pool.get(&Selector::new("sys", "files"));
-        outputs.insert("sys.files".to_string(), sys_files.to_value());
+        outputs.insert("sys.files".to_string(), sys_files);
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -125,18 +125,16 @@ impl NodeExecutor for EndNodeExecutor {
                     if !variable.is_empty() {
                         if let Some(sel) = selector {
                             let val = variable_pool.get_resolved(&sel).await;
-                            let json_val = val.to_value();
-                            outputs.insert(variable.to_string(), json_val.clone());
-                            inputs.insert(variable.to_string(), json_val);
+                            outputs.insert(variable.to_string(), val.clone());
+                            inputs.insert(variable.to_string(), val);
                         }
                     }
                 }
             } else if let Ok(output_vars) = serde_json::from_value::<Vec<OutputVariable>>(outputs_val.clone()) {
                 for ov in &output_vars {
                     let val = variable_pool.get_resolved(&ov.value_selector).await;
-                    let json_val = val.to_value();
-                    outputs.insert(ov.variable.clone(), json_val.clone());
-                    inputs.insert(ov.variable.clone(), json_val);
+                    outputs.insert(ov.variable.clone(), val.clone());
+                    inputs.insert(ov.variable.clone(), val);
                 }
             }
         }
@@ -165,9 +163,8 @@ impl NodeExecutor for EndNodeExecutor {
         let mut inputs = HashMap::new();
         for ov in &config.parsed.outputs {
             let val = variable_pool.get_resolved(&ov.value_selector).await;
-            let json_val = val.to_value();
-            outputs.insert(ov.variable.clone(), json_val.clone());
-            inputs.insert(ov.variable.clone(), json_val);
+            outputs.insert(ov.variable.clone(), val.clone());
+            inputs.insert(ov.variable.clone(), val);
         }
 
         Ok(NodeRunResult {
@@ -233,7 +230,7 @@ impl NodeExecutor for AnswerNodeExecutor {
         if stream_vars.is_empty() {
             let rendered = render_answer_with_map(answer_template, &static_values);
             let mut outputs = HashMap::new();
-            outputs.insert("answer".to_string(), Value::String(rendered));
+            outputs.insert("answer".to_string(), Segment::String(rendered));
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
                 outputs: NodeOutputs::Sync(outputs),
@@ -356,7 +353,7 @@ impl NodeExecutor for AnswerNodeExecutor {
         if stream_vars.is_empty() {
             let rendered = render_answer_with_map(answer_template, &static_values);
             let mut outputs = HashMap::new();
-            outputs.insert("answer".to_string(), Value::String(rendered));
+            outputs.insert("answer".to_string(), Segment::String(rendered));
             return Ok(NodeRunResult {
                 status: WorkflowNodeExecutionStatus::Succeeded,
                 outputs: NodeOutputs::Sync(outputs),
@@ -483,7 +480,7 @@ impl NodeExecutor for IfElseNodeExecutor {
 
         let selected_case = selected.unwrap_or_else(|| ELSE_BRANCH_HANDLE.to_string());
         let mut outputs = HashMap::new();
-        outputs.insert("selected_case".to_string(), Value::String(selected_case.clone()));
+        outputs.insert("selected_case".to_string(), Segment::String(selected_case.clone()));
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -542,7 +539,7 @@ impl NodeExecutor for IfElseNodeExecutor {
 
         let selected_case = selected.unwrap_or_else(|| ELSE_BRANCH_HANDLE.to_string());
         let mut outputs = HashMap::new();
-        outputs.insert("selected_case".to_string(), Value::String(selected_case.clone()));
+        outputs.insert("selected_case".to_string(), Segment::String(selected_case.clone()));
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -579,11 +576,11 @@ mod tests {
         let result = executor.execute("start1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("query"),
-            Some(&Value::String("hello".into()))
+            Some(&Segment::String("hello".into()))
         );
         assert_eq!(
             result.outputs.ready().get("sys.query"),
-            Some(&Value::String("sys_query".into()))
+            Some(&Segment::String("sys_query".into()))
         );
     }
 
@@ -604,7 +601,7 @@ mod tests {
         let result = executor.execute("end1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("result"),
-            Some(&Value::String("result text".into()))
+            Some(&Segment::String("result text".into()))
         );
     }
 
@@ -625,7 +622,7 @@ mod tests {
         let result = executor.execute("ans1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("answer"),
-            Some(&Value::String("Hello Alice!".into()))
+            Some(&Segment::String("Hello Alice!".into()))
         );
     }
 

@@ -75,6 +75,8 @@ pub use crate::core::{
 	SegmentType,
 	VariablePool,
 	WorkflowDispatcher,
+	HttpClientProvider,
+	HttpPoolConfig,
 	RuntimeContext,
 	RuntimeGroup,
 	RuntimeGroupBuilder,

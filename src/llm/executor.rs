@@ -273,11 +273,13 @@ impl NodeExecutor for LlmNodeExecutor {
             .map_err(NodeError::from)?;
 
         let mut outputs = HashMap::new();
-        outputs.insert("text".to_string(), Value::String(response.content.clone()));
+        outputs.insert("text".to_string(), Segment::String(response.content.clone()));
         outputs.insert(
             "usage".to_string(),
-            serde_json::to_value(&response.usage)
-                .map_err(|e| NodeError::SerializationError(e.to_string()))?,
+            Segment::from_value(
+                &serde_json::to_value(&response.usage)
+                    .map_err(|e| NodeError::SerializationError(e.to_string()))?,
+            ),
         );
 
         let mut metadata = HashMap::new();
@@ -485,7 +487,7 @@ mod tests {
         let result = executor.execute("llm1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
-            Some(&Value::String("hello".into()))
+            Some(&Segment::String("hello".into()))
         );
     }
 
@@ -728,7 +730,7 @@ mod tests {
         let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
-            Some(&Value::String("hello".into()))
+            Some(&Segment::String("hello".into()))
         );
     }
 
@@ -783,7 +785,7 @@ mod tests {
         let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
-            Some(&Value::String("hello".into()))
+            Some(&Segment::String("hello".into()))
         );
     }
 

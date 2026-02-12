@@ -168,14 +168,19 @@ fn build_outputs(texts: Vec<String>, metas: Vec<Value>, array_output: bool) -> N
     if array_output || texts.len() > 1 {
         outputs.insert(
             "text".to_string(),
-            Value::Array(texts.into_iter().map(Value::String).collect()),
+            Segment::Array(Arc::new(crate::core::variable_pool::SegmentArray::new(
+                texts.into_iter().map(Segment::String).collect(),
+            ))),
         );
-        outputs.insert("metadata".to_string(), Value::Array(metas));
+        outputs.insert(
+            "metadata".to_string(),
+            Segment::from_value(&Value::Array(metas)),
+        );
     } else {
         let text = texts.into_iter().next().unwrap_or_default();
         let meta = metas.into_iter().next().unwrap_or(Value::Null);
-        outputs.insert("text".to_string(), Value::String(text));
-        outputs.insert("metadata".to_string(), meta);
+        outputs.insert("text".to_string(), Segment::String(text));
+        outputs.insert("metadata".to_string(), Segment::from_value(&meta));
     }
 
     NodeRunResult {

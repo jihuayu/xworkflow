@@ -17,6 +17,7 @@
 pub mod event_bus;
 pub mod variable_pool;
 pub mod dispatcher;
+pub mod http_client;
 pub mod runtime_group;
 pub mod workflow_context;
 pub mod runtime_context;
@@ -40,6 +41,7 @@ pub use variable_pool::{
 };
 pub use event_bus::{GraphEngineEvent, PauseReason};
 pub use dispatcher::WorkflowDispatcher;
+pub use http_client::{HttpClientProvider, HttpPoolConfig};
 pub use runtime_group::{DefaultSandboxPool, RuntimeGroup, RuntimeGroupBuilder, SandboxPool};
 pub use workflow_context::{
 	FakeIdGenerator,

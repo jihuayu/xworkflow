@@ -76,6 +76,15 @@ pub struct SecurityPolicy {
 }
 
 impl SecurityPolicy {
+    pub fn network_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.network.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn permissive() -> Self {
         Self {
             level: SecurityLevel::Permissive,
