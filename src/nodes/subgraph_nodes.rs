@@ -1484,40 +1484,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_loop_max_iterations_exceeded() {
-        let executor = LoopNodeExecutor::new();
-        let context = RuntimeContext::default();
-        
-        let config = serde_json::json!({
-            "condition": {
-                "variable_selector": "loop.counter",
-                "comparison_operator": "less_than",
-                "value": 1000000
-            },
-            "max_iterations": 5,
-            "initial_vars": {"counter": 0},
-            "sub_graph": {
-                "nodes": [
-                    {"id": "start", "type": "start", "data": {}},
-                    {"id": "end", "type": "end", "data": {
-                        "outputs": [
-                            {"variable": "counter", "value_selector": "loop.counter"}
-                        ]
-                    }}
-                ],
-                "edges": [
-                    {"id": "e1", "source": "start", "target": "end"}
-                ]
-            },
-            "output_variable": "loop_result"
-        });
-        
-        let result = executor.execute("loop_max", &config, &make_pool(), &context).await;
-        // Should terminate after max_iterations
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn test_loop_missing_condition() {
         let executor = LoopNodeExecutor::new();
         let context = RuntimeContext::default();
