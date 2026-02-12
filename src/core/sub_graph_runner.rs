@@ -12,7 +12,6 @@ use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::graph::types::{EdgeTraversalState, Graph, GraphEdge, GraphNode};
-use crate::nodes::executor::NodeExecutorRegistry;
 use crate::nodes::subgraph::{SubGraphDefinition, SubGraphError, SubGraphNode};
 use crate::nodes::utils::selector_from_str;
 use std::sync::atomic::AtomicBool;
@@ -60,10 +59,7 @@ async fn execute_sub_graph_default(
     inject_scope_vars(&mut scoped_pool, scope_vars)?;
 
     let graph = build_sub_graph(sub_graph)?;
-    let registry = context
-        .node_executor_registry()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(NodeExecutorRegistry::new()));
+    let registry = Arc::clone(context.node_executor_registry());
     let (tx, _rx) = mpsc::channel(16);
     let active = Arc::new(AtomicBool::new(false));
     let emitter = EventEmitter::new(tx.clone(), active);

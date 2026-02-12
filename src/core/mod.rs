@@ -6,7 +6,9 @@
 //!   `SegmentStream`) used including streaming support.
 //! - [`dispatcher`] — The main workflow dispatcher that drives DAG-based graph execution.
 //! - [`event_bus`] — Event types emitted during workflow execution for observability.
-//! - [`runtime_context`] — Runtime context providing time, ID generation, and extension points.
+//! - [`runtime_group`] — Shared runtime resources for multiple workflows.
+//! - [`workflow_context`] — Per-workflow execution context referencing a runtime group.
+//! - [`runtime_context`] — Compatibility shim for legacy `RuntimeContext` usage.
 //! - [`sub_graph_runner`] — Sub-graph execution for iteration/loop containers.
 //! - [`debug`] — Interactive debugger gate/hook traits and implementations.
 //! - [`security_gate`] — Security enforcement gate applied before/after node execution.
@@ -15,6 +17,8 @@
 pub mod event_bus;
 pub mod variable_pool;
 pub mod dispatcher;
+pub mod runtime_group;
+pub mod workflow_context;
 pub mod runtime_context;
 pub mod sub_graph_runner;
 pub mod debug;
@@ -36,7 +40,17 @@ pub use variable_pool::{
 };
 pub use event_bus::{GraphEngineEvent, PauseReason};
 pub use dispatcher::WorkflowDispatcher;
-pub use runtime_context::{RuntimeContext, TimeProvider, IdGenerator, RealTimeProvider, RealIdGenerator, FakeTimeProvider, FakeIdGenerator};
+pub use runtime_group::{DefaultSandboxPool, RuntimeGroup, RuntimeGroupBuilder, SandboxPool};
+pub use workflow_context::{
+	FakeIdGenerator,
+	FakeTimeProvider,
+	IdGenerator,
+	RealIdGenerator,
+	RealTimeProvider,
+	TimeProvider,
+	WorkflowContext,
+};
+pub use runtime_context::RuntimeContext;
 pub use sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 pub use debug::{
 	DebugAction,

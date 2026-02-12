@@ -3,7 +3,7 @@ use async_trait::async_trait;
 #[cfg(feature = "plugin-system")]
 use std::sync::Arc;
 
-use crate::core::runtime_context::RuntimeContext;
+use crate::core::workflow_context::WorkflowContext;
 use crate::dsl::schema::WorkflowSchema;
 use crate::dsl::validation::ValidationReport;
 use crate::error::WorkflowError;
@@ -24,7 +24,7 @@ pub trait SchedulerPluginGate: Send {
 
   fn apply_llm_providers(&self, llm_registry: &mut LlmProviderRegistry);
 
-  fn customize_context(&self, context: &mut RuntimeContext);
+  fn customize_context(&self, context: &mut WorkflowContext);
 
   #[cfg(feature = "plugin-system")]
   fn take_plugin_registry_arc(&mut self) -> Option<Arc<crate::plugin_system::PluginRegistry>>;
@@ -63,7 +63,7 @@ impl SchedulerPluginGate for NoopSchedulerPluginGate {
 
   fn apply_llm_providers(&self, _llm_registry: &mut LlmProviderRegistry) {}
 
-  fn customize_context(&self, _context: &mut RuntimeContext) {}
+  fn customize_context(&self, _context: &mut WorkflowContext) {}
 }
 
 #[cfg(feature = "plugin-system")]
@@ -289,7 +289,7 @@ mod real {
       }
     }
 
-    fn customize_context(&self, context: &mut RuntimeContext) {
+    fn customize_context(&self, context: &mut WorkflowContext) {
       if let Some(reg) = &self.plugin_registry {
         if let Some(tp) = reg.custom_time_provider() {
           context.time_provider = tp;
@@ -298,8 +298,9 @@ mod real {
           context.id_generator = id_gen;
         }
         if !reg.template_functions().is_empty() {
-          context.extensions.template_functions =
-            Some(Arc::new(reg.template_functions().clone()));
+          context.update_runtime_group(|group| {
+            group.template_functions = Some(Arc::new(reg.template_functions().clone()));
+          });
         }
       }
     }
@@ -382,7 +383,7 @@ mod tests {
   #[test]
   fn test_scheduler_plugin_gate_customize_context() {
     let gate = new_scheduler_plugin_gate();
-    let mut context = RuntimeContext::default();
+    let mut context = WorkflowContext::default();
     gate.customize_context(&mut context);
   }
 }

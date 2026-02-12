@@ -20,9 +20,8 @@ use security_gate::{new_scheduler_security_gate, SchedulerSecurityGate};
 use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
-use crate::core::runtime_context::RuntimeContext;
-#[cfg(feature = "security")]
-use crate::core::runtime_context::SecurityContext;
+use crate::core::runtime_group::RuntimeGroup;
+use crate::core::workflow_context::WorkflowContext;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 use crate::core::variable_pool::{Segment, SegmentType, VariablePool};
 use crate::dsl::schema::{ErrorHandlingMode, StartVariable, WorkflowSchema};
@@ -104,7 +103,7 @@ pub struct WorkflowRunner {
   environment_vars: HashMap<String, Value>,
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
-  context: RuntimeContext,
+  context: WorkflowContext,
   plugin_gate: Box<dyn SchedulerPluginGate>,
   security_gate: Arc<dyn SchedulerSecurityGate>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
@@ -121,7 +120,7 @@ impl WorkflowRunner {
       environment_vars: HashMap::new(),
       conversation_vars: HashMap::new(),
       config: EngineConfig::default(),
-      context: RuntimeContext::default(),
+      context: WorkflowContext::new(Arc::new(RuntimeGroup::default())),
       plugin_gate: new_scheduler_plugin_gate(),
       security_gate: new_scheduler_security_gate(),
       llm_provider_registry: None,
@@ -243,7 +242,7 @@ pub struct WorkflowRunnerBuilder {
   environment_vars: HashMap<String, Value>,
   conversation_vars: HashMap<String, Value>,
   config: EngineConfig,
-  context: RuntimeContext,
+  context: WorkflowContext,
   plugin_gate: Box<dyn SchedulerPluginGate>,
   security_gate: Arc<dyn SchedulerSecurityGate>,
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
@@ -288,67 +287,56 @@ impl WorkflowRunnerBuilder {
     self
   }
 
-  /// Set a custom runtime context.
-  pub fn context(mut self, context: RuntimeContext) -> Self {
+  /// Set a custom workflow context.
+  pub fn context(mut self, context: WorkflowContext) -> Self {
     self.context = context;
     self
   }
 
-  #[cfg(feature = "security")]
-  fn ensure_security_context(&mut self) -> &mut SecurityContext {
-    if self.context.extensions.security.is_none() {
-      self.context.extensions.security = Some(SecurityContext {
-        resource_group: None,
-        security_policy: None,
-        resource_governor: None,
-        credential_provider: None,
-        audit_logger: None,
-      });
-    }
-    self.context.extensions.security.as_mut().unwrap()
+  /// Set a shared runtime group and reset the workflow context.
+  pub fn runtime_group(mut self, runtime_group: Arc<RuntimeGroup>) -> Self {
+    self.context = WorkflowContext::new(runtime_group);
+    self
   }
 
   /// Set a custom sub-graph runner for iteration/loop nodes.
   pub fn sub_graph_runner(mut self, runner: Arc<dyn SubGraphRunner>) -> Self {
-    self.context.extensions.sub_graph_runner = Some(runner);
+    self.context = self.context.with_sub_graph_runner(runner);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn security_policy(mut self, policy: SecurityPolicy) -> Self {
-    let security = self.ensure_security_context();
-    if security.audit_logger.is_none() {
-      security.audit_logger = policy.audit_logger.clone();
+    if self.context.audit_logger().is_none() {
+      if let Some(logger) = policy.audit_logger.clone() {
+        self.context.set_audit_logger(logger);
+      }
     }
-    security.security_policy = Some(policy);
+    self.context.set_security_policy(policy);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn resource_group(mut self, group: ResourceGroup) -> Self {
-    let security = self.ensure_security_context();
-    security.resource_group = Some(group);
+    self.context.set_resource_group(group);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn resource_governor(mut self, governor: Arc<dyn ResourceGovernor>) -> Self {
-    let security = self.ensure_security_context();
-    security.resource_governor = Some(governor);
+    self.context.set_resource_governor(governor);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn credential_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
-    let security = self.ensure_security_context();
-    security.credential_provider = Some(provider);
+    self.context.set_credential_provider(provider);
     self
   }
 
   #[cfg(feature = "security")]
   pub fn audit_logger(mut self, logger: Arc<dyn AuditLogger>) -> Self {
-    let security = self.ensure_security_context();
-    security.audit_logger = Some(logger);
+    self.context.set_audit_logger(logger);
     self
   }
 
@@ -464,10 +452,11 @@ impl WorkflowRunnerBuilder {
     builder.plugin_gate.apply_llm_providers(&mut llm_registry);
 
     let llm_registry = Arc::new(llm_registry);
-    registry.set_llm_provider_registry(llm_registry);
+    registry.set_llm_provider_registry(Arc::clone(&llm_registry));
 
     let registry = Arc::new(registry);
-    builder.context.extensions.node_executor_registry = Some(Arc::clone(&registry));
+    builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));
+    builder.context = builder.context.with_llm_provider_registry(Arc::clone(&llm_registry));
 
 
     let (tx, mut rx) = mpsc::channel(256);
@@ -477,9 +466,10 @@ impl WorkflowRunnerBuilder {
     let config = builder
       .security_gate
       .effective_engine_config(&builder.context, builder.config);
-    builder.context.extensions.strict_template = config.strict_template;
+    builder.context.strict_template = config.strict_template;
 
     let workflow_id = builder.security_gate.on_workflow_start(&builder.context).await?;
+    builder.context.workflow_id = workflow_id.clone();
     builder.plugin_gate.customize_context(&mut builder.context);
 
     #[cfg(feature = "plugin-system")]
@@ -674,7 +664,11 @@ impl WorkflowRunnerBuilder {
     builder.plugin_gate.apply_llm_providers(&mut llm_registry);
 
     let llm_registry = Arc::new(llm_registry);
-    registry.set_llm_provider_registry(llm_registry);
+    registry.set_llm_provider_registry(Arc::clone(&llm_registry));
+
+    let registry = Arc::new(registry);
+    builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));
+    builder.context = builder.context.with_llm_provider_registry(Arc::clone(&llm_registry));
 
 
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
@@ -708,8 +702,10 @@ impl WorkflowRunnerBuilder {
     let config = builder
       .security_gate
       .effective_engine_config(&builder.context, builder.config);
+    builder.context.strict_template = config.strict_template;
 
     let workflow_id = builder.security_gate.on_workflow_start(&builder.context).await?;
+    builder.context.workflow_id = workflow_id.clone();
     builder.plugin_gate.customize_context(&mut builder.context);
 
     #[cfg(feature = "plugin-system")]
@@ -744,7 +740,6 @@ impl WorkflowRunnerBuilder {
     let mut hook = hook;
     hook.graph_event_tx = Some(tx.clone());
 
-    let registry = Arc::new(registry);
     let security_gate = Arc::clone(&builder.security_gate);
     let workflow_id_for_end = workflow_id.clone();
 
@@ -1786,7 +1781,7 @@ edges:
     target: e
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
-        let context = RuntimeContext::default();
+        let context = WorkflowContext::default();
         let handle = WorkflowRunner::builder(schema)
             .context(context)
             .run()

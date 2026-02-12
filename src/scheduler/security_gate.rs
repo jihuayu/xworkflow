@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::core::dispatcher::EngineConfig;
-use crate::core::runtime_context::RuntimeContext;
+use crate::core::workflow_context::WorkflowContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::WorkflowSchema;
 use crate::dsl::validation::{validate_schema, ValidationReport};
@@ -10,17 +10,17 @@ use crate::error::WorkflowError;
 
 #[async_trait]
 pub trait SchedulerSecurityGate: Send + Sync {
-  fn validate_schema(&self, schema: &WorkflowSchema, context: &RuntimeContext) -> ValidationReport;
+  fn validate_schema(&self, schema: &WorkflowSchema, context: &WorkflowContext) -> ValidationReport;
 
-  async fn audit_validation_failed(&self, context: &RuntimeContext, report: &ValidationReport);
+  async fn audit_validation_failed(&self, context: &WorkflowContext, report: &ValidationReport);
 
-  fn configure_variable_pool(&self, context: &RuntimeContext, pool: &mut VariablePool);
+  fn configure_variable_pool(&self, context: &WorkflowContext, pool: &mut VariablePool);
 
-  fn effective_engine_config(&self, context: &RuntimeContext, config: EngineConfig) -> EngineConfig;
+  fn effective_engine_config(&self, context: &WorkflowContext, config: EngineConfig) -> EngineConfig;
 
-  async fn on_workflow_start(&self, context: &RuntimeContext) -> Result<Option<String>, WorkflowError>;
+  async fn on_workflow_start(&self, context: &WorkflowContext) -> Result<Option<String>, WorkflowError>;
 
-  async fn record_workflow_end(&self, context: &RuntimeContext, workflow_id: Option<&str>);
+  async fn record_workflow_end(&self, context: &WorkflowContext, workflow_id: Option<&str>);
 }
 
 #[cfg(not(feature = "security"))]
@@ -30,23 +30,23 @@ struct NoopSchedulerSecurityGate;
 #[cfg(not(feature = "security"))]
 #[async_trait]
 impl SchedulerSecurityGate for NoopSchedulerSecurityGate {
-  fn validate_schema(&self, schema: &WorkflowSchema, _context: &RuntimeContext) -> ValidationReport {
+  fn validate_schema(&self, schema: &WorkflowSchema, _context: &WorkflowContext) -> ValidationReport {
     validate_schema(schema)
   }
 
-  async fn audit_validation_failed(&self, _context: &RuntimeContext, _report: &ValidationReport) {}
+  async fn audit_validation_failed(&self, _context: &WorkflowContext, _report: &ValidationReport) {}
 
-  fn configure_variable_pool(&self, _context: &RuntimeContext, _pool: &mut VariablePool) {}
+  fn configure_variable_pool(&self, _context: &WorkflowContext, _pool: &mut VariablePool) {}
 
-  fn effective_engine_config(&self, _context: &RuntimeContext, config: EngineConfig) -> EngineConfig {
+  fn effective_engine_config(&self, _context: &WorkflowContext, config: EngineConfig) -> EngineConfig {
     config
   }
 
-  async fn on_workflow_start(&self, _context: &RuntimeContext) -> Result<Option<String>, WorkflowError> {
+  async fn on_workflow_start(&self, _context: &WorkflowContext) -> Result<Option<String>, WorkflowError> {
     Ok(None)
   }
 
-  async fn record_workflow_end(&self, _context: &RuntimeContext, _workflow_id: Option<&str>) {}
+  async fn record_workflow_end(&self, _context: &WorkflowContext, _workflow_id: Option<&str>) {}
 }
 
 #[cfg(feature = "security")]
@@ -60,7 +60,7 @@ mod real {
 
   #[async_trait]
   impl SchedulerSecurityGate for RealSchedulerSecurityGate {
-    fn validate_schema(&self, schema: &WorkflowSchema, context: &RuntimeContext) -> ValidationReport {
+    fn validate_schema(&self, schema: &WorkflowSchema, context: &WorkflowContext) -> ValidationReport {
       if let Some(policy) = context
         .security_policy()
         .and_then(|p| p.dsl_validation.as_ref())
@@ -71,7 +71,7 @@ mod real {
       }
     }
 
-    async fn audit_validation_failed(&self, context: &RuntimeContext, report: &ValidationReport) {
+    async fn audit_validation_failed(&self, context: &WorkflowContext, report: &ValidationReport) {
       let logger = match context.audit_logger() {
         Some(l) => l,
         None => return,
@@ -105,7 +105,7 @@ mod real {
       logger.log_event(event).await;
     }
 
-    fn configure_variable_pool(&self, context: &RuntimeContext, pool: &mut VariablePool) {
+    fn configure_variable_pool(&self, context: &WorkflowContext, pool: &mut VariablePool) {
       if let Some(selector_cfg) = context
         .security_policy()
         .and_then(|p| p.dsl_validation.as_ref())
@@ -115,7 +115,7 @@ mod real {
       }
     }
 
-    fn effective_engine_config(&self, context: &RuntimeContext, config: EngineConfig) -> EngineConfig {
+    fn effective_engine_config(&self, context: &WorkflowContext, config: EngineConfig) -> EngineConfig {
       if let Some(group) = context.resource_group() {
         EngineConfig {
           max_steps: config.max_steps.min(group.quota.max_steps),
@@ -129,7 +129,7 @@ mod real {
       }
     }
 
-    async fn on_workflow_start(&self, context: &RuntimeContext) -> Result<Option<String>, WorkflowError> {
+    async fn on_workflow_start(&self, context: &WorkflowContext) -> Result<Option<String>, WorkflowError> {
       let workflow_id = context.id_generator.next_id();
 
       if let (Some(governor), Some(group)) = (context.resource_governor(), context.resource_group()) {
@@ -145,7 +145,7 @@ mod real {
       Ok(Some(workflow_id))
     }
 
-    async fn record_workflow_end(&self, context: &RuntimeContext, workflow_id: Option<&str>) {
+    async fn record_workflow_end(&self, context: &WorkflowContext, workflow_id: Option<&str>) {
       let Some(workflow_id) = workflow_id else {
         return;
       };
@@ -180,7 +180,7 @@ mod tests {
     let gate = new_scheduler_security_gate();
     let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"end"}]}"#;
     let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
-    let context = RuntimeContext::default();
+    let context = WorkflowContext::default();
     let report = gate.validate_schema(&schema, &context);
     assert!(report.is_valid, "diagnostics: {:?}", report.diagnostics);
   }
@@ -188,7 +188,7 @@ mod tests {
   #[tokio::test]
   async fn test_scheduler_security_gate_audit_validation_noop() {
     let gate = new_scheduler_security_gate();
-    let context = RuntimeContext::default();
+    let context = WorkflowContext::default();
     let report = crate::dsl::validation::ValidationReport {
       is_valid: true,
       diagnostics: vec![],
@@ -199,7 +199,7 @@ mod tests {
   #[test]
   fn test_scheduler_security_gate_configure_variable_pool() {
     let gate = new_scheduler_security_gate();
-    let context = RuntimeContext::default();
+    let context = WorkflowContext::default();
     let mut pool = VariablePool::new();
     gate.configure_variable_pool(&context, &mut pool);
   }
@@ -207,7 +207,7 @@ mod tests {
   #[test]
   fn test_scheduler_security_gate_effective_engine_config() {
     let gate = new_scheduler_security_gate();
-    let context = RuntimeContext::default();
+    let context = WorkflowContext::default();
     let config = EngineConfig {
       max_steps: 100,
       max_execution_time_secs: 300,
@@ -221,7 +221,7 @@ mod tests {
   #[tokio::test]
   async fn test_scheduler_security_gate_on_workflow_start() {
     let gate = new_scheduler_security_gate();
-    let context = RuntimeContext::default();
+    let context = WorkflowContext::default();
     let result = gate.on_workflow_start(&context).await;
     assert!(result.is_ok());
   }
@@ -229,7 +229,7 @@ mod tests {
   #[tokio::test]
   async fn test_scheduler_security_gate_record_workflow_end() {
     let gate = new_scheduler_security_gate();
-    let context = RuntimeContext::default();
+    let context = WorkflowContext::default();
     gate.record_workflow_end(&context, Some("wf1")).await;
     gate.record_workflow_end(&context, None).await;
   }
@@ -239,26 +239,19 @@ mod tests {
   fn test_real_scheduler_security_gate_effective_config_with_group() {
     use crate::security::resource_group::{ResourceGroup, ResourceQuota};
     use crate::security::policy::SecurityLevel;
-    use crate::core::runtime_context::SecurityContext;
 
     let gate = new_scheduler_security_gate();
-    let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: Some(ResourceGroup {
-        group_id: "grp".into(),
-        group_name: None,
-        security_level: SecurityLevel::Standard,
-        quota: ResourceQuota {
-          max_steps: 50,
-          max_execution_time_secs: 120,
-          ..Default::default()
-        },
-        credential_refs: std::collections::HashMap::new(),
-      }),
-      security_policy: None,
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
+    let mut context = WorkflowContext::default();
+    context.set_resource_group(ResourceGroup {
+      group_id: "grp".into(),
+      group_name: None,
+      security_level: SecurityLevel::Standard,
+      quota: ResourceQuota {
+        max_steps: 50,
+        max_execution_time_secs: 120,
+        ..Default::default()
+      },
+      credential_refs: std::collections::HashMap::new(),
     });
     let config = EngineConfig {
       max_steps: 200,
@@ -277,27 +270,21 @@ mod tests {
     use crate::security::resource_group::{ResourceGroup, ResourceQuota};
     use crate::security::policy::SecurityLevel;
     use crate::security::governor::InMemoryResourceGovernor;
-    use crate::core::runtime_context::SecurityContext;
 
     let quota = ResourceQuota::default();
     let mut quotas = std::collections::HashMap::new();
     quotas.insert("grp1".to_string(), quota.clone());
     let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
 
-    let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: Some(ResourceGroup {
-        group_id: "grp1".into(),
-        group_name: None,
-        security_level: SecurityLevel::Standard,
-        quota,
-        credential_refs: std::collections::HashMap::new(),
-      }),
-      security_policy: None,
-      resource_governor: Some(governor),
-      credential_provider: None,
-      audit_logger: None,
+    let mut context = WorkflowContext::default();
+    context.set_resource_group(ResourceGroup {
+      group_id: "grp1".into(),
+      group_name: None,
+      security_level: SecurityLevel::Standard,
+      quota,
+      credential_refs: std::collections::HashMap::new(),
     });
+    context.set_resource_governor(governor);
     let gate = new_scheduler_security_gate();
     let result: Result<Option<String>, WorkflowError> = gate.on_workflow_start(&context).await;
     assert!(result.is_ok());
@@ -312,7 +299,6 @@ mod tests {
   fn test_real_scheduler_security_gate_validate_with_policy() {
     use crate::security::policy::{SecurityLevel, SecurityPolicy};
     use crate::security::DslValidationConfig;
-    use crate::core::runtime_context::SecurityContext;
 
     let gate = new_scheduler_security_gate();
     let policy = SecurityPolicy {
@@ -326,14 +312,8 @@ mod tests {
       node_limits: std::collections::HashMap::new(),
       audit_logger: None,
     };
-    let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: None,
-      security_policy: Some(policy),
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
-    });
+    let mut context = WorkflowContext::default();
+    context.set_security_policy(policy);
     let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"a","data":{"type":"code","title":"A","code":"x","language":"javascript"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"a"},{"source":"a","target":"end"}]}"#;
     let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
     let report = gate.validate_schema(&schema, &context);
@@ -346,7 +326,6 @@ mod tests {
   fn test_real_scheduler_security_gate_configure_variable_pool_with_selector_validation() {
     use crate::security::policy::{SecurityLevel, SecurityPolicy};
     use crate::security::{DslValidationConfig, SelectorValidation};
-    use crate::core::runtime_context::SecurityContext;
 
     let gate = new_scheduler_security_gate();
     let policy = SecurityPolicy {
@@ -364,14 +343,8 @@ mod tests {
       node_limits: std::collections::HashMap::new(),
       audit_logger: None,
     };
-    let mut context = RuntimeContext::default();
-    context.extensions.security = Some(SecurityContext {
-      resource_group: None,
-      security_policy: Some(policy),
-      resource_governor: None,
-      credential_provider: None,
-      audit_logger: None,
-    });
+    let mut context = WorkflowContext::default();
+    context.set_security_policy(policy);
     let mut pool = VariablePool::new();
     gate.configure_variable_pool(&context, &mut pool);
     // Pool should now have selector validation configured
