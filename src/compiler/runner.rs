@@ -993,4 +993,277 @@ edges:
             other => panic!("Expected Completed, got {:?}", other),
         }
     }
+
+    #[cfg(all(test, feature = "builtin-core-nodes"))]
+    #[tokio::test]
+    async fn test_builder_run_with_environment_vars() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: output
+          value_selector: ["env", "env_var"]
+edges:
+  - source: start
+    target: end
+"#;
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        let mut env_vars = HashMap::new();
+        env_vars.insert("env_var".to_string(), Value::String("env_value".into()));
+        
+        let handle = compiled.runner()
+            .environment_vars(env_vars)
+            .run()
+            .await
+            .unwrap();
+        
+        let status = handle.wait().await;
+        match status {
+            crate::scheduler::ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("output"), Some(&Value::String("env_value".into())));
+            },
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[cfg(all(test, feature = "builtin-core-nodes"))]
+    #[tokio::test]
+    async fn test_builder_run_with_conversation_vars() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: output
+          value_selector: ["conversation", "conv_var"]
+edges:
+  - source: start
+    target: end
+"#;
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        let mut conv_vars = HashMap::new();
+        conv_vars.insert("conv_var".to_string(), Value::String("conv_value".into()));
+        
+        let handle = compiled.runner()
+            .conversation_vars(conv_vars)
+            .run()
+            .await
+            .unwrap();
+        
+        let status = handle.wait().await;
+        match status {
+            crate::scheduler::ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("output"), Some(&Value::String("conv_value".into())));
+            },
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_builder_resource_governor() {
+        use crate::security::{InMemoryResourceGovernor, ResourceQuota};
+        
+        let compiled = create_test_compiled();
+        let mut quotas = HashMap::new();
+        quotas.insert("default".to_string(), ResourceQuota::default());
+        let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
+        
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
+            .resource_governor(governor.clone());
+        
+        assert!(builder.context.resource_governor().is_some());
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_builder_credential_provider() {
+        use crate::security::CredentialProvider;
+        
+        let compiled = create_test_compiled();
+        
+        struct MockCredentialProvider;
+        
+        #[async_trait::async_trait]
+        impl CredentialProvider for MockCredentialProvider {
+            async fn get_credentials(
+                &self,
+                _group_id: &str,
+                _provider: &str,
+            ) -> Result<HashMap<String, String>, crate::security::CredentialError> {
+                Ok(HashMap::new())
+            }
+        }
+        
+        let provider = Arc::new(MockCredentialProvider);
+        
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
+            .credential_provider(provider);
+        
+        assert!(builder.context.credential_provider().is_some());
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_builder_audit_logger() {
+        use crate::security::{TracingAuditLogger};
+        
+        let compiled = create_test_compiled();
+        let logger = Arc::new(TracingAuditLogger);
+        
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
+            .audit_logger(logger);
+        
+        assert!(builder.context.audit_logger().is_some());
+    }
+
+    #[cfg(all(test, feature = "builtin-core-nodes"))]
+    #[tokio::test]
+    async fn test_builder_run_with_config() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        let config = EngineConfig {
+            strict_template: true,
+            max_steps: 100,
+            ..Default::default()
+        };
+        
+        let handle = compiled.runner()
+            .config(config)
+            .run()
+            .await
+            .unwrap();
+        
+        let status = handle.wait().await;
+        assert!(matches!(status, crate::scheduler::ExecutionStatus::Completed(_)));
+    }
+
+    #[cfg(all(test, feature = "builtin-core-nodes"))]
+    #[tokio::test]
+    async fn test_builder_run_collect_events_disabled() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        
+        let handle = compiled.runner()
+            .collect_events(false)
+            .run()
+            .await
+            .unwrap();
+        
+        let events = handle.events().await;
+        assert!(events.is_empty());
+    }
+
+    #[cfg(all(test, feature = "plugin-system"))]
+    #[test]
+    fn test_builder_plugin_config() {
+        use crate::plugin_system::{PluginSystemConfig};
+        
+        let compiled = create_test_compiled();
+        let plugin_config = PluginSystemConfig::default();
+        
+        let _builder = CompiledWorkflowRunnerBuilder::new(compiled)
+            .plugin_config(plugin_config);
+        
+        // Plugin config is set internally
+    }
+
+    #[test]
+    fn test_builder_validate_invalid_schema() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: nonexistent
+"#;
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled);
+        
+        let report = builder.validate();
+        assert!(!report.is_valid);
+    }
+
+    #[cfg(all(test, feature = "builtin-core-nodes"))]
+    #[tokio::test]
+    async fn test_builder_run_validation_failure() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: nonexistent
+"#;
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        
+        let result = compiled.runner().run().await;
+        assert!(result.is_err());
+        match result {
+            Err(WorkflowError::ValidationFailed(_)) => {},
+            _ => panic!("Expected ValidationFailed"),
+        }
+    }
 }
