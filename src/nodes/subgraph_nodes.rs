@@ -1480,8 +1480,8 @@ mod tests {
         
         // With Continue mode, even if sub-graph has issues, iteration should succeed
         let result = executor.execute("iter_continue", &config, &pool, &context).await;
-        // The actual result depends on implementation - test just ensures it doesn't panic
-        let _ = result;
+        // Ensure iteration succeeds in Continue mode
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
