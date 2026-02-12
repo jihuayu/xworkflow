@@ -129,3 +129,17 @@ The repository already includes **dynamic library plugin** related ABI and sampl
 ├── benches/            # Benchmarks (criterion)
 └── docs/               # Design documents & specifications
 ```
+
+## Documentation
+
+For detailed design documents and implementation status, see:
+
+- **[设计文档索引](docs/设计文档索引.md)** - Quick reference for all design documents with implementation status
+- **[实现状态总结](docs/实现状态总结.md)** - Comprehensive analysis of implemented features
+
+The [docs/](docs/) directory contains 45+ design documents covering:
+- Core workflow engine and node execution specifications
+- Plugin system and sandbox architectures
+- Security and resource governance
+- Testing frameworks and benchmarks
+- Performance optimization strategies

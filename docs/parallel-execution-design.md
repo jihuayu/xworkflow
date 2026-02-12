@@ -1,10 +1,12 @@
 # 并行节点执行设计
 
-## 1. 问题分析
+> 实现状态（2026-02-12）：已落地到主干代码并通过全量测试。
 
-### 当前执行模型
+## 1. 问题分析（历史背景）
 
-当前 `WorkflowDispatcher::run()` 采用严格串行模型（`src/core/dispatcher.rs:886-1040`）：
+### 改造前执行模型
+
+在并行改造前，`WorkflowDispatcher::run()` 采用严格串行模型：
 
 ```
 queue = [root_node]
@@ -617,18 +619,23 @@ edges:
     cancel_remaining: false    # 等待所有分支
 ```
 
-### 2.9 限流与并发度控制
+### 2.9 限流与并发度控制（已实现）
 
-新增配置参数：
+当前通过 `EngineConfig` 控制并发：
 
 ```rust
-pub struct ParallelConfig {
+pub struct EngineConfig {
+    pub parallel_enabled: bool,
     /// 最大并行节点数，0 = 无限制
     pub max_concurrency: usize,
-    /// 是否启用并行执行（默认 true）
-    pub enabled: bool,
 }
 ```
+
+实现语义：
+
+- `parallel_enabled = false`：强制串行（等价并发度 1）
+- `parallel_enabled = true && max_concurrency = 0`：无限制并发
+- `parallel_enabled = true && max_concurrency > 0`：并发上限受限
 
 当 `max_concurrency > 0` 时，JoinSet 中活跃任务数不超过此值：
 
@@ -643,29 +650,28 @@ if join_set.len() >= max_concurrency {
 
 ---
 
-## 3. 迁移策略
+## 3. 实现完成情况
 
-### 阶段 1：重构 run() 为异步调度循环
-- 将节点执行逻辑抽取为独立异步函数（不引用 `&mut self`）
-- 引入 `JoinSet`，但默认 `max_concurrency = 1`（等同串行）
-- 确保所有现有测试通过
+### 阶段 1：并行调度循环（已完成）
+- `run()` 已重构为基于 `JoinSet` 的并发调度循环
+- 节点执行在任务中并发进行，结果回收在主循环串行处理
+- 失败分支采用 fail-fast：`abort_all()` + 回收任务
 
-### 阶段 2：启用并行
-- 设置 `max_concurrency` 为默认无限制
-- 添加并行执行的集成测试（多分支 DAG、菱形汇聚等）
-- 验证事件顺序的兼容性
+### 阶段 2：默认并行与并发控制（已完成）
+- 默认配置已切换为 `parallel_enabled = true`、`max_concurrency = 0`（无限制）
+- 支持显式并发上限
+- 事件层已包含 `predecessor_node_id` 与 `parallel_group_id`
 
-### 阶段 3：Gather 汇聚节点
-1. 新增 `EdgeTraversalState::Cancelled`
-2. 实现 `is_gather_ready()` 阈值判断
-3. 实现 `finalize_gather()` 取消传播
-4. 实现 `GatherExecutor`
-5. dispatcher 中增加 Gather 触发后的取消逻辑
-6. 测试：all/any/n_of_m 三种模式 + 超时 + 取消
+### 阶段 3：Gather 汇聚能力（已完成）
+1. `EdgeTraversalState::Cancelled` 已实现
+2. `is_gather_ready()` 阈值判断已实现
+3. `finalize_gather()` 取消传播已实现
+4. `GatherExecutor` 已实现并注册
+5. dispatcher 已接入 Gather 触发后的取消逻辑
 
-### 阶段 4：Debug 兼容
-- 实现 debug 节点的串行回退
-- 添加 debug + 并行混合场景测试
+### 阶段 4：Debug 兼容（已完成）
+- 带 debug gate 的节点在运行循环中走串行路径，其余节点可并发
+- 支持 debug 与并行混合执行
 
 ---
 
@@ -702,7 +708,7 @@ if join_set.len() >= max_concurrency {
 
 ---
 
-## 6. 关键文件
+## 6. 关键文件（当前实现）
 
 | 文件 | 改动 |
 |------|------|
@@ -714,3 +720,17 @@ if join_set.len() >= max_concurrency {
 | `src/nodes/gather.rs`（新文件） | `GatherExecutor` 实现 |
 | `src/nodes/mod.rs` | 注册 GatherExecutor |
 | `src/dsl/validation/known_types.rs` | 添加 gather 节点类型 |
+
+---
+
+## 7. 验收与测试
+
+2026-02-12 已完成以下验证：
+
+- `cargo test core::dispatcher::tests -- --nocapture`：通过
+- `cargo test`（全量）：通过
+
+并行回归测试覆盖：
+
+- `test_parallel_execution_respects_unlimited_concurrency`：验证默认无限制并发可同时运行多节点
+- `test_parallel_execution_respects_max_concurrency_one`：验证并发上限生效（并发度为 1）

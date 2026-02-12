@@ -77,10 +77,10 @@ pub struct EngineConfig {
     pub max_execution_time_secs: u64,
     #[serde(default)]
     pub strict_template: bool,
-  #[serde(default = "default_parallel_enabled")]
-  pub parallel_enabled: bool,
-  #[serde(default)]
-  pub max_concurrency: usize,
+    #[serde(default = "default_parallel_enabled")]
+    pub parallel_enabled: bool,
+    #[serde(default)]
+    pub max_concurrency: usize,
 }
 
 fn default_parallel_enabled() -> bool {
@@ -92,9 +92,9 @@ impl Default for EngineConfig {
         EngineConfig {
             max_steps: 500,
             max_execution_time_secs: 600,
-      strict_template: false,
+            strict_template: false,
             parallel_enabled: true,
-          max_concurrency: 1,
+            max_concurrency: 0,
         }
     }
 }
@@ -1601,11 +1601,69 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
 
 #[cfg(all(test, feature = "builtin-core-nodes"))]
 mod tests {
+    use async_trait::async_trait;
     use super::*;
     use crate::dsl::{parse_dsl, DslFormat};
     use crate::graph::build_graph;
+  use std::sync::atomic::AtomicUsize;
   use std::sync::atomic::AtomicBool;
   use std::sync::Arc;
+
+  #[derive(Clone)]
+  struct ParallelProbe {
+    current: Arc<AtomicUsize>,
+    max_seen: Arc<AtomicUsize>,
+  }
+
+  impl ParallelProbe {
+    fn new() -> Self {
+      Self {
+        current: Arc::new(AtomicUsize::new(0)),
+        max_seen: Arc::new(AtomicUsize::new(0)),
+      }
+    }
+
+    fn max_seen(&self) -> usize {
+      self.max_seen.load(Ordering::SeqCst)
+    }
+  }
+
+  struct ProbeSleepExecutor {
+    probe: ParallelProbe,
+  }
+
+  #[async_trait]
+  impl crate::nodes::executor::NodeExecutor for ProbeSleepExecutor {
+    async fn execute(
+      &self,
+      _node_id: &str,
+      _config: &Value,
+      _variable_pool: &VariablePool,
+      _context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+      let active = self.probe.current.fetch_add(1, Ordering::SeqCst) + 1;
+      let mut prev = self.probe.max_seen.load(Ordering::SeqCst);
+      while active > prev {
+        match self.probe.max_seen.compare_exchange(
+          prev,
+          active,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        ) {
+          Ok(_) => break,
+          Err(actual) => prev = actual,
+        }
+      }
+
+      tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+      self.probe.current.fetch_sub(1, Ordering::SeqCst);
+
+      Ok(NodeRunResult {
+        status: WorkflowNodeExecutionStatus::Succeeded,
+        ..Default::default()
+      })
+    }
+  }
 
   fn make_emitter() -> (EventEmitter, mpsc::Receiver<GraphEngineEvent>) {
     let (tx, rx) = mpsc::channel(100);
@@ -2104,7 +2162,123 @@ edges:
         assert_eq!(config.max_execution_time_secs, 600);
         assert!(!config.strict_template);
       assert!(config.parallel_enabled);
-      assert_eq!(config.max_concurrency, 1);
+      assert_eq!(config.max_concurrency, 0);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_execution_respects_unlimited_concurrency() {
+      let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: a
+    data: { type: probe-sleep, title: A }
+  - id: b
+    data: { type: probe-sleep, title: B }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: a
+  - source: start
+    target: b
+  - source: a
+    target: end
+  - source: b
+    target: end
+"#;
+      let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+      let graph = build_graph(&schema).unwrap();
+
+      let pool = VariablePool::new();
+      let mut registry = NodeExecutorRegistry::new();
+      let probe = ParallelProbe::new();
+      registry.register(
+        "probe-sleep",
+        Box::new(ProbeSleepExecutor {
+          probe: probe.clone(),
+        }),
+      );
+      let (emitter, _rx) = make_emitter();
+
+      let config = EngineConfig {
+        parallel_enabled: true,
+        max_concurrency: 0,
+        ..Default::default()
+      };
+      let context = Arc::new(RuntimeContext::default());
+      let mut dispatcher = WorkflowDispatcher::new(
+        graph,
+        pool,
+        registry,
+        emitter,
+        config,
+        context,
+        #[cfg(feature = "plugin-system")]
+        None,
+      );
+
+      let _ = dispatcher.run().await.unwrap();
+      assert!(probe.max_seen() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_execution_respects_max_concurrency_one() {
+      let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: a
+    data: { type: probe-sleep, title: A }
+  - id: b
+    data: { type: probe-sleep, title: B }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: a
+  - source: start
+    target: b
+  - source: a
+    target: end
+  - source: b
+    target: end
+"#;
+      let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+      let graph = build_graph(&schema).unwrap();
+
+      let pool = VariablePool::new();
+      let mut registry = NodeExecutorRegistry::new();
+      let probe = ParallelProbe::new();
+      registry.register(
+        "probe-sleep",
+        Box::new(ProbeSleepExecutor {
+          probe: probe.clone(),
+        }),
+      );
+      let (emitter, _rx) = make_emitter();
+
+      let config = EngineConfig {
+        parallel_enabled: true,
+        max_concurrency: 1,
+        ..Default::default()
+      };
+      let context = Arc::new(RuntimeContext::default());
+      let mut dispatcher = WorkflowDispatcher::new(
+        graph,
+        pool,
+        registry,
+        emitter,
+        config,
+        context,
+        #[cfg(feature = "plugin-system")]
+        None,
+      );
+
+      let _ = dispatcher.run().await.unwrap();
+      assert_eq!(probe.max_seen(), 1);
     }
 
     #[test]
