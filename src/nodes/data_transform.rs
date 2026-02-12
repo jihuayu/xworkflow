@@ -10,6 +10,7 @@ use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{
     Segment, SegmentStream, Selector, StreamEvent, StreamStatus, VariablePool, SCOPE_NODE_ID,
 };
+use crate::compiler::CompiledNodeConfig;
 use crate::dsl::schema::{
     EdgeHandle, NodeOutputs, NodeRunResult, VariableMapping, WorkflowNodeExecutionStatus, WriteMode,
 };
@@ -17,7 +18,6 @@ use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
 use crate::template::{
-    CompiledTemplate,
     render_jinja2_with_functions_and_config,
     render_template_async_with_config,
 };
@@ -51,52 +51,35 @@ impl TemplateTransformExecutor {
             engine: Some(engine),
         }
     }
-}
 
-impl Default for TemplateTransformExecutor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl NodeExecutor for TemplateTransformExecutor {
-    async fn execute(
+    async fn execute_with_template(
         &self,
         node_id: &str,
-        config: &Value,
+        template: &str,
+        variables: &[VariableMapping],
         variable_pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
-        let template = config
-            .get("template")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
         #[cfg(feature = "security")]
         let template_len = template.len();
 
-        // Build variable map from config variable mappings
         let mut static_vars: HashMap<String, Value> = HashMap::new();
         let mut stream_vars: Vec<(String, SegmentStream)> = Vec::new();
-        if let Some(vars_val) = config.get("variables") {
-            if let Ok(mappings) = serde_json::from_value::<Vec<VariableMapping>>(vars_val.clone()) {
-                for m in &mappings {
-                    let val = variable_pool.get(&m.value_selector);
-                    match val {
-                        Segment::Stream(stream) => {
-                            if stream.status_async().await == StreamStatus::Running {
-                                stream_vars.push((m.variable.clone(), stream));
-                            } else {
-                                static_vars.insert(
-                                    m.variable.clone(),
-                                    stream.snapshot_segment_async().await.into_value(),
-                                );
-                            }
-                        }
-                        other => {
-                            static_vars.insert(m.variable.clone(), other.into_value());
-                        }
+        for m in variables {
+            let val = variable_pool.get(&m.value_selector);
+            match val {
+                Segment::Stream(stream) => {
+                    if stream.status_async().await == StreamStatus::Running {
+                        stream_vars.push((m.variable.clone(), stream));
+                    } else {
+                        static_vars.insert(
+                            m.variable.clone(),
+                            stream.snapshot_segment_async().await.into_value(),
+                        );
                     }
+                }
+                other => {
+                    static_vars.insert(m.variable.clone(), other.into_value());
                 }
             }
         }
@@ -239,16 +222,18 @@ impl NodeExecutor for TemplateTransformExecutor {
             }
         };
 
-        let funcs_ref = tmpl_functions.as_ref().map(|f| f.as_ref());
+        let funcs = tmpl_functions.clone();
 
         #[cfg(feature = "security")]
         let safety = context
             .security_policy()
-            .and_then(|p| p.template.as_ref());
+            .and_then(|p| p.template.clone());
 
-        let render_fn = if let Some(engine) = &self.engine {
+        let render_fn: Box<
+            dyn Fn(&str, &HashMap<String, Value>) -> Result<String, String> + Send + Sync,
+        > = if let Some(engine) = &self.engine {
             #[cfg(feature = "security")]
-            if let Some(cfg) = safety {
+            if let Some(cfg) = safety.as_ref() {
                 if template_str.len() > cfg.max_template_length {
                     let err = format!(
                         "Template too large (max {}, got {})",
@@ -270,169 +255,92 @@ impl NodeExecutor for TemplateTransformExecutor {
                 }
             }
 
-            let handle = engine
-                .compile(&template_str, funcs_ref)
-                .map_err(NodeError::TemplateError)?;
-            let max_output = {
-                #[cfg(feature = "security")]
-                {
-                    safety.map(|cfg| cfg.max_output_length)
-                }
-                #[cfg(not(feature = "security"))]
-                {
-                    None
-                }
-            };
-            Box::new(move |vars: &HashMap<String, Value>| -> Result<String, String> {
-                let rendered = handle.render(vars)?;
-                if let Some(limit) = max_output {
-                    if rendered.len() > limit {
-                        return Err(format!(
-                            "Template output too large (max {}, got {})",
-                            limit,
-                            rendered.len()
-                        ));
-                    }
-                }
-                Ok(rendered)
-            }) as Box<dyn Fn(&HashMap<String, Value>) -> Result<String, String> + Send + Sync>
+            let engine = Arc::clone(engine);
+            let funcs = funcs.clone();
+            Box::new(move |template: &str, vars: &HashMap<String, Value>| {
+                engine.render(template, vars, funcs.as_ref().map(|f| f.as_ref()))
+            })
         } else {
             #[cfg(feature = "security")]
-            let compiled = match CompiledTemplate::new_with_config(&template_str, funcs_ref, safety) {
-                Ok(compiled) => compiled,
-                Err(e) => {
-                    if is_template_anomaly_error(&e) {
-                        audit_security_event(
-                            context,
-                            SecurityEventType::TemplateRenderingAnomaly {
-                                template_length: template_len,
-                            },
-                            EventSeverity::Warning,
-                            Some(node_id.to_string()),
-                        )
-                        .await;
-                    }
-                    return Err(NodeError::TemplateError(e));
-                }
-            };
+            {
+                let funcs = funcs.clone();
+                let safety = safety.clone();
+                Box::new(move |template: &str, vars: &HashMap<String, Value>| {
+                    render_jinja2_with_functions_and_config(
+                        template,
+                        vars,
+                        funcs.as_ref().map(|f| f.as_ref()),
+                        safety.as_ref(),
+                    )
+                })
+            }
 
             #[cfg(not(feature = "security"))]
-            let compiled = CompiledTemplate::new(&template_str, funcs_ref)
-                .map_err(|e| NodeError::TemplateError(e))?;
-
-            let compiled = Arc::new(compiled);
-            Box::new(move |vars: &HashMap<String, Value>| -> Result<String, String> {
-                compiled.render(vars)
-            }) as Box<dyn Fn(&HashMap<String, Value>) -> Result<String, String> + Send + Sync>
+            {
+                let funcs = funcs.clone();
+                Box::new(move |template: &str, vars: &HashMap<String, Value>| {
+                    render_jinja2_with_functions(
+                        template,
+                        vars,
+                        funcs.as_ref().map(|f| f.as_ref()),
+                    )
+                })
+            }
         };
 
-        #[cfg(feature = "security")]
-        let context_for_stream = context.clone();
-        #[cfg(feature = "security")]
-        let node_id_for_stream = node_id.to_string();
-        #[cfg(feature = "security")]
-        let template_len_for_stream = template_len;
         tokio::spawn(async move {
-            let mut last_rendered = String::new();
             let mut vars = base_vars;
+            let mut last_rendered = String::new();
 
             for (name, stream) in stream_vars {
-                // 预先占位：将该变量强制为 String accumulator，避免 chunk 热路径里 clone+insert
-                vars.insert(name.clone(), Value::String(String::new()));
-
                 let mut reader = stream.reader();
                 loop {
                     match reader.next().await {
                         Some(StreamEvent::Chunk(seg)) => {
-                            let seg_text = seg.to_display_string();
-                            match vars
-                                .get_mut(&name)
-                                .expect("vars entry should exist")
-                            {
-                                Value::String(s) => s.push_str(&seg_text),
-                                other => *other = Value::String(seg_text),
-                            }
+                            let entry = vars.entry(name.clone()).or_insert(Value::String(String::new()));
+                            let val_str = entry.as_str().unwrap_or_default().to_string();
+                            let new_val = format!("{}{}", val_str, seg.to_display_string());
+                            *entry = Value::String(new_val);
 
-                            match render_fn(&vars) {
-                                Ok(rendered) => {
-                                    let delta = if rendered.starts_with(&last_rendered) {
-                                        rendered[last_rendered.len()..].to_string()
-                                    } else if rendered != last_rendered {
-                                        rendered.clone()
-                                    } else {
-                                        String::new()
-                                    };
-                                    last_rendered = rendered;
-                                    if !delta.is_empty() {
-                                        writer.send(Segment::String(delta)).await;
-                                    }
-                                }
+                            let rendered = match render_fn(&template_str, &vars) {
+                                Ok(v) => v,
                                 Err(e) => {
-                                    #[cfg(feature = "security")]
-                                    if is_template_anomaly_error(&e) {
-                                        audit_security_event(
-                                            &context_for_stream,
-                                            SecurityEventType::TemplateRenderingAnomaly {
-                                                template_length: template_len_for_stream,
-                                            },
-                                            EventSeverity::Warning,
-                                            Some(node_id_for_stream.clone()),
-                                        )
-                                        .await;
-                                    }
-                                    writer.error(e).await;
+                                    let _ = writer.error(e).await;
                                     return;
                                 }
-                            }
+                            };
+
+                            let delta = if rendered.starts_with(&last_rendered) {
+                                rendered[last_rendered.len()..].to_string()
+                            } else {
+                                rendered.clone()
+                            };
+                            last_rendered = rendered;
+                            let _ = writer.send(Segment::String(delta)).await;
                         }
-                        Some(StreamEvent::End(final_seg)) => {
-                            let final_text = final_seg.to_display_string();
+                        Some(StreamEvent::End(seg)) => {
+                            let final_val = seg.to_display_string();
+                            vars.insert(name.clone(), Value::String(final_val));
 
-                            match vars
-                                .get_mut(&name)
-                                .expect("vars entry should exist")
-                            {
-                                Value::String(s) => {
-                                    s.clear();
-                                    s.push_str(&final_text);
-                                }
-                                other => *other = Value::String(final_text),
-                            }
-                            match render_fn(&vars) {
-                                Ok(rendered) => {
-                                    let delta = if rendered.starts_with(&last_rendered) {
-                                        rendered[last_rendered.len()..].to_string()
-                                    } else if rendered != last_rendered {
-                                        rendered.clone()
-                                    } else {
-                                        String::new()
-                                    };
-                                    last_rendered = rendered;
-                                    if !delta.is_empty() {
-                                        writer.send(Segment::String(delta)).await;
-                                    }
-                                }
+                            let rendered = match render_fn(&template_str, &vars) {
+                                Ok(v) => v,
                                 Err(e) => {
-                                    #[cfg(feature = "security")]
-                                    if is_template_anomaly_error(&e) {
-                                        audit_security_event(
-                                            &context_for_stream,
-                                            SecurityEventType::TemplateRenderingAnomaly {
-                                                template_length: template_len_for_stream,
-                                            },
-                                            EventSeverity::Warning,
-                                            Some(node_id_for_stream.clone()),
-                                        )
-                                        .await;
-                                    }
-                                    writer.error(e).await;
+                                    let _ = writer.error(e).await;
                                     return;
                                 }
-                            }
+                            };
+
+                            let delta = if rendered.starts_with(&last_rendered) {
+                                rendered[last_rendered.len()..].to_string()
+                            } else {
+                                rendered.clone()
+                            };
+                            last_rendered = rendered;
+                            let _ = writer.send(Segment::String(delta)).await;
                             break;
                         }
                         Some(StreamEvent::Error(err)) => {
-                            writer.error(err).await;
+                            let _ = writer.error(err).await;
                             return;
                         }
                         None => break,
@@ -455,6 +363,58 @@ impl NodeExecutor for TemplateTransformExecutor {
             edge_source_handle: EdgeHandle::Default,
             ..Default::default()
         })
+    }
+}
+
+impl Default for TemplateTransformExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl NodeExecutor for TemplateTransformExecutor {
+    async fn execute(
+        &self,
+        node_id: &str,
+        config: &Value,
+        variable_pool: &VariablePool,
+        context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let template = config
+            .get("template")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let variables = config
+            .get("variables")
+            .and_then(|v| serde_json::from_value::<Vec<VariableMapping>>(v.clone()).ok())
+            .unwrap_or_default();
+
+        self
+            .execute_with_template(node_id, template, &variables, variable_pool, context)
+            .await
+    }
+
+    async fn execute_compiled(
+        &self,
+        node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let CompiledNodeConfig::TemplateTransform(config) = compiled_config else {
+            return self.execute(node_id, compiled_config.as_value(), variable_pool, context).await;
+        };
+
+        self
+            .execute_with_template(
+                node_id,
+                &config.parsed.template,
+                &config.parsed.variables,
+                variable_pool,
+                context,
+            )
+            .await
     }
 }
 

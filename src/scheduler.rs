@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, watch, Mutex, RwLock};
 mod plugin_gate;
 mod security_gate;
 
-use plugin_gate::{new_scheduler_plugin_gate, SchedulerPluginGate};
-use security_gate::{new_scheduler_security_gate, SchedulerSecurityGate};
+pub(crate) use plugin_gate::{new_scheduler_plugin_gate, SchedulerPluginGate};
+pub(crate) use security_gate::{new_scheduler_security_gate, SchedulerSecurityGate};
 
 use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
@@ -56,6 +56,18 @@ pub struct WorkflowHandle {
 }
 
 impl WorkflowHandle {
+    pub(crate) fn new(
+      status_rx: watch::Receiver<ExecutionStatus>,
+      events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
+      event_active: Arc<AtomicBool>,
+    ) -> Self {
+      Self {
+        status_rx,
+        events,
+        event_active,
+      }
+    }
+
     /// Return the current execution status (non-blocking).
     pub async fn status(&self) -> ExecutionStatus {
       self.status_rx.borrow().clone()
@@ -128,9 +140,24 @@ impl WorkflowRunner {
       collect_events: true,
     }
   }
+
+  /// Compile workflow DSL content into a reusable artifact.
+  pub fn compile(
+    content: &str,
+    format: crate::dsl::DslFormat,
+  ) -> Result<crate::compiler::CompiledWorkflow, WorkflowError> {
+    crate::compiler::WorkflowCompiler::compile(content, format)
+  }
+
+  /// Compile a parsed workflow schema into a reusable artifact.
+  pub fn compile_schema(
+    schema: WorkflowSchema,
+  ) -> Result<crate::compiler::CompiledWorkflow, WorkflowError> {
+    crate::compiler::WorkflowCompiler::compile_schema(schema)
+  }
 }
 
-fn build_error_context(
+pub(crate) fn build_error_context(
   error: &WorkflowError,
   schema: &WorkflowSchema,
   partial_outputs: &HashMap<String, Value>,
@@ -170,7 +197,7 @@ fn error_type_name(error: &WorkflowError) -> &'static str {
   }
 }
 
-fn segment_from_type(value: &Value, seg_type: Option<&SegmentType>) -> Segment {
+pub(crate) fn segment_from_type(value: &Value, seg_type: Option<&SegmentType>) -> Segment {
   if let Some(SegmentType::ArrayString) = seg_type {
     if let Value::Array(items) = value {
       let mut values = Vec::with_capacity(items.len());
@@ -188,7 +215,7 @@ fn segment_from_type(value: &Value, seg_type: Option<&SegmentType>) -> Segment {
   Segment::from_value(value)
 }
 
-fn collect_start_variable_types(schema: &WorkflowSchema) -> HashMap<String, SegmentType> {
+pub(crate) fn collect_start_variable_types(schema: &WorkflowSchema) -> HashMap<String, SegmentType> {
   let mut map = HashMap::new();
   for node in &schema.nodes {
     if node.data.node_type != "start" {
@@ -207,7 +234,7 @@ fn collect_start_variable_types(schema: &WorkflowSchema) -> HashMap<String, Segm
   map
 }
 
-fn collect_conversation_variable_types(schema: &WorkflowSchema) -> HashMap<String, SegmentType> {
+pub(crate) fn collect_conversation_variable_types(schema: &WorkflowSchema) -> HashMap<String, SegmentType> {
   let mut map = HashMap::new();
   for var in &schema.conversation_variables {
     if let Some(seg_type) = SegmentType::from_dsl_type(&var.var_type) {
@@ -434,7 +461,7 @@ impl WorkflowRunnerBuilder {
     }
 
     // Set user inputs mapped to start node
-    let start_node_id = graph.root_node_id.clone();
+    let start_node_id = graph.root_node_id().to_string();
     for (k, v) in &builder.user_inputs {
       let selector = crate::core::variable_pool::Selector::new(start_node_id.clone(), k.clone());
       let seg = segment_from_type(v, start_var_types.get(k));
@@ -646,7 +673,7 @@ impl WorkflowRunnerBuilder {
       pool.set(&selector, seg);
     }
 
-    let start_node_id = graph.root_node_id.clone();
+    let start_node_id = graph.root_node_id().to_string();
     for (k, v) in &builder.user_inputs {
       let selector = crate::core::variable_pool::Selector::new(start_node_id.clone(), k.clone());
       let seg = segment_from_type(v, start_var_types.get(k));

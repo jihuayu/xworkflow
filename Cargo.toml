@@ -78,6 +78,8 @@ dhat = "0.3"
 default = [
 	"security",
 	"plugin-system",
+	"compiler",
+	"workflow-cache",
 	"builtin-template-jinja",
 	"builtin-core-nodes",
 	"builtin-transform-nodes",
@@ -85,6 +87,8 @@ default = [
 	"builtin-subgraph-nodes",
 	"builtin-llm-node",
 ]
+compiler = []
+workflow-cache = ["compiler"]
 security = ["xworkflow-sandbox-js?/security"]
 wasm-runtime = ["dep:xworkflow-plugin-wasm"]
 plugin-system = ["libloading"]

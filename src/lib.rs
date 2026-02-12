@@ -58,6 +58,7 @@ pub mod dsl;
 pub mod error;
 pub mod evaluator;
 pub mod graph;
+pub mod compiler;
 pub mod nodes;
 pub mod sandbox;
 pub mod template;
@@ -101,6 +102,22 @@ pub use crate::dsl::{
 };
 pub use crate::error::{NodeError, WorkflowError};
 pub use crate::graph::{build_graph, Graph};
+pub use crate::compiler::{
+	CompiledConfig,
+	CompiledNodeConfig,
+	CompiledNodeConfigMap,
+	CompiledWorkflow,
+	CompiledWorkflowRunnerBuilder,
+	WorkflowCompiler,
+};
+#[cfg(feature = "workflow-cache")]
+pub use crate::compiler::{
+	CacheKey,
+	CacheStats,
+	GroupCacheStats,
+	WorkflowCache,
+	WorkflowCacheConfig,
+};
 pub use crate::nodes::NodeExecutorRegistry;
 pub use crate::core::dispatcher::{Command, EngineConfig};
 pub use crate::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};

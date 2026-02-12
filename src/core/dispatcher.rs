@@ -6,6 +6,7 @@
 //! propagation.
 
 use serde_json::Value;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -23,6 +24,7 @@ use crate::dsl::schema::{
   RetryConfig, WorkflowNodeExecutionStatus, WriteMode,
 };
 use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
+use crate::compiler::CompiledNodeConfigMap;
 use crate::graph::types::{EdgeTraversalState, Graph};
 use crate::nodes::executor::NodeExecutorRegistry;
 #[cfg(feature = "plugin-system")]
@@ -102,6 +104,7 @@ pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> 
     graph: Arc<RwLock<Graph>>,
     variable_pool: Arc<RwLock<VariablePool>>,
     registry: Arc<NodeExecutorRegistry>,
+    compiled_node_configs: Option<Arc<CompiledNodeConfigMap>>,
   event_emitter: EventEmitter,
     config: EngineConfig,
     exceptions_count: i32,
@@ -176,6 +179,7 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             graph,
             variable_pool,
             registry: Arc::new(registry),
+          compiled_node_configs: None,
             event_emitter,
             config,
             exceptions_count: 0,
@@ -223,6 +227,7 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             graph,
             variable_pool,
             registry,
+          compiled_node_configs: None,
             event_emitter,
             config,
             exceptions_count: 0,
@@ -235,10 +240,57 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
         }
     }
 
+  pub fn new_with_registry_and_compiled(
+        graph: Graph,
+        variable_pool: VariablePool,
+        registry: Arc<NodeExecutorRegistry>,
+      event_emitter: EventEmitter,
+        config: EngineConfig,
+        context: Arc<RuntimeContext>,
+        compiled_node_configs: Arc<CompiledNodeConfigMap>,
+      #[cfg(feature = "plugin-system")]
+      plugin_registry: Option<Arc<PluginRegistry>>,
+    ) -> Self {
+        let graph = Arc::new(RwLock::new(graph));
+        let variable_pool = Arc::new(RwLock::new(variable_pool));
+        let plugin_gate: Arc<dyn PluginGate> = {
+          #[cfg(feature = "plugin-system")]
+          {
+            crate::core::plugin_gate::new_plugin_gate_with_registry(
+              variable_pool.clone(),
+              event_emitter.clone(),
+              plugin_registry,
+            )
+          }
+
+          #[cfg(not(feature = "plugin-system"))]
+          {
+            crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+          }
+        };
+        let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+          context.clone(),
+          variable_pool.clone(),
+        );
+        WorkflowDispatcher {
+            graph,
+            variable_pool,
+            registry,
+            compiled_node_configs: Some(compiled_node_configs),
+            event_emitter,
+            config,
+            exceptions_count: 0,
+            final_outputs: HashMap::new(),
+            context,
+            plugin_gate,
+            security_gate,
+      debug_gate: NoopGate,
+      debug_hook: NoopHook,
+        }
+    }
   }
 
-
-impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
+  impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   #[doc(hidden)]
   pub fn debug_resources(&self) -> DispatcherResourceWeak {
     DispatcherResourceWeak {
@@ -281,10 +333,63 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       context.clone(),
       variable_pool.clone(),
     );
+
     WorkflowDispatcher {
       graph,
       variable_pool,
       registry,
+        compiled_node_configs: None,
+      event_emitter,
+      config,
+      exceptions_count: 0,
+      final_outputs: HashMap::new(),
+      context,
+      plugin_gate,
+      security_gate,
+      debug_gate,
+      debug_hook,
+    }
+  }
+
+  pub fn new_with_debug_and_compiled(
+    graph: Graph,
+    variable_pool: VariablePool,
+    registry: Arc<NodeExecutorRegistry>,
+    event_emitter: EventEmitter,
+    config: EngineConfig,
+    context: Arc<RuntimeContext>,
+    compiled_node_configs: Arc<CompiledNodeConfigMap>,
+    #[cfg(feature = "plugin-system")]
+    plugin_registry: Option<Arc<PluginRegistry>>,
+    debug_gate: G,
+    debug_hook: H,
+  ) -> Self {
+    let graph = Arc::new(RwLock::new(graph));
+    let variable_pool = Arc::new(RwLock::new(variable_pool));
+    let plugin_gate: Arc<dyn PluginGate> = {
+      #[cfg(feature = "plugin-system")]
+      {
+        crate::core::plugin_gate::new_plugin_gate_with_registry(
+          variable_pool.clone(),
+          event_emitter.clone(),
+          plugin_registry,
+        )
+      }
+
+      #[cfg(not(feature = "plugin-system"))]
+      {
+        crate::core::plugin_gate::new_plugin_gate(event_emitter.clone(), variable_pool.clone())
+      }
+    };
+    let security_gate: Arc<dyn SecurityGate> = crate::core::security_gate::new_security_gate(
+      context.clone(),
+      variable_pool.clone(),
+    );
+    WorkflowDispatcher {
+      graph,
+      variable_pool,
+      registry,
+      compiled_node_configs: Some(compiled_node_configs),
       event_emitter,
       config,
       exceptions_count: 0,
@@ -555,7 +660,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       node_title: node.title.clone(),
       node_config: node.config.clone(),
       is_branch: g.is_branch_node(node_id),
-      is_skipped: node.state == EdgeTraversalState::Skipped,
+      is_skipped: g.node_state(node_id) == Some(EdgeTraversalState::Skipped),
       error_strategy: node.error_strategy.clone(),
       retry_config: node.retry_config.clone(),
       timeout_secs: node.timeout_secs,
@@ -564,9 +669,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
   fn skip_node_and_collect_ready(&self, node_id: &str, is_branch: bool) -> Vec<String> {
     let mut g = self.graph.write();
-    if let Some(node) = g.nodes.get_mut(node_id) {
-      node.state = EdgeTraversalState::Skipped;
-    }
+    g.set_node_state(node_id, EdgeTraversalState::Skipped);
     if is_branch {
       g.process_branch_edges(
         node_id,
@@ -590,25 +693,12 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
   ) -> WorkflowResult<Vec<String>> {
     let mut g = self.graph.write();
 
-    if let Some(node) = g.nodes.get_mut(node_id) {
-      node.state = EdgeTraversalState::Taken;
-    }
+    g.set_node_state(node_id, EdgeTraversalState::Taken);
 
     if is_branch {
       match edge_handle {
         crate::dsl::schema::EdgeHandle::Branch(handle) => {
-          let valid = g
-            .out_edges
-            .get(node_id)
-            .map(|eids| {
-              eids.iter().any(|eid| {
-                g.edges
-                  .get(eid)
-                  .and_then(|e| e.source_handle.as_deref())
-                  == Some(handle.as_str())
-              })
-            })
-            .unwrap_or(false);
+          let valid = g.has_branch_handle(node_id, handle.as_str());
           if !valid {
             return Err(WorkflowError::GraphValidationError(format!(
               "Node {} returned branch handle '{}' but no matching edge found",
@@ -705,6 +795,12 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
       )));
     }
 
+    let compiled_config = self
+      .compiled_node_configs
+      .as_ref()
+      .and_then(|map| map.get(node_id))
+      .cloned();
+
     let max_retries = retry_config
       .as_ref()
       .map(|rc| rc.max_retries)
@@ -719,10 +815,17 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
     let mut result = None;
 
     for attempt in 0..=max_retries {
-      let exec_future = executor
-        .as_ref()
-        .expect("executor checked")
-        .execute(node_id, node_config, pool_snapshot, &self.context);
+      let exec_future = if let Some(config) = compiled_config.as_deref() {
+        executor
+          .as_ref()
+          .expect("executor checked")
+          .execute_compiled(node_id, config, pool_snapshot, &self.context)
+      } else {
+        executor
+          .as_ref()
+          .expect("executor checked")
+          .execute(node_id, node_config, pool_snapshot, &self.context)
+      };
       let exec_result = if let Some(timeout_secs) = node_timeout {
         match tokio::time::timeout(
           std::time::Duration::from_secs(timeout_secs),
@@ -891,7 +994,7 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
 
     let root_id = {
       let g = self.graph.read();
-      g.root_node_id.clone()
+      g.root_node_id().to_string()
     };
 
     let mut queue: Vec<String> = vec![root_id];

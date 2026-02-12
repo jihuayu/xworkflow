@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, SegmentStream, StreamEvent, StreamStatus, VariablePool};
 use crate::core::variable_pool::Selector;
+use crate::compiler::CompiledNodeConfig;
 use crate::dsl::schema::{
     Case, EdgeHandle, NodeOutputs, NodeRunResult, OutputVariable, StartVariable,
     WorkflowNodeExecutionStatus,
@@ -50,6 +51,37 @@ impl NodeExecutor for StartNodeExecutor {
         }
 
         // System variables
+        let sys_query = variable_pool.get(&Selector::new("sys", "query"));
+        outputs.insert("sys.query".to_string(), sys_query.to_value());
+        let sys_files = variable_pool.get(&Selector::new("sys", "files"));
+        outputs.insert("sys.files".to_string(), sys_files.to_value());
+
+        Ok(NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
+            ..Default::default()
+        })
+    }
+
+    async fn execute_compiled(
+        &self,
+        node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        _context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let CompiledNodeConfig::Start(config) = compiled_config else {
+            return self.execute(node_id, compiled_config.as_value(), variable_pool, _context).await;
+        };
+
+        let mut outputs = HashMap::new();
+        for var in &config.parsed.variables {
+            let sel = Selector::new(node_id, var.variable.clone());
+            let val = variable_pool.get(&sel);
+            outputs.insert(var.variable.clone(), val.to_value());
+        }
+
         let sys_query = variable_pool.get(&Selector::new("sys", "query"));
         outputs.insert("sys.query".to_string(), sys_query.to_value());
         let sys_files = variable_pool.get(&Selector::new("sys", "files"));
@@ -107,6 +139,35 @@ impl NodeExecutor for EndNodeExecutor {
                     inputs.insert(ov.variable.clone(), json_val);
                 }
             }
+        }
+
+        Ok(NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            inputs,
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Default,
+            ..Default::default()
+        })
+    }
+
+    async fn execute_compiled(
+        &self,
+        _node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        _context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let CompiledNodeConfig::End(config) = compiled_config else {
+            return self.execute(_node_id, compiled_config.as_value(), variable_pool, _context).await;
+        };
+
+        let mut outputs = HashMap::new();
+        let mut inputs = HashMap::new();
+        for ov in &config.parsed.outputs {
+            let val = variable_pool.get_resolved(&ov.value_selector).await;
+            let json_val = val.to_value();
+            outputs.insert(ov.variable.clone(), json_val.clone());
+            inputs.insert(ov.variable.clone(), json_val);
         }
 
         Ok(NodeRunResult {
@@ -249,6 +310,109 @@ impl NodeExecutor for AnswerNodeExecutor {
             ..Default::default()
         })
     }
+
+    async fn execute_compiled(
+        &self,
+        _node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        _context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let CompiledNodeConfig::Answer(config) = compiled_config else {
+            return self.execute(_node_id, compiled_config.as_value(), variable_pool, _context).await;
+        };
+
+        let answer_template = &config.parsed.answer;
+        let re = Regex::new(r"\{\{#([^#]+)#\}\}").unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let mut static_values: HashMap<String, String> = HashMap::new();
+        let mut stream_vars: Vec<(String, SegmentStream)> = Vec::new();
+
+        for caps in re.captures_iter(answer_template) {
+            let selector_str = &caps[1];
+            if !seen.insert(selector_str.to_string()) {
+                continue;
+            }
+            let Some(selector) = Selector::parse_str(selector_str) else {
+                continue;
+            };
+            let seg = variable_pool.get(&selector);
+            match seg {
+                Segment::Stream(stream) => {
+                    if stream.status_async().await == StreamStatus::Running {
+                        stream_vars.push((selector_str.to_string(), stream));
+                        static_values.insert(selector_str.to_string(), String::new());
+                    } else {
+                        let snap = stream.snapshot_segment_async().await;
+                        static_values.insert(selector_str.to_string(), snap.to_display_string());
+                    }
+                }
+                other => {
+                    static_values.insert(selector_str.to_string(), other.to_display_string());
+                }
+            }
+        }
+
+        if stream_vars.is_empty() {
+            let rendered = render_answer_with_map(answer_template, &static_values);
+            let mut outputs = HashMap::new();
+            outputs.insert("answer".to_string(), Value::String(rendered));
+            return Ok(NodeRunResult {
+                status: WorkflowNodeExecutionStatus::Succeeded,
+                outputs: NodeOutputs::Sync(outputs),
+                edge_source_handle: EdgeHandle::Default,
+                ..Default::default()
+            });
+        }
+
+        let template_str = answer_template.to_string();
+        let (answer_stream, writer) = SegmentStream::channel();
+
+        tokio::spawn(async move {
+            let mut values = static_values;
+            let mut last_rendered = String::new();
+
+            for (selector, stream) in stream_vars {
+                let mut reader = stream.reader();
+                loop {
+                    match reader.next().await {
+                        Some(StreamEvent::Chunk(seg)) => {
+                            let entry = values.entry(selector.clone()).or_default();
+                            entry.push_str(&seg.to_display_string());
+                            let rendered = render_answer_with_map(&template_str, &values);
+                            let delta = if rendered.starts_with(&last_rendered) {
+                                rendered[last_rendered.len()..].to_string()
+                            } else {
+                                rendered.clone()
+                            };
+                            last_rendered = rendered;
+                            let _ = writer.send(Segment::String(delta)).await;
+                        }
+                        Some(StreamEvent::End(_)) | None => break,
+                        Some(StreamEvent::Error(err)) => {
+                            let _ = writer.error(err).await;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let _ = writer.finish().await;
+        });
+
+        let mut stream_outputs = HashMap::new();
+        stream_outputs.insert("answer".to_string(), answer_stream);
+
+        Ok(NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            outputs: NodeOutputs::Stream {
+                ready: HashMap::new(),
+                streams: stream_outputs,
+            },
+            edge_source_handle: EdgeHandle::Default,
+            ..Default::default()
+        })
+    }
 }
 
 fn render_answer_with_map(template: &str, values: &HashMap<String, String>) -> String {
@@ -287,6 +451,65 @@ impl NodeExecutor for IfElseNodeExecutor {
         let _ = context;
 
         let selected = match evaluate_cases(&cases, variable_pool).await {
+            Ok(selected) => selected,
+            Err(mismatch) => {
+                let message = format!(
+                    "Condition type mismatch: expected {}, got {} for {:?}",
+                    mismatch.expected_type, mismatch.actual_type, mismatch.operator
+                );
+
+                #[cfg(feature = "security")]
+                let is_strict = context
+                    .security_policy()
+                    .map(|policy| policy.level == SecurityLevel::Strict)
+                    .or_else(|| {
+                        context
+                            .resource_group()
+                            .map(|group| group.security_level == SecurityLevel::Strict)
+                    })
+                    .unwrap_or(false);
+
+                #[cfg(not(feature = "security"))]
+                let is_strict = false;
+
+                if is_strict {
+                    return Err(NodeError::TypeError(message));
+                }
+
+                tracing::warn!("{}; falling back to else branch", message);
+                None
+            }
+        };
+
+        let selected_case = selected.unwrap_or_else(|| ELSE_BRANCH_HANDLE.to_string());
+        let mut outputs = HashMap::new();
+        outputs.insert("selected_case".to_string(), Value::String(selected_case.clone()));
+
+        Ok(NodeRunResult {
+            status: WorkflowNodeExecutionStatus::Succeeded,
+            outputs: NodeOutputs::Sync(outputs),
+            edge_source_handle: EdgeHandle::Branch(selected_case),
+            ..Default::default()
+        })
+    }
+
+    async fn execute_compiled(
+        &self,
+        _node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        let CompiledNodeConfig::IfElse(config) = compiled_config else {
+            return self.execute(_node_id, compiled_config.as_value(), variable_pool, context).await;
+        };
+
+        let cases = &config.parsed.cases;
+
+        #[cfg(not(feature = "security"))]
+        let _ = context;
+
+        let selected = match evaluate_cases(cases, variable_pool).await {
             Ok(selected) => selected,
             Err(mismatch) => {
                 let message = format!(

@@ -1,9 +1,10 @@
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::dsl::schema::{WorkflowSchema, NodeSchema};
 use crate::error::WorkflowError;
-use super::types::{Graph, GraphNode, GraphEdge, EdgeTraversalState};
+use super::types::{Graph, GraphEdge, GraphNode, GraphTopology};
 
 /// Build a Graph from a validated WorkflowSchema
 pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
@@ -22,10 +23,9 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
             title: ns.data.title.clone(),
             config,
             version: ns.data.version.clone().unwrap_or_else(|| "1".to_string()),
-            state: EdgeTraversalState::Pending,
-          error_strategy: ns.data.error_strategy.clone(),
-          retry_config: ns.data.retry_config.clone(),
-          timeout_secs: ns.data.timeout_secs,
+            error_strategy: ns.data.error_strategy.clone(),
+            retry_config: ns.data.retry_config.clone(),
+            timeout_secs: ns.data.timeout_secs,
         };
 
         if ns.data.node_type == "start" {
@@ -56,7 +56,6 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
             source_node_id: es.source.clone(),
             target_node_id: es.target.clone(),
             source_handle: es.source_handle.clone(),
-            state: EdgeTraversalState::Pending,
         };
 
         in_edges.entry(es.target.clone()).or_default().push(edge_id.clone());
@@ -65,13 +64,15 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
         edges.insert(edge_id, edge);
     }
 
-    Ok(Graph {
-        nodes,
-        edges,
-        in_edges,
-        out_edges,
-        root_node_id,
-    })
+    let topology = GraphTopology {
+      nodes,
+      edges,
+      in_edges,
+      out_edges,
+      root_node_id,
+    };
+
+    Ok(Graph::from_topology(Arc::new(topology)))
 }
 
 /// Build the config JSON for a node from its schema
@@ -119,9 +120,9 @@ edges:
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
         let graph = build_graph(&schema).unwrap();
-        assert_eq!(graph.nodes.len(), 2);
-        assert_eq!(graph.edges.len(), 1);
-        assert_eq!(graph.root_node_id, "start_1");
+        assert_eq!(graph.topology().nodes.len(), 2);
+        assert_eq!(graph.topology().edges.len(), 1);
+        assert_eq!(graph.root_node_id(), "start_1");
         assert!(graph.is_node_ready("start_1"));
     }
 
@@ -165,7 +166,7 @@ edges:
 "#;
         let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
         let graph = build_graph(&schema).unwrap();
-        assert_eq!(graph.nodes.len(), 5);
+        assert_eq!(graph.topology().nodes.len(), 5);
         assert!(graph.is_branch_node("if1"));
     }
 }

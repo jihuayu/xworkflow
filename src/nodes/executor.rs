@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use std::sync::Arc;
 use parking_lot::Mutex;
 
+use crate::compiler::CompiledNodeConfig;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::NodeRunResult;
@@ -26,6 +27,18 @@ pub trait NodeExecutor: Send + Sync {
         variable_pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError>;
+
+    /// Execute using a compiled node config when available.
+    async fn execute_compiled(
+        &self,
+        node_id: &str,
+        compiled_config: &CompiledNodeConfig,
+        variable_pool: &VariablePool,
+        context: &RuntimeContext,
+    ) -> Result<NodeRunResult, NodeError> {
+        self.execute(node_id, compiled_config.as_value(), variable_pool, context)
+            .await
+    }
 }
 
 /// Registry of node executors by node type string

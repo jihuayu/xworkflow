@@ -603,6 +603,11 @@ impl StreamWriter {
         self.notify_readers();
     }
 
+    /// Finalize the stream without a final value.
+    pub async fn finish(&self) {
+        self.end(Segment::None).await;
+    }
+
     /// Mark the stream as failed with an error message.
     pub async fn error(&self, message: String) {
         let mut state = self.state.write().await;
