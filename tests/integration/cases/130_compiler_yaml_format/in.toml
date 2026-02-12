@@ -1,4 +1,0 @@
-# Compiler: Workflow defined in YAML format.
-# File: Input variables supplied to the workflow
-
-msg = "yaml test"

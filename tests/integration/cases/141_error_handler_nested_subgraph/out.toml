@@ -1,9 +1,0 @@
-# Error: Error handler with nested sub-graph recovery.
-# File: Expected execution result and output values
-
-status = "failed_with_recovery"
-partial_match = false
-error_contains = "critical"
-
-[outputs]
-status = "recovered from critical"

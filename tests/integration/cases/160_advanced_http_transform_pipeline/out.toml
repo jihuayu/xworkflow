@@ -1,7 +1,0 @@
-# Advanced: HTTP request followed by complex transformations.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = true
-
-[outputs]

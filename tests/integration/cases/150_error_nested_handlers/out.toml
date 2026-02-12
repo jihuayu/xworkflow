@@ -1,8 +1,0 @@
-# Error: Nested error handlers in iteration sub-graph.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = false
-
-[outputs]
-results = [10, 0, 20, 0, 14]

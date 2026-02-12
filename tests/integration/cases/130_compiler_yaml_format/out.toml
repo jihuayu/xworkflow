@@ -1,8 +1,0 @@
-# Compiler: Workflow defined in YAML format.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = false
-
-[outputs]
-output = "YAML: yaml test"

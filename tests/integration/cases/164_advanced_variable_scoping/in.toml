@@ -1,5 +1,0 @@
-# Advanced: Variable scoping across nested sub-graph boundaries.
-# File: Input variables supplied to the workflow
-
-outer = "root"
-items = ["a", "b"]

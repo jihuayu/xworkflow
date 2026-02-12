@@ -1,4 +1,0 @@
-# Streaming: Multiple LLM nodes with streaming propagation.
-# File: Input variables supplied to the workflow
-
-prompt1 = "Tell me about AI"

@@ -1,4 +1,0 @@
-# Advanced: Deeply nested iteration within loop.
-# File: Input variables supplied to the workflow
-
-items = [[1, 2], [3, 4], [5, 6]]

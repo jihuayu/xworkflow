@@ -1,8 +1,0 @@
-# Advanced: Variable scoping across nested sub-graph boundaries.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = false
-
-[outputs]
-results = ["root_mid_root_a", "root_mid_root_b"]

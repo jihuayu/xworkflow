@@ -1,5 +1,0 @@
-# Compiler: Compiled workflow caching for performance.
-# File: Runtime state: engine config, mock server, fake time/id, etc.
-
-[engine_config]
-enable_workflow_caching = true

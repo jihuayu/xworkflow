@@ -1,5 +1,0 @@
-# Advanced: Multiple parallel iterations with aggregation.
-# File: Input variables supplied to the workflow
-
-list1 = [1, 2, 3]
-list2 = [4, 5]

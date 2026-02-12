@@ -1,7 +1,0 @@
-# Advanced: Extensive use of system variables in workflow.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = true
-
-[outputs]

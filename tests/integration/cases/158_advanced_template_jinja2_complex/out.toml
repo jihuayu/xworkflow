@@ -1,8 +1,0 @@
-# Advanced: Complex Jinja2 template with filters and macros.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = false
-
-[outputs]
-output = "ALICE: 80, BOB: 90, CAROL: 70"

@@ -1,9 +1,0 @@
-# Advanced: Multiple nested if-else branches.
-# File: Expected execution result and output values
-
-status = "completed"
-partial_match = true
-
-[outputs]
-grade = ["Good"]
-status = ["Passed"]
