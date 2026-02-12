@@ -6,7 +6,7 @@ enable_network_policy = true
 
 [engine_config.security.network_policy]
 block_private_ips = true
-allowed_domains = []
+allowed_domains = ["localhost"]
 
 [[mock_server]]
 method = "GET"
