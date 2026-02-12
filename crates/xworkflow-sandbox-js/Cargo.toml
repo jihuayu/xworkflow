@@ -30,3 +30,5 @@ hex = "0.4"
 
 [dev-dependencies]
 regex = "1"
+tokio-test = "0.4"
+

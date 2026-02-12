@@ -5463,6 +5463,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
+ "tokio",
  "xworkflow-types",
  "zip",
 ]
@@ -5527,6 +5528,7 @@ dependencies = [
  "sha1",
  "sha2",
  "tokio",
+ "tokio-test",
  "uuid",
  "xworkflow-types",
 ]

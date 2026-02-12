@@ -1,3 +1,8 @@
 /target
 .claude
 nul
+# Coverage artifacts
+cobertura.xml
+dhat-heap.json
+*.profraw
+*.profdata
