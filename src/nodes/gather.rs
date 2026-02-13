@@ -57,3 +57,96 @@ impl NodeExecutor for GatherExecutor {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_context() -> RuntimeContext {
+        RuntimeContext::default()
+    }
+
+    #[tokio::test]
+    async fn test_gather_executor_empty_variables() {
+        let executor = GatherExecutor;
+        let pool = VariablePool::new();
+        
+        let config = serde_json::json!({
+            "variables": [],
+            "join_mode": "all",
+        });
+        
+        let context = create_test_context();
+        let result = executor.execute("gather1", &config, &pool, &context).await.unwrap();
+        
+        assert_eq!(result.status, WorkflowNodeExecutionStatus::Succeeded);
+        
+        if let NodeOutputs::Sync(outputs) = result.outputs {
+            if let Segment::Integer(count) = outputs.get("completed_count").unwrap() {
+                assert_eq!(*count, 0);
+            }
+            if let Segment::Array(arr) = outputs.get("results").unwrap() {
+                assert_eq!(arr.len(), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gather_executor_default_config() {
+        let executor = GatherExecutor;
+        let pool = VariablePool::new();
+        
+        // Use invalid config to trigger default
+        let config = serde_json::json!({});
+        
+        let context = create_test_context();
+        let result = executor.execute("gather1", &config, &pool, &context).await.unwrap();
+        
+        assert_eq!(result.status, WorkflowNodeExecutionStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn test_gather_executor_edge_handle() {
+        let executor = GatherExecutor;
+        let pool = VariablePool::new();
+        
+        let config = serde_json::json!({
+            "variables": [],
+            "join_mode": "all",
+        });
+        
+        let context = create_test_context();
+        let result = executor.execute("gather1", &config, &pool, &context).await.unwrap();
+        
+        assert_eq!(result.edge_source_handle, EdgeHandle::Default);
+    }
+
+    #[tokio::test]
+    async fn test_gather_executor_output_structure() {
+        let executor = GatherExecutor;
+        let pool = VariablePool::new();
+        
+        let config = serde_json::json!({
+            "variables": [],
+            "join_mode": "all",
+        });
+        
+        let context = create_test_context();
+        let result = executor.execute("gather1", &config, &pool, &context).await.unwrap();
+        
+        if let NodeOutputs::Sync(outputs) = result.outputs {
+            // Should always have these two keys
+            assert!(outputs.contains_key("results"));
+            assert!(outputs.contains_key("completed_count"));
+            
+            // results should be an array
+            assert!(matches!(outputs.get("results"), Some(Segment::Array(_))));
+            
+            // completed_count should be an integer
+            assert!(matches!(outputs.get("completed_count"), Some(Segment::Integer(_))));
+        } else {
+            panic!("Expected sync outputs");
+        }
+    }
+}
+

@@ -1,0 +1,100 @@
+# Advanced: Loop with multiple state variables and complex logic.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "target"
+label = "Target"
+type = "number"
+required = true
+
+[[nodes]]
+id = "loop1"
+
+[nodes.data]
+type = "loop"
+title = "Fibonacci Loop"
+max_iterations = 20
+output_variable = "result"
+
+[nodes.data.condition]
+variable_selector = [ "loop", "current",]
+comparison_operator = "less_than"
+value_selector = [ "start", "target",]
+
+[nodes.data.initial_vars]
+prev = 0
+current = 1
+count = 0
+
+[nodes.data.sub_graph]
+[[nodes.data.sub_graph.nodes]]
+id = "sg_start"
+type = "start"
+title = "SG Start"
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_code"
+type = "code"
+title = "Next Fibonacci"
+
+[nodes.data.sub_graph.nodes.data]
+code = "function main(inputs) { const next = inputs.prev + inputs.current; return { prev: inputs.current, current: next, count: inputs.count + 1 }; }"
+language = "javascript"
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "prev"
+value_selector = [ "loop", "prev",]
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "current"
+value_selector = [ "loop", "current",]
+[[nodes.data.sub_graph.nodes.data.variables]]
+variable = "count"
+value_selector = [ "loop", "count",]
+
+[[nodes.data.sub_graph.nodes]]
+id = "sg_end"
+type = "end"
+title = "SG End"
+
+[nodes.data.sub_graph.nodes.data]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "prev"
+value_selector = [ "sg_code", "prev",]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "current"
+value_selector = [ "sg_code", "current",]
+[[nodes.data.sub_graph.nodes.data.outputs]]
+variable = "count"
+value_selector = [ "sg_code", "count",]
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_start"
+target = "sg_code"
+
+[[nodes.data.sub_graph.edges]]
+source = "sg_code"
+target = "sg_end"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "iterations"
+value_selector = [ "loop1", "_iterations",]
+
+[[edges]]
+source = "start"
+target = "loop1"
+
+[[edges]]
+source = "loop1"
+target = "end"

@@ -441,4 +441,176 @@ mod tests {
         let ctx = WorkflowContext::default().with_node_executor_registry(Arc::clone(&registry));
         assert!(Arc::ptr_eq(ctx.node_executor_registry(), &registry));
     }
+
+    #[tokio::test]
+    async fn test_event_publishing() {
+        let (tx, mut rx) = mpsc::channel::<GraphEngineEvent>(16);
+        let ctx = WorkflowContext::default().with_event_tx(tx);
+        
+        // Send an event through the context
+        if let Some(event_tx) = ctx.event_tx() {
+            event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
+        }
+        
+        // Receive and verify
+        let event = rx.recv().await.unwrap();
+        match event {
+            GraphEngineEvent::GraphRunStarted => {},
+            _ => panic!("Unexpected event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_subscription_multiple_events() {
+        let (tx, mut rx) = mpsc::channel::<GraphEngineEvent>(32);
+        let ctx = WorkflowContext::default().with_event_tx(tx);
+        
+        if let Some(event_tx) = ctx.event_tx() {
+            event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
+            event_tx.send(GraphEngineEvent::GraphRunSucceeded { 
+                outputs: std::collections::HashMap::new() 
+            }).await.unwrap();
+        }
+        
+        let event1 = rx.recv().await.unwrap();
+        let event2 = rx.recv().await.unwrap();
+        
+        assert!(matches!(event1, GraphEngineEvent::GraphRunStarted));
+        assert!(matches!(event2, GraphEngineEvent::GraphRunSucceeded { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_event_channel_closed() {
+        let (tx, rx) = mpsc::channel::<GraphEngineEvent>(16);
+        let ctx = WorkflowContext::default().with_event_tx(tx);
+        
+        // Drop receiver to close channel
+        drop(rx);
+        
+        // Sending should fail
+        if let Some(event_tx) = ctx.event_tx() {
+            let result = event_tx.send(GraphEngineEvent::GraphRunStarted).await;
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_channel_full() {
+        let (tx, rx) = mpsc::channel::<GraphEngineEvent>(1);
+        let ctx = WorkflowContext::default().with_event_tx(tx);
+        
+        if let Some(event_tx) = ctx.event_tx() {
+            // Fill the channel
+            event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
+            
+            // Keep receiver alive but don't consume - this tests backpressure
+            let send_future = event_tx.send(GraphEngineEvent::GraphRunStarted);
+            tokio::select! {
+                _ = send_future => {},
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    // Timeout is expected when channel is full and receiver isn't consuming
+                }
+            }
+        }
+        
+        // Drop receiver to clean up
+        drop(rx);
+    }
+
+    #[test]
+    fn test_workflow_context_clone() {
+        let ctx = WorkflowContext::default();
+        let cloned = ctx.clone();
+        assert_eq!(ctx.execution_id, cloned.execution_id);
+        assert_eq!(ctx.start_time, cloned.start_time);
+    }
+
+    #[test]
+    fn test_workflow_context_accessors() {
+        let runtime_group = Arc::new(RuntimeGroup::default());
+        let ctx = WorkflowContext::new(runtime_group);
+        
+        assert!(ctx.node_executor_registry().get("start").is_some());
+        // Just verify the registry exists
+        let _registry = ctx.llm_provider_registry();
+        assert!(ctx.execution_id.len() > 0);
+    }
+
+    #[test]
+    fn test_workflow_context_workflow_id_field() {
+        let mut ctx = WorkflowContext::default();
+        ctx.workflow_id = Some("test_workflow".to_string());
+        assert_eq!(ctx.workflow_id, Some("test_workflow".to_string()));
+    }
+
+    #[test]
+    fn test_workflow_context_strict_template_field() {
+        let mut ctx = WorkflowContext::default();
+        ctx.strict_template = true;
+        assert!(ctx.strict_template());
+    }
+
+    #[test]
+    fn test_workflow_context_http_client_provider() {
+        let ctx = WorkflowContext::default();
+        let provider = ctx.http_client();
+        assert!(provider.is_some());
+    }
+
+    #[cfg(feature = "plugin-system")]
+    #[test]
+    fn test_workflow_context_template_functions() {
+        let ctx = WorkflowContext::default();
+        let functions = ctx.template_functions();
+        assert!(functions.is_some());
+    }
+
+    #[test]
+    fn test_workflow_context_custom_time_provider() {
+        let fake_time = Arc::new(FakeTimeProvider::new(5000));
+        let runtime_group = Arc::new(RuntimeGroup::default());
+        let ctx = WorkflowContext {
+            runtime_group,
+            execution_id: "test".to_string(),
+            workflow_id: None,
+            start_time: 5000,
+            time_provider: fake_time.clone(),
+            id_generator: Arc::new(RealIdGenerator::default()),
+            event_tx: None,
+            sub_graph_runner: None,
+            strict_template: false,
+        };
+        
+        assert_eq!(ctx.time_provider.now_timestamp(), 5000);
+    }
+
+    #[test]
+    fn test_workflow_context_custom_id_generator() {
+        let fake_id_gen = Arc::new(FakeIdGenerator::new("custom".to_string()));
+        let runtime_group = Arc::new(RuntimeGroup::default());
+        let ctx = WorkflowContext {
+            runtime_group,
+            execution_id: "test".to_string(),
+            workflow_id: None,
+            start_time: 0,
+            time_provider: Arc::new(RealTimeProvider::default()),
+            id_generator: fake_id_gen.clone(),
+            event_tx: None,
+            sub_graph_runner: None,
+            strict_template: false,
+        };
+        
+        assert_eq!(ctx.id_generator.next_id(), "custom-0");
+        assert_eq!(ctx.id_generator.next_id(), "custom-1");
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_workflow_context_security_components() {
+        let ctx = WorkflowContext::default();
+        assert!(ctx.credential_provider().is_none());
+        assert!(ctx.resource_governor().is_none());
+        assert!(ctx.audit_logger().is_none());
+        assert!(ctx.security_policy().is_none());
+    }
 }

@@ -1,0 +1,21 @@
+# Compiler: Handles nodes with minimal configuration.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+
+[[edges]]
+source = "start"
+target = "end"

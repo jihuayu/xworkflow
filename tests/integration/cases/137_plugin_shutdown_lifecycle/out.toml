@@ -1,0 +1,8 @@
+# Plugin: Plugin shutdown lifecycle is called properly.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+msg = "Cleanup test"

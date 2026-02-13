@@ -407,4 +407,366 @@ mod tests {
         assert!(rx.recv().await.is_some());
         mock.assert_async().await;
     }
+
+    #[tokio::test]
+    async fn test_openai_error_401() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(401)
+            .with_body("Unauthorized")
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let result = provider.chat_completion(request).await;
+        assert!(result.is_err());
+        match result {
+            Err(LlmError::AuthenticationError(_)) => {},
+            other => panic!("Expected AuthenticationError, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_error_429() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(429)
+            .with_body("Rate limit exceeded")
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let result = provider.chat_completion(request).await;
+        assert!(result.is_err());
+        match result {
+            Err(LlmError::RateLimitExceeded { .. }) => {},
+            other => panic!("Expected RateLimitExceeded, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_error_500() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(500)
+            .with_body("Internal server error")
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let result = provider.chat_completion(request).await;
+        assert!(result.is_err());
+        match result {
+            Err(LlmError::ApiError { status, .. }) => {
+                assert_eq!(status, 500);
+            },
+            other => panic!("Expected ApiError, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_with_custom_credentials() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .match_header("authorization", "Bearer custom-key")
+            .with_body(
+                r#"{
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let mut credentials = HashMap::new();
+        credentials.insert("api_key".to_string(), "custom-key".to_string());
+        
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials,
+        };
+
+        let resp = provider.chat_completion(request).await.unwrap();
+        assert_eq!(resp.content, "hello");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_with_org_id() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .match_header("OpenAI-Organization", "test-org")
+            .with_body(
+                r#"{
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let config = OpenAiConfig {
+            api_key: "test-key".into(),
+            base_url: server.url(),
+            org_id: Some("test-org".into()),
+            default_model: "gpt-4o".into(),
+        };
+        let provider = OpenAiProvider::new(config);
+        
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let resp = provider.chat_completion(request).await.unwrap();
+        assert_eq!(resp.content, "hello");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_with_temperature_and_max_tokens() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            max_tokens: Some(100),
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let resp = provider.chat_completion(request).await.unwrap();
+        assert_eq!(resp.content, "hello");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_default_model() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let resp = provider.chat_completion(request).await.unwrap();
+        assert_eq!(resp.content, "hello");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_stream_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(400)
+            .with_body("Bad request")
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::Text("hi".into()),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            credentials: HashMap::new(),
+        };
+
+        let (tx, _rx) = mpsc::channel(8);
+        let result = provider.chat_completion_stream(request, tx).await;
+        assert!(result.is_err());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_openai_multimodal_content() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": "image response"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::new(base_config(server.url()));
+        let request = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: ChatContent::MultiModal(vec![
+                    crate::llm::types::ContentPart::Text {
+                        text: "What's in this image?".into(),
+                    },
+                    crate::llm::types::ContentPart::ImageUrl {
+                        image_url: crate::llm::types::ImageUrlDetail {
+                            url: "data:image/png;base64,abc123".into(),
+                            detail: None,
+                        },
+                    },
+                ]),
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: false,
+            credentials: HashMap::new(),
+        };
+
+        let resp = provider.chat_completion(request).await.unwrap();
+        assert_eq!(resp.content, "image response");
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn test_parse_usage_defaults() {
+        let body = serde_json::json!({});
+        let usage = OpenAiProvider::parse_usage(&body);
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_parse_stream_chunk_done() {
+        let result = OpenAiProvider::parse_stream_chunk("[DONE]").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_provider_info() {
+        let provider = OpenAiProvider::new(base_config("http://test".into()));
+        let info = provider.info();
+        assert_eq!(info.id, "openai");
+        assert_eq!(info.name, "OpenAI");
+    }
+
+    #[test]
+    fn test_provider_id() {
+        let provider = OpenAiProvider::new(base_config("http://test".into()));
+        assert_eq!(provider.id(), "openai");
+    }
 }

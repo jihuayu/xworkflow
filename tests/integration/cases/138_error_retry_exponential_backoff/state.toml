@@ -1,0 +1,22 @@
+# Error: Retry with exponential backoff on failure.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/flaky"
+response_status = 500
+response_body = "error"
+expect = 2
+
+[mock_server.response_headers]
+content-type = "text/plain"
+
+[[mock_server]]
+method = "GET"
+path = "/api/flaky"
+response_status = 200
+response_body = "success"
+expect = 1
+
+[mock_server.response_headers]
+content-type = "text/plain"

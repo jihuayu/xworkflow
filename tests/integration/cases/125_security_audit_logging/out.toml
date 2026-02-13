@@ -1,0 +1,8 @@
+# Security: Audit logging captures workflow execution events.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = "processed: admin_access"

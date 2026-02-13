@@ -141,3 +141,124 @@ impl LanguageProvider for WasmLanguageProvider {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_wasm_sandbox_plugins() {
+        let config = WasmSandboxConfig::default();
+        let (boot, lang) = create_wasm_sandbox_plugins(config);
+        
+        assert_eq!(boot.metadata().id, "xworkflow.sandbox-wasm.boot");
+        assert_eq!(boot.metadata().category, PluginCategory::Bootstrap);
+        assert_eq!(lang.metadata().id, "xworkflow.sandbox-wasm.lang");
+        assert_eq!(lang.metadata().category, PluginCategory::Normal);
+    }
+
+    #[test]
+    fn test_wasm_sandbox_boot_plugin_new() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let plugin = WasmSandboxBootPlugin::new(sandbox);
+        
+        assert_eq!(plugin.metadata().name, "WASM Sandbox (Boot)");
+    }
+
+    #[test]
+    fn test_wasm_sandbox_boot_plugin_metadata() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let plugin = WasmSandboxBootPlugin::new(sandbox);
+        
+        let metadata = plugin.metadata();
+        assert_eq!(metadata.id, "xworkflow.sandbox-wasm.boot");
+        assert_eq!(metadata.category, PluginCategory::Bootstrap);
+        assert_eq!(metadata.description, "Registers WASM sandbox infrastructure");
+    }
+
+    #[test]
+    fn test_wasm_sandbox_boot_plugin_as_any() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let plugin = WasmSandboxBootPlugin::new(sandbox);
+        
+        assert!(plugin.as_any().is::<WasmSandboxBootPlugin>());
+    }
+
+    #[test]
+    fn test_wasm_sandbox_lang_plugin_new() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let plugin = WasmSandboxLangPlugin::new(sandbox);
+        
+        assert_eq!(plugin.metadata().name, "WASM Language Provider");
+        assert_eq!(plugin.metadata().category, PluginCategory::Normal);
+    }
+
+    #[test]
+    fn test_wasm_sandbox_lang_plugin_metadata() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let plugin = WasmSandboxLangPlugin::new(sandbox);
+        
+        let metadata = plugin.metadata();
+        assert_eq!(metadata.id, "xworkflow.sandbox-wasm.lang");
+        assert_eq!(metadata.description, "Provides WASM lang-provide for code node");
+    }
+
+    #[test]
+    fn test_wasm_sandbox_lang_plugin_as_any() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let plugin = WasmSandboxLangPlugin::new(sandbox);
+        
+        assert!(plugin.as_any().is::<WasmSandboxLangPlugin>());
+    }
+
+    #[test]
+    fn test_wasm_language_provider_language() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let provider = WasmLanguageProvider { sandbox };
+        
+        assert_eq!(provider.language(), CodeLanguage::Wasm);
+    }
+
+    #[test]
+    fn test_wasm_language_provider_display_name() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let provider = WasmLanguageProvider { sandbox };
+        
+        assert_eq!(provider.display_name(), "WebAssembly");
+    }
+
+    #[test]
+    fn test_wasm_language_provider_default_config() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let provider = WasmLanguageProvider { sandbox };
+        
+        let config = provider.default_config();
+        assert_eq!(config.timeout, Duration::from_secs(30));
+        assert_eq!(config.max_memory, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_wasm_language_provider_file_extensions() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let provider = WasmLanguageProvider { sandbox };
+        
+        let exts = provider.file_extensions();
+        assert_eq!(exts, vec![".wasm", ".wat"]);
+    }
+
+    #[test]
+    fn test_wasm_language_provider_supports_streaming() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let provider = WasmLanguageProvider { sandbox };
+        
+        assert!(!provider.supports_streaming());
+    }
+
+    #[test]
+    fn test_wasm_language_provider_sandbox() {
+        let sandbox = Arc::new(WasmSandbox::new(WasmSandboxConfig::default()));
+        let provider = WasmLanguageProvider { sandbox: sandbox.clone() };
+        
+        let _sandbox_ref = provider.sandbox();
+    }
+}

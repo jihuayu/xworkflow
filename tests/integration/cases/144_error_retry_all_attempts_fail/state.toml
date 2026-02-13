@@ -1,0 +1,12 @@
+# Error: All retry attempts exhausted, workflow fails.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[[mock_server]]
+method = "GET"
+path = "/api/always_fail"
+response_status = 500
+response_body = "server error"
+expect = 3
+
+[mock_server.response_headers]
+content-type = "text/plain"

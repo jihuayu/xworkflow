@@ -1,0 +1,37 @@
+# Security: Memory limit enforcement via resource governor.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Memory Test"
+code = "function main(inputs) { let arr = []; for (let i = 0; i < 1000; i++) { arr.push(i); } return { size: arr.length }; }"
+language = "javascript"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "size"
+value_selector = [ "code1", "size",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"

@@ -1,0 +1,6 @@
+# Error: All retry attempts exhausted, workflow fails.
+# File: Expected execution result and output values
+
+status = "failed"
+partial_match = false
+error_contains = "500"

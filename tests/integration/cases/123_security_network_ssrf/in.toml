@@ -1,0 +1,2 @@
+# Security: Network policy blocks SSRF attempts to internal IPs.
+# File: Input variables supplied to the workflow

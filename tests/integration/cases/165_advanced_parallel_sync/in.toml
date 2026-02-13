@@ -1,0 +1,4 @@
+# Advanced: Multiple parallel execution paths with synchronized merge.
+# File: Input variables supplied to the workflow
+
+data = [1, 2, 3]

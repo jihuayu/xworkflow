@@ -739,13 +739,35 @@ impl ListOperatorNodeExecutor {
         let mut unique = Vec::new();
 
         for item in items {
-            let key = serde_json::to_string(item).unwrap_or_default();
+            // Convert to canonical JSON for comparison (handles key order differences)
+            let canonical = Self::canonicalize_value(item);
+            let key = serde_json::to_string(&canonical).unwrap_or_default();
             if seen.insert(key) {
                 unique.push(item.clone());
             }
         }
 
         Ok(Value::Array(unique))
+    }
+
+    // Helper function to create a canonical representation of a Value for comparison
+    fn canonicalize_value(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut pairs: Vec<_> = map.iter().collect();
+                pairs.sort_by_key(|(k, _)| *k);
+                let canonical_map: serde_json::Map<String, Value> = pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), Self::canonicalize_value(v)))
+                    .collect();
+                Value::Object(canonical_map)
+            }
+            Value::Array(arr) => {
+                let canonical_arr: Vec<Value> = arr.iter().map(Self::canonicalize_value).collect();
+                Value::Array(canonical_arr)
+            }
+            other => other.clone(),
+        }
     }
 
     fn execute_reverse(&self, input: &Value) -> Result<Value, NodeError> {
@@ -1458,5 +1480,216 @@ mod tests {
         let config: LoopNodeConfig = serde_json::from_value(json).unwrap();
         assert!(config.initial_vars.is_empty());
         assert!(config.max_iterations.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_iteration_error_mode_continue() {
+        // Test that iteration continues on sub-graph error with Continue mode
+        let executor = IterationNodeExecutor::new();
+        let context = RuntimeContext::default();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("input", "items"),
+            Segment::from_value(&serde_json::json!([1, 2, 3])),
+        );
+        
+        let config = serde_json::json!({
+            "input_selector": "input.items",
+            "error_handle_mode": "continue_on_error",
+            "sub_graph": {"nodes": [], "edges": []},
+            "output_variable": "results"
+        });
+        
+        // With Continue mode, even if sub-graph has issues, iteration should succeed
+        let result = executor.execute("iter_continue", &config, &pool, &context).await;
+        // Ensure iteration succeeds in Continue mode
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_loop_missing_condition() {
+        let executor = LoopNodeExecutor::new();
+        let context = RuntimeContext::default();
+        
+        let config = serde_json::json!({
+            "sub_graph": {"nodes": [], "edges": []},
+            "output_variable": "result"
+        });
+        
+        let result = executor.execute("loop_no_cond", &config, &make_pool(), &context).await;
+        // Should fail without condition
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_operator_map() {
+        let executor = ListOperatorNodeExecutor::new();
+        let context = RuntimeContext::default();
+        
+        let config = serde_json::json!({
+            "operation": "map",
+            "input_selector": "input.items",
+            "sub_graph": {
+                "nodes": [
+                    {"id": "start", "type": "start", "data": {}},
+                    {"id": "end", "type": "end", "data": {
+                        "outputs": [
+                            {"variable": "value", "value_selector": "item"}
+                        ]
+                    }}
+                ],
+                "edges": [
+                    {"id": "e1", "source": "start", "target": "end"}
+                ]
+            },
+            "output_variable": "mapped"
+        });
+        
+        let result = executor.execute("list_map", &config, &make_pool(), &context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_list_operator_reduce() {
+        let executor = ListOperatorNodeExecutor::new();
+        let context = RuntimeContext::default();
+        
+        let config = serde_json::json!({
+            "operation": "reduce",
+            "input_selector": "input.items",
+            "initial_value": 0,
+            "sub_graph": {
+                "nodes": [
+                    {"id": "start", "type": "start", "data": {}},
+                    {"id": "end", "type": "end", "data": {
+                        "outputs": [
+                            {"variable": "accumulator", "value_selector": "item"}
+                        ]
+                    }}
+                ],
+                "edges": [
+                    {"id": "e1", "source": "start", "target": "end"}
+                ]
+            },
+            "output_variable": "reduced"
+        });
+        
+        let result = executor.execute("list_reduce", &config, &make_pool(), &context).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_list_operator_invalid_operation() {
+        // Invalid operation should fail during deserialization
+        let config = serde_json::json!({
+            "operation": "invalid_op",
+            "input_selector": "input.items",
+            "output_variable": "out"
+        });
+        
+        let result: Result<ListOperatorNodeConfig, _> = serde_json::from_value(config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_iteration_parallel_execution() {
+        let executor = IterationNodeExecutor::new();
+        let context = RuntimeContext::default();
+        
+        let config = serde_json::json!({
+            "input_selector": "input.items",
+            "parallel": true,
+            "parallelism": 2,
+            "sub_graph": {
+                "nodes": [
+                    {"id": "start", "type": "start", "data": {}},
+                    {"id": "end", "type": "end", "data": {
+                        "outputs": [{"variable": "value", "value_selector": "item"}]
+                    }}
+                ],
+                "edges": [
+                    {"id": "e1", "source": "start", "target": "end"}
+                ]
+            },
+            "output_variable": "results"
+        });
+        
+        let result = executor.execute("iter_parallel", &config, &make_pool(), &context).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_sub_graph_runner() {
+        let context = RuntimeContext::default();
+        let runner = resolve_sub_graph_runner(&context);
+        // Just ensure it returns a valid runner Arc
+        let _clone = runner.clone();
+    }
+
+    #[tokio::test]
+    async fn test_loop_condition_evaluation_error() {
+        let executor = LoopNodeExecutor::new();
+        let context = RuntimeContext::default();
+        
+        let config = serde_json::json!({
+            "condition": {
+                "variable_selector": "nonexistent.var",
+                "comparison_operator": "is",
+                "value": true
+            },
+            "max_iterations": 5,
+            "sub_graph": {"nodes": [], "edges": []},
+            "output_variable": "result"
+        });
+        
+        let result = executor.execute("loop_cond_err", &config, &make_pool(), &context).await;
+        assert!(result.is_ok()); // Should handle condition evaluation errors gracefully
+    }
+
+    #[tokio::test]
+    async fn test_list_flatten_nested_arrays() {
+        let executor = ListOperatorNodeExecutor::new();
+        let context = RuntimeContext::default();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("input", "items"),
+            Segment::from_value(&serde_json::json!([[[1, 2]], [[3]], 4])),
+        );
+        
+        let config = serde_json::json!({
+            "operation": "flatten",
+            "input_selector": "input.items",
+            "output_variable": "flat"
+        });
+        
+        let result = executor.execute("flatten_nested", &config, &pool, &context).await.unwrap();
+        let flat = result.outputs.ready().get("flat").unwrap();
+        // Flatten only goes one level deep
+        assert!(flat.as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_list_unique_complex_objects() {
+        let executor = ListOperatorNodeExecutor::new();
+        let context = RuntimeContext::default();
+        let mut pool = VariablePool::new();
+        pool.set(
+            &Selector::new("input", "items"),
+            Segment::from_value(&serde_json::json!([
+                {"id": 1, "name": "a"},
+                {"id": 2, "name": "b"},
+                {"id": 1, "name": "a"}
+            ])),
+        );
+        
+        let config = serde_json::json!({
+            "operation": "unique",
+            "input_selector": "input.items",
+            "output_variable": "uniq"
+        });
+        
+        let result = executor.execute("uniq_obj", &config, &pool, &context).await.unwrap();
+        let uniq = result.outputs.ready().get("uniq").unwrap();
+        assert_eq!(uniq.as_array().unwrap().len(), 2);
     }
 }

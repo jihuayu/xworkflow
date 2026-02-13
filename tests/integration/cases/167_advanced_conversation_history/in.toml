@@ -1,0 +1,4 @@
+# Advanced: Conversation variables with message history management.
+# File: Input variables supplied to the workflow
+
+message = "Hello, how are you?"

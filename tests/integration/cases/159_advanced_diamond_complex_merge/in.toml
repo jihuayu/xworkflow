@@ -1,0 +1,4 @@
+# Advanced: Diamond pattern with conditional merge logic.
+# File: Input variables supplied to the workflow
+
+input = 5

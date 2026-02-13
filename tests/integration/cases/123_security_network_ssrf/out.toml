@@ -1,0 +1,8 @@
+# Security: Network policy blocks SSRF attempts to internal IPs.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+body = "public data"

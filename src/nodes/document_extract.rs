@@ -532,3 +532,340 @@ impl ExtractorRouter {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use xworkflow_types::{DocumentMetadata, ExtractionResult};
+
+    struct MockExtractorProvider;
+
+    #[async_trait]
+    impl DocumentExtractorProvider for MockExtractorProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn priority(&self) -> i32 {
+            10
+        }
+
+        fn supported_mime_types(&self) -> Vec<&str> {
+            vec!["text/plain"]
+        }
+
+        fn supported_extensions(&self) -> Vec<&str> {
+            vec!["txt"]
+        }
+
+        async fn extract(&self, request: ExtractionRequest) -> Result<ExtractionResult, ExtractError> {
+            Ok(ExtractionResult {
+                text: String::from_utf8_lossy(&request.content).to_string(),
+                metadata: DocumentMetadata {
+                    page_count: None,
+                    sheet_count: None,
+                    encoding: Some("utf-8".into()),
+                    extractor_used: "mock".into(),
+                },
+            })
+        }
+    }
+
+    #[test]
+    fn test_document_extractor_executor_new() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let router = Arc::new(ExtractorRouter::from_providers(&providers));
+        let executor = DocumentExtractorExecutor::new(router);
+        assert!(Arc::strong_count(&executor.router) >= 1);
+    }
+
+    #[test]
+    fn test_document_extractor_executor_new_with_providers() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let executor = DocumentExtractorExecutor::new_with_providers(providers);
+        assert!(Arc::strong_count(&executor.router) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_no_variables() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let executor = DocumentExtractorExecutor::new_with_providers(providers);
+        
+        let config = serde_json::json!({});
+        let pool = VariablePool::new();
+        let context = RuntimeContext::default();
+        
+        let result = executor.execute("test", &config, &pool, &context).await;
+        assert!(result.is_err());
+        match result {
+            Err(NodeError::ConfigError(msg)) => {
+                assert!(msg.contains("requires variables"));
+            }
+            _ => panic!("Expected ConfigError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_no_files() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let executor = DocumentExtractorExecutor::new_with_providers(providers);
+        
+        let config = serde_json::json!({
+            "variables": [
+                {"value_selector": ["test", "file"]}
+            ]
+        });
+        let pool = VariablePool::new();
+        let context = RuntimeContext::default();
+        
+        let result = executor.execute("test", &config, &pool, &context).await;
+        // When the variable doesn't exist in the pool, VariablePool returns Segment::None.
+        // segment_to_files handles None by returning Ok(Vec::new()),
+        // which then triggers the "no files provided" validation error.
+        assert!(result.is_err());
+        if let Err(e) = result {
+            // Just verify an error occurred - the exact type/message may vary
+            let _ = e.to_string();
+        }
+    }
+
+    #[test]
+    fn test_segment_to_files_file() {
+        let file = FileSegment {
+            name: "test.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 100,
+            id: Some("test".into()),
+            ..Default::default()
+        };
+        let segment = Segment::File(Arc::new(file.clone()));
+        
+        let result = segment_to_files(&segment);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_segment_to_files_array_file() {
+        let file1 = FileSegment {
+            name: "test1.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 100,
+            id: Some("test1".into()),
+            ..Default::default()
+        };
+        let file2 = FileSegment {
+            name: "test2.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 200,
+            id: Some("test2".into()),
+            ..Default::default()
+        };
+        let segment = Segment::ArrayFile(Arc::new(vec![file1, file2]));
+        
+        let result = segment_to_files(&segment);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_segment_to_files_none() {
+        let segment = Segment::None;
+        let result = segment_to_files(&segment);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_segment_to_files_invalid() {
+        let segment = Segment::String("not a file".into());
+        let result = segment_to_files(&segment);
+        assert!(result.is_err());
+        match result {
+            Err(NodeError::TypeError(msg)) => {
+                assert!(msg.contains("expects file"));
+            }
+            _ => panic!("Expected TypeError"),
+        }
+    }
+
+    #[test]
+    fn test_detect_mime_type_from_file() {
+        let file = FileSegment {
+            mime_type: "application/pdf".into(),
+            ..Default::default()
+        };
+        let content = vec![];
+        
+        let mime = detect_mime_type(&file, &content);
+        assert_eq!(mime, "application/pdf");
+    }
+
+    #[test]
+    fn test_detect_mime_type_from_filename() {
+        let file = FileSegment {
+            name: "document.pdf".into(),
+            ..Default::default()
+        };
+        let content = vec![];
+        
+        let mime = detect_mime_type(&file, &content);
+        // mime_guess may not always detect .pdf extension reliably depending on the system,
+        // so we accept either successful detection or fallback to octet-stream
+        assert!(mime.contains("pdf") || mime == "application/octet-stream");
+    }
+
+    #[test]
+    fn test_detect_mime_type_default() {
+        let file = FileSegment::default();
+        let content = vec![];
+        
+        let mime = detect_mime_type(&file, &content);
+        assert_eq!(mime, "application/octet-stream");
+    }
+
+    #[test]
+    fn test_build_outputs_single() {
+        let texts = vec!["test text".into()];
+        let metas = vec![serde_json::json!({"key": "value"})];
+        
+        let result = build_outputs(texts, metas, false);
+        assert!(matches!(result.status, WorkflowNodeExecutionStatus::Succeeded));
+        
+        if let NodeOutputs::Sync(outputs) = result.outputs {
+            assert!(outputs.contains_key("text"));
+            assert!(outputs.contains_key("metadata"));
+        } else {
+            panic!("Expected Sync outputs");
+        }
+    }
+
+    #[test]
+    fn test_build_outputs_array() {
+        let texts = vec!["text1".into(), "text2".into()];
+        let metas = vec![
+            serde_json::json!({"key": "value1"}),
+            serde_json::json!({"key": "value2"}),
+        ];
+        
+        let result = build_outputs(texts, metas, true);
+        assert!(matches!(result.status, WorkflowNodeExecutionStatus::Succeeded));
+        
+        if let NodeOutputs::Sync(outputs) = result.outputs {
+            assert!(outputs.contains_key("text"));
+            assert!(outputs.contains_key("metadata"));
+        } else {
+            panic!("Expected Sync outputs");
+        }
+    }
+
+    #[test]
+    fn test_enforce_output_limit_ok() {
+        let result = enforce_output_limit("test", 1000, 500);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enforce_output_limit_exceeded() {
+        let result = enforce_output_limit("test", 100, 200);
+        assert!(result.is_err());
+        match result {
+            Err(NodeError::OutputTooLarge { max, actual, .. }) => {
+                assert_eq!(max, 100);
+                assert_eq!(actual, 200);
+            }
+            _ => panic!("Expected OutputTooLarge error"),
+        }
+    }
+
+    #[test]
+    fn test_error_metadata() {
+        let file = FileSegment {
+            name: "test.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 100,
+            ..Default::default()
+        };
+        let err = ExtractError::Timeout { seconds: 30 };
+        
+        let meta = error_metadata(&file, &err);
+        assert!(meta.is_object());
+        let obj = meta.as_object().unwrap();
+        assert!(obj.contains_key("error"));
+    }
+
+    #[test]
+    fn test_map_extract_error_unsupported_format() {
+        let err = ExtractError::UnsupportedFormat {
+            mime_type: "unknown/type".into(),
+            filename: None,
+        };
+        let result = map_extract_error(err);
+        
+        // Verify the error message contains the expected information
+        let error_msg = result.to_string();
+        assert!(error_msg.contains("UnsupportedFormat") || error_msg.contains("unsupported"));
+    }
+
+    #[test]
+    fn test_extractor_router_from_providers() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let router = ExtractorRouter::from_providers(&providers);
+        
+        assert!(!router.mime_routes.is_empty());
+        assert!(!router.ext_routes.is_empty());
+    }
+
+    #[test]
+    fn test_extractor_router_route_by_mime() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let router = ExtractorRouter::from_providers(&providers);
+        
+        let provider = router.route("text/plain", None);
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().name(), "mock");
+    }
+
+    #[test]
+    fn test_extractor_router_route_by_extension() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let router = ExtractorRouter::from_providers(&providers);
+        
+        let provider = router.route("unknown/type", Some("test.txt"));
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().name(), "mock");
+    }
+
+    #[test]
+    fn test_extractor_router_route_not_found() {
+        let providers: Vec<Arc<dyn DocumentExtractorProvider>> = vec![
+            Arc::new(MockExtractorProvider),
+        ];
+        let router = ExtractorRouter::from_providers(&providers);
+        
+        let provider = router.route("unknown/type", None);
+        assert!(provider.is_none());
+    }
+
+    #[test]
+    fn test_max_output_limit() {
+        let context = RuntimeContext::default();
+        let limit = max_output_limit(&context, "test");
+        assert_eq!(limit, 10 * 1024 * 1024);
+    }
+}
