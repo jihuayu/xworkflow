@@ -9,6 +9,8 @@ use std::sync::Arc;
 use xworkflow::core::debug::{DebugConfig, DebugEvent, PauseLocation, PauseReason};
 use xworkflow::core::Segment;
 use xworkflow::dsl::{parse_dsl, DslFormat};
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::dsl::schema::McpServerConfig;
 use xworkflow::{
     EngineConfig,
     ExecutionStatus,
@@ -40,6 +42,12 @@ use xworkflow::dsl::schema::{LlmUsage, NodeRunResult, WorkflowNodeExecutionStatu
 #[cfg(feature = "plugin-system")]
 use xworkflow::error::NodeError;
 use xworkflow::llm::{LlmProviderRegistry, OpenAiConfig, OpenAiProvider};
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::mcp::client::{McpClient, McpToolInfo};
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::mcp::error::McpError;
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::mcp::pool::{clear_mock_connections, register_mock_connection};
 #[cfg(feature = "plugin-system")]
 use xworkflow::llm::{
     ChatCompletionRequest,
@@ -82,6 +90,48 @@ struct StateFile {
     llm_providers: Option<LlmProvidersConfig>,
     #[serde(default)]
     mock_server: Option<Vec<MockEndpoint>>,
+    #[cfg(feature = "builtin-agent-node")]
+    #[serde(default)]
+    mock_mcp_servers: Vec<MockMcpServerState>,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+#[derive(Debug, Deserialize, Clone)]
+struct MockMcpServerState {
+    config: McpServerConfig,
+    #[serde(default = "default_mock_mcp_tool_name")]
+    tool_name: String,
+    #[serde(default = "default_mock_mcp_tool_description")]
+    tool_description: String,
+    #[serde(default = "default_mock_mcp_tool_schema")]
+    tool_input_schema: Value,
+    #[serde(default = "default_mock_mcp_tool_result")]
+    tool_result: String,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_name() -> String {
+    "search".to_string()
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_description() -> String {
+    "Mock MCP search tool".to_string()
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "q": {"type": "string"}
+        }
+    })
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_result() -> String {
+    "tool-result".to_string()
 }
 
 #[cfg(feature = "plugin-system")]
@@ -431,6 +481,7 @@ impl LlmProvider for TestLlmProvider {
             usage: LlmUsage::default(),
             model,
             finish_reason: Some("stop".to_string()),
+            tool_calls: vec![],
         })
     }
 
@@ -453,6 +504,7 @@ impl LlmProvider for TestLlmProvider {
             usage: LlmUsage::default(),
             model,
             finish_reason: Some("stop".to_string()),
+            tool_calls: vec![],
         })
     }
 }
@@ -560,6 +612,8 @@ pub async fn run_case(case_dir: &Path) {
 
     // Set up mock HTTP server if configured
     let _mock_server_guard = setup_mock_server(&mut state).await;
+    #[cfg(feature = "builtin-agent-node")]
+    let _mock_mcp_guard = setup_mock_mcp_servers(&state);
 
     let schema = parse_dsl(&workflow_toml, DslFormat::Toml)
         .unwrap_or_else(|e| panic!("Failed to parse workflow.toml: {}", e));
@@ -725,6 +779,72 @@ struct MockServerGuard {
     _mocks: Vec<mockito::Mock>,
 }
 
+#[cfg(feature = "builtin-agent-node")]
+struct MockMcpClientState {
+    tool_name: String,
+    tool_description: String,
+    tool_input_schema: Value,
+    tool_result: String,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+#[async_trait::async_trait]
+impl McpClient for MockMcpClientState {
+    async fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
+        Ok(vec![McpToolInfo {
+            name: self.tool_name.clone(),
+            description: self.tool_description.clone(),
+            input_schema: self.tool_input_schema.clone(),
+        }])
+    }
+
+    async fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, McpError> {
+        if name != self.tool_name {
+            return Err(McpError::ToolNotFound(name.to_string()));
+        }
+        if let Some(query) = arguments.get("q").and_then(|v| v.as_str()) {
+            return Ok(format!("{}:{}", self.tool_result, query));
+        }
+        Ok(self.tool_result.clone())
+    }
+
+    async fn close(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "builtin-agent-node")]
+struct MockMcpGuard;
+
+#[cfg(feature = "builtin-agent-node")]
+impl Drop for MockMcpGuard {
+    fn drop(&mut self) {
+        clear_mock_connections();
+    }
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn setup_mock_mcp_servers(state: &StateFile) -> Option<MockMcpGuard> {
+    if state.mock_mcp_servers.is_empty() {
+        return None;
+    }
+
+    clear_mock_connections();
+    for mock in &state.mock_mcp_servers {
+        register_mock_connection(
+            &mock.config,
+            Arc::new(MockMcpClientState {
+                tool_name: mock.tool_name.clone(),
+                tool_description: mock.tool_description.clone(),
+                tool_input_schema: mock.tool_input_schema.clone(),
+                tool_result: mock.tool_result.clone(),
+            }),
+        );
+    }
+
+    Some(MockMcpGuard)
+}
+
 // =====================================================================
 // Debug mode integration test support
 // =====================================================================
@@ -793,6 +913,8 @@ pub async fn run_debug_case(case_dir: &Path) {
 
     // Set up mock HTTP server if configured
     let _mock_server_guard = setup_mock_server(&mut state).await;
+    #[cfg(feature = "builtin-agent-node")]
+    let _mock_mcp_guard = setup_mock_mcp_servers(&state);
 
     let schema = parse_dsl(&workflow_toml, DslFormat::Toml)
         .unwrap_or_else(|e| panic!("Failed to parse workflow.toml: {}", e));

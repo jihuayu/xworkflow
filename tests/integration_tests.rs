@@ -154,6 +154,14 @@ integration::integration_test_cases!(
     case_078_plugin_hook_modifier => "078_plugin_hook_modifier",
 );
 
+#[cfg(feature = "builtin-agent-node")]
+integration::integration_test_cases!(
+    "tests/integration/cases",
+    case_130_tool_node_basic => "130_tool_node_basic",
+    case_131_agent_node_basic => "131_agent_node_basic",
+    case_132_agent_node_max_iterations => "132_agent_node_max_iterations",
+);
+
 integration::integration_debug_test_cases!(
     "tests/integration/cases",
     case_050_debug_break_on_start => "050_debug_break_on_start",

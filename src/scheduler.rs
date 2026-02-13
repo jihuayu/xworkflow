@@ -33,6 +33,8 @@ use crate::error::WorkflowError;
 use crate::graph::build_graph;
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::llm::LlmProviderRegistry;
+#[cfg(feature = "builtin-agent-node")]
+use crate::mcp::pool::McpConnectionPool;
 #[cfg(feature = "security")]
 use crate::security::{AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, SecurityPolicy};
 
@@ -565,6 +567,14 @@ impl WorkflowRunnerBuilder {
       .configure_variable_pool(&builder.context, &mut pool);
 
     // Set system variables
+    #[cfg(feature = "builtin-agent-node")]
+    if !builder.schema.mcp_servers.is_empty() {
+      builder
+        .system_vars
+        .entry("__mcp_servers".to_string())
+        .or_insert_with(|| serde_json::to_value(&builder.schema.mcp_servers).unwrap_or(Value::Object(serde_json::Map::new())));
+    }
+
     for (k, v) in &builder.system_vars {
       let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
       pool.set(&selector, Segment::from_value(v));
@@ -603,6 +613,11 @@ impl WorkflowRunnerBuilder {
 
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(Arc::clone(&llm_registry));
+    #[cfg(feature = "builtin-agent-node")]
+    {
+      let mcp_pool = Arc::new(RwLock::new(McpConnectionPool::new()));
+      registry.set_mcp_pool(mcp_pool);
+    }
 
     let registry = Arc::new(registry);
     builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));
@@ -828,6 +843,14 @@ impl WorkflowRunnerBuilder {
     let start_var_types = collect_start_variable_types(&builder.schema);
     let conversation_var_types = collect_conversation_variable_types(&builder.schema);
 
+    #[cfg(feature = "builtin-agent-node")]
+    if !builder.schema.mcp_servers.is_empty() {
+      builder
+        .system_vars
+        .entry("__mcp_servers".to_string())
+        .or_insert_with(|| serde_json::to_value(&builder.schema.mcp_servers).unwrap_or(Value::Object(serde_json::Map::new())));
+    }
+
     for (k, v) in &builder.system_vars {
       let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
       pool.set(&selector, Segment::from_value(v));
@@ -863,6 +886,11 @@ impl WorkflowRunnerBuilder {
 
     let llm_registry = Arc::new(llm_registry);
     registry.set_llm_provider_registry(Arc::clone(&llm_registry));
+    #[cfg(feature = "builtin-agent-node")]
+    {
+      let mcp_pool = Arc::new(RwLock::new(McpConnectionPool::new()));
+      registry.set_mcp_pool(mcp_pool);
+    }
 
     let registry = Arc::new(registry);
     builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));

@@ -4,9 +4,11 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-#[cfg(feature = "builtin-docextract-node")]
+#[cfg(any(feature = "builtin-docextract-node", feature = "builtin-agent-node"))]
 use std::sync::Arc;
 use parking_lot::Mutex;
+#[cfg(feature = "builtin-agent-node")]
+use tokio::sync::RwLock;
 
 use crate::compiler::CompiledNodeConfig;
 use crate::core::runtime_context::RuntimeContext;
@@ -45,6 +47,8 @@ pub trait NodeExecutor: Send + Sync {
 pub struct NodeExecutorRegistry {
     executors: HashMap<String, OnceLock<Box<dyn NodeExecutor>>>,
     factories: Mutex<HashMap<String, Box<dyn Fn() -> Box<dyn NodeExecutor> + Send + Sync>>>,
+    #[cfg(feature = "builtin-agent-node")]
+    llm_registry: Option<std::sync::Arc<LlmProviderRegistry>>,
 }
 
 impl NodeExecutorRegistry {
@@ -58,6 +62,8 @@ impl NodeExecutorRegistry {
         NodeExecutorRegistry {
             executors: HashMap::new(),
             factories: Mutex::new(HashMap::new()),
+            #[cfg(feature = "builtin-agent-node")]
+            llm_registry: None,
         }
     }
 
@@ -182,12 +188,32 @@ impl NodeExecutorRegistry {
 
     #[cfg(feature = "builtin-llm-node")]
     pub fn set_llm_provider_registry(&mut self, registry: std::sync::Arc<LlmProviderRegistry>) {
+        #[cfg(feature = "builtin-agent-node")]
+        {
+            self.llm_registry = Some(registry.clone());
+        }
         self.register("llm", Box::new(LlmNodeExecutor::new(registry)));
     }
 
     #[cfg(not(feature = "builtin-llm-node"))]
     pub fn set_llm_provider_registry(&mut self, _registry: std::sync::Arc<LlmProviderRegistry>) {
     }
+
+    #[cfg(feature = "builtin-agent-node")]
+    pub fn set_mcp_pool(&mut self, pool: Arc<RwLock<crate::mcp::pool::McpConnectionPool>>) {
+        self.register("tool", Box::new(super::tool::ToolNodeExecutor::new(pool.clone())));
+
+        if let Some(llm_registry) = &self.llm_registry {
+            self.register(
+                "agent",
+                Box::new(super::agent::AgentNodeExecutor::new(
+                    llm_registry.clone(),
+                    pool,
+                )),
+            );
+        }
+    }
+
 
     /// Look up an executor for the given node type string.
     pub fn get(&self, node_type: &str) -> Option<&dyn NodeExecutor> {

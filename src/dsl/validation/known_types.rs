@@ -6,7 +6,22 @@ pub const RESERVED_NAMESPACES: &[&str] = &["sys", "env", "conversation", "loop"]
 
 pub const BRANCH_NODE_TYPES: &[&str] = &["if-else", "question-classifier"];
 
-#[cfg(feature = "builtin-docextract-node")]
+#[cfg(all(feature = "builtin-docextract-node", feature = "builtin-agent-node"))]
+pub const STUB_NODE_TYPES: &[&str] = &[
+    "knowledge-retrieval",
+    "question-classifier",
+    "parameter-extractor",
+];
+
+#[cfg(all(not(feature = "builtin-docextract-node"), feature = "builtin-agent-node"))]
+pub const STUB_NODE_TYPES: &[&str] = &[
+    "knowledge-retrieval",
+    "question-classifier",
+    "parameter-extractor",
+    "document-extractor",
+];
+
+#[cfg(all(feature = "builtin-docextract-node", not(feature = "builtin-agent-node")))]
 pub const STUB_NODE_TYPES: &[&str] = &[
     "knowledge-retrieval",
     "question-classifier",
@@ -15,7 +30,7 @@ pub const STUB_NODE_TYPES: &[&str] = &[
     "agent",
 ];
 
-#[cfg(not(feature = "builtin-docextract-node"))]
+#[cfg(all(not(feature = "builtin-docextract-node"), not(feature = "builtin-agent-node")))]
 pub const STUB_NODE_TYPES: &[&str] = &[
     "knowledge-retrieval",
     "question-classifier",
@@ -61,10 +76,16 @@ mod tests {
         assert!(STUB_NODE_TYPES.contains(&"knowledge-retrieval"));
         assert!(STUB_NODE_TYPES.contains(&"question-classifier"));
         assert!(STUB_NODE_TYPES.contains(&"parameter-extractor"));
+
+        #[cfg(not(feature = "builtin-agent-node"))]
         assert!(STUB_NODE_TYPES.contains(&"tool"));
+
         #[cfg(not(feature = "builtin-docextract-node"))]
         assert!(STUB_NODE_TYPES.contains(&"document-extractor"));
+
+        #[cfg(not(feature = "builtin-agent-node"))]
         assert!(STUB_NODE_TYPES.contains(&"agent"));
+
         assert!(!STUB_NODE_TYPES.contains(&"start"));
     }
 
@@ -96,7 +117,11 @@ mod tests {
     #[test]
     fn test_is_stub_node_type_true() {
         assert!(is_stub_node_type("knowledge-retrieval"));
+
+        #[cfg(not(feature = "builtin-agent-node"))]
         assert!(is_stub_node_type("tool"));
+
+        #[cfg(not(feature = "builtin-agent-node"))]
         assert!(is_stub_node_type("agent"));
     }
 

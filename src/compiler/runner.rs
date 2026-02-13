@@ -20,6 +20,8 @@ use crate::dsl::validation::ValidationReport;
 use crate::error::WorkflowError;
 use crate::graph::Graph;
 use crate::llm::LlmProviderRegistry;
+#[cfg(feature = "builtin-agent-node")]
+use crate::mcp::pool::McpConnectionPool;
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::scheduler::{
     build_error_context,
@@ -253,6 +255,17 @@ impl CompiledWorkflowRunnerBuilder {
             .security_gate
             .configure_variable_pool(&builder.context, &mut pool);
 
+        #[cfg(feature = "builtin-agent-node")]
+        if !schema.mcp_servers.is_empty() {
+            builder
+                .system_vars
+                .entry("__mcp_servers".to_string())
+                .or_insert_with(|| {
+                    serde_json::to_value(&schema.mcp_servers)
+                        .unwrap_or(Value::Object(serde_json::Map::new()))
+                });
+        }
+
         for (k, v) in &builder.system_vars {
             let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
             pool.set(&selector, Segment::from_value(v));
@@ -288,6 +301,11 @@ impl CompiledWorkflowRunnerBuilder {
 
         let llm_registry = Arc::new(llm_registry);
         registry.set_llm_provider_registry(Arc::clone(&llm_registry));
+        #[cfg(feature = "builtin-agent-node")]
+        {
+            let mcp_pool = Arc::new(RwLock::new(McpConnectionPool::new()));
+            registry.set_mcp_pool(mcp_pool);
+        }
 
         let registry = Arc::new(registry);
         builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));
@@ -525,6 +543,17 @@ impl CompiledWorkflowRunnerBuilder {
         let conversation_var_types: &HashMap<String, SegmentType> =
             &builder.compiled.conversation_var_types;
 
+        #[cfg(feature = "builtin-agent-node")]
+        if !schema.mcp_servers.is_empty() {
+            builder
+                .system_vars
+                .entry("__mcp_servers".to_string())
+                .or_insert_with(|| {
+                    serde_json::to_value(&schema.mcp_servers)
+                        .unwrap_or(Value::Object(serde_json::Map::new()))
+                });
+        }
+
         for (k, v) in &builder.system_vars {
             let selector = crate::core::variable_pool::Selector::new("sys", k.clone());
             pool.set(&selector, Segment::from_value(v));
@@ -560,6 +589,11 @@ impl CompiledWorkflowRunnerBuilder {
 
         let llm_registry = Arc::new(llm_registry);
         registry.set_llm_provider_registry(Arc::clone(&llm_registry));
+        #[cfg(feature = "builtin-agent-node")]
+        {
+            let mcp_pool = Arc::new(RwLock::new(McpConnectionPool::new()));
+            registry.set_mcp_pool(mcp_pool);
+        }
 
         let registry = Arc::new(registry);
         builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));

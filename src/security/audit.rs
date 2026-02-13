@@ -23,6 +23,7 @@ pub enum SecurityEventType {
     SandboxViolation { sandbox_type: String, violation: String },
     QuotaExceeded { quota_type: String, limit: u64, current: u64 },
     CredentialAccess { provider: String, success: bool },
+    ToolInvocation { tool_name: String },
     CodeAnalysisBlocked { violations: Vec<String> },
     TemplateRenderingAnomaly { template_length: usize },
     DslValidationFailed { errors: Vec<String> },
@@ -145,6 +146,12 @@ mod tests {
         };
         let json = serde_json::to_value(&cred).unwrap();
         assert!(json.to_string().contains("CredentialAccess"));
+
+        let tool = SecurityEventType::ToolInvocation {
+            tool_name: "search".into(),
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert!(json.to_string().contains("ToolInvocation"));
 
         let code = SecurityEventType::CodeAnalysisBlocked {
             violations: vec!["eval".into()],

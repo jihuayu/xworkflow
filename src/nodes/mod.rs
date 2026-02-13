@@ -12,6 +12,10 @@
 pub mod executor;
 pub mod control_flow;
 pub mod data_transform;
+#[cfg(feature = "builtin-agent-node")]
+pub mod tool;
+#[cfg(feature = "builtin-agent-node")]
+pub mod agent;
 pub mod document_extract;
 pub mod gather;
 pub mod human_input;

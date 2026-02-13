@@ -313,6 +313,7 @@ mod tests {
                 usage: Default::default(),
                 model: "mock".into(),
                 finish_reason: Some("stop".into()),
+                tool_calls: vec![],
             })
         }
 
@@ -326,6 +327,7 @@ mod tests {
                 usage: Default::default(),
                 model: "mock".into(),
                 finish_reason: Some("stop".into()),
+                tool_calls: vec![],
             })
         }
     }

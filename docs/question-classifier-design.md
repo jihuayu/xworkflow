@@ -4,6 +4,8 @@
 
 `question-classifier` 是一个**分支节点**，利用 LLM 语义理解将输入文本分类到预定义类别中，然后通过 `EdgeHandle::Branch(category_id)` 路由到不同的下游分支。
 
+当模型返回的 `category_id` 不在配置列表中时，节点会显式路由到 `EdgeHandle::Branch("default")`。因此工作流需要提供 `sourceHandle = "default"` 的兜底出边。
+
 当前状态：`StubExecutor`（`src/nodes/executor.rs:107`），已在 `BRANCH_NODE_TYPES` 中注册（`src/dsl/validation/known_types.rs:7`）。
 
 参考 Dify 的问题分类器设计，遵循本项目三大原则：**Security > Performance > Obviousness**。
@@ -97,7 +99,18 @@ sourceHandle = "cat_sales"
 source = "classifier1"
 target = "handle_tech"
 sourceHandle = "cat_tech"
+
+[[edges]]
+source = "classifier1"
+target = "handle_default"
+sourceHandle = "default"
 ```
+
+### 分支边约束
+
+- 每个 `categories[].category_id` 都必须有同名 `sourceHandle`
+- 必须存在 `sourceHandle = "default"` 兜底边
+- 不允许出现未知 `sourceHandle`
 
 ---
 
@@ -131,13 +144,19 @@ pub struct QuestionClassifierExecutor {
    b. system prompt（列出所有 categories + 可选 instruction）
    c. user message（input text）
 5. call provider.chat_completion(request)    ← 非流式，强制 stream=false
-6. parse JSON response → extract category_id
-7. validate: category_id ∈ configured categories
-8. return NodeRunResult {
-     edge_source_handle: Branch(category_id),
-     outputs: { class_name, category_id },
-     llm_usage: Some(response.usage),
-   }
+6. parse response → extract candidate category_id
+7. route decision:
+   a. candidate_id ∈ configured categories
+      -> edge_source_handle = Branch(candidate_id)
+      -> outputs.category_id = candidate_id
+      -> outputs.class_name = config_map[candidate_id]
+   b. candidate_id ∉ configured categories
+      -> edge_source_handle = Branch("default")
+      -> outputs.category_id = "default"
+      -> outputs.class_name = "default"
+   c. response parse failed
+      -> return NodeError::ExecutionError
+8. return NodeRunResult { ... }
 ```
 
 ### 3.4 关键参数默认值
@@ -168,7 +187,7 @@ You are a text classification engine. Classify the input text into exactly one c
 If the user mentions pricing, classify as Sales.
 
 ### Output format
-Respond ONLY with a JSON object: {"category_id": "<id>", "category_name": "<name>"}
+Respond ONLY with a JSON object: {"category_id": "<id>"}
 Do not include any other text or markdown formatting.
 ```
 
@@ -191,10 +210,7 @@ Do not include any other text or markdown formatting.
 ## 5. JSON 响应解析
 
 ```rust
-fn parse_classifier_response(
-    response: &str,
-    valid_ids: &[&str],
-) -> Result<(String, String), NodeError>
+fn parse_classifier_response(response: &str) -> Result<String, NodeError>
 ```
 
 ### 三层解析尝试
@@ -205,18 +221,21 @@ fn parse_classifier_response(
 
 ### 验证
 
-解析得到的 `category_id` 必须 ∈ 配置中的 `valid_ids`。不在列表中则返回 `NodeError::ExecutionError`。
+解析得到的 `category_id` 分两种处理：
+
+- 若 ∈ 配置中的 `valid_ids`：正常路由到对应类别分支
+- 若 ∉ 配置中的 `valid_ids`：路由到 `default` 分支（`EdgeHandle::Branch("default")`）
 
 ### 错误处理策略
 
-**不做静默 fallback**。原因：
+**仅对“非法分类 ID”做显式兜底，不对“解析失败”做静默 fallback**。原因：
 
-- **Security**: 静默 fallback 可能将敏感查询路由到非预期分支
-- **Obviousness**: 错误就是错误，不应被隐藏
-- 用户可通过节点级 `error_strategy` 配置处理：
-  - `FailBranch` → 路由到错误处理子图
-  - `DefaultValue` → 使用默认输出值
-  - `retry_config` → 自动重试
+- **Security**: 解析失败代表模型输出严重偏离结构约束，应中止并暴露错误
+- **Obviousness**: “解析失败”与“分类不在白名单”是两类不同问题，不应混淆
+- **Robustness**: 对非法分类 ID 兜底到 `default`，减少轻微漂移导致的整体失败
+- 解析失败场景仍由节点级 `error_strategy`/`retry_config` 处理
+
+> 备注：`default` 仅在“响应可解析但分类 ID 不合法”时触发。
 
 ---
 
@@ -228,7 +247,7 @@ fn parse_classifier_response(
 NodeRunResult {
     status: Succeeded,
     outputs: Sync({
-        "class_name": "Customer Support",   // 分类名称
+        "class_name": "Customer Support",   // 分类名称（来自配置映射）
         "category_id": "cat_support",       // 分类 ID
     }),
     metadata: {
@@ -237,6 +256,20 @@ NodeRunResult {
     },
     llm_usage: Some(LlmUsage { ... }),
     edge_source_handle: Branch("cat_support"),   // 路由决策
+}
+```
+
+### default 兜底分支输出
+
+```rust
+NodeRunResult {
+    status: Succeeded,
+    outputs: Sync({
+        "class_name": "default",
+        "category_id": "default",
+    }),
+    edge_source_handle: Branch("default"),
+    ...
 }
 ```
 
@@ -250,7 +283,7 @@ NodeRunResult {
 
 **文件**: `src/llm/executor.rs`
 
-将以下函数可见性从 `fn` 改为 `pub(crate) fn`：
+复用以下已存在的 `pub(crate)` 共享函数（无需重复实现）：
 
 | 函数 | 行号 | 用途 |
 |------|------|------|
@@ -284,12 +317,14 @@ pub fn set_llm_provider_registry(&mut self, registry: Arc<LlmProviderRegistry>) 
 
 `with_builtins()` 中的 `StubExecutor("question-classifier")` 保留不变 —— `register()` 会覆盖它。当 `builtin-llm-node` 未启用时，stub 仍然存在作为占位。
 
-### 8.3 从 STUB_NODE_TYPES 移除
+### 8.3 STUB_NODE_TYPES 的 feature 条件处理
 
 **文件**: `src/dsl/validation/known_types.rs`
 
-- 从 `STUB_NODE_TYPES` 数组移除 `"question-classifier"`
-- 更新 `test_stub_node_types` 测试
+- 保留 `STUB_NODE_TYPES` 常量结构
+- 在 `is_stub_node_type()` 中按 feature 条件处理：
+  - `builtin-llm-node` 启用时：`question-classifier` 不视为 stub（不报 W202）
+  - `builtin-llm-node` 未启用时：`question-classifier` 仍视为 stub（保留 W202）
 - 保留在 `BRANCH_NODE_TYPES` 中（已在）
 
 ---
@@ -316,9 +351,10 @@ if let (Some(provider), Some(group)) = (context.credential_provider(), context.r
 
 ### 9.3 输入验证
 
-- `categories` 非空检查
+- `categories` 非空 + `category_id` 唯一性检查
 - `model.provider` 必须在 registry 中存在
-- 解析后的 `category_id` 必须匹配配置列表
+- 解析后的 `category_id` 若不匹配配置列表，路由到 `default`
+- DSL 语义校验要求分支边严格匹配：每个 `category_id` 与 `default` 均需对应 `source_handle`
 
 ---
 
@@ -330,36 +366,38 @@ if let (Some(provider), Some(group)) = (context.credential_provider(), context.r
 
 | 测试 | 验证内容 |
 |------|---------|
-| `test_parse_valid_json` | `{"category_id":"a","category_name":"A"}` → Ok("a", "A") |
-| `test_parse_markdown_block` | ` ```json{"category_id":"a"...}``` ` → Ok |
-| `test_parse_bare_id` | `"a"` → Ok("a", "") |
-| `test_parse_invalid_category` | JSON 有效但 id 不在列表 → Err |
+| `test_parse_valid_json` | `{"category_id":"a"}` → Ok("a") |
+| `test_parse_markdown_block` | ` ```json{"category_id":"a"}``` ` → Ok |
+| `test_parse_bare_id` | `"a"` → Ok("a") |
+| `test_executor_invalid_category_routes_default` | JSON 有效但 id 不在列表 → `Branch("default")` |
 | `test_parse_malformed` | 乱文本 → Err |
 | `test_build_prompt` | 验证 prompt 包含所有 categories 和 instruction |
 | `test_executor_basic` | MockProvider + 完整执行 → Branch("cat_x") |
 | `test_executor_empty_categories` | → ConfigError |
 | `test_executor_missing_provider` | → ExecutionError |
+| `test_executor_class_name_from_config` | 模型返回 category_name 与配置不一致时，输出仍取配置值 |
 
 ### 10.2 集成测试
 
 使用现有 mock server 机制（`state.toml` 中的 `mock_server` + `llm_providers`）。
 
-#### Case 121: `question_classifier_basic`
+#### Case 168: `question_classifier_basic`
 
 - mock server: `POST /v1/chat/completions` 返回 `{"category_id":"cat_support","category_name":"Support"}`
-- workflow: `start → classifier → end_support` (sourceHandle=cat_support) / `end_sales` (sourceHandle=cat_sales)
-- 验证：路由到 cat_support 分支，输出 `class_name = "Support"`
+- workflow: `start → classifier → end_support` (sourceHandle=cat_support) / `end_sales` (sourceHandle=cat_sales) / `end_default` (sourceHandle=default)
+- 验证：路由到 cat_support 分支，且 `class_name` 等于配置中的 `category_name`
 
-#### Case 122: `question_classifier_invalid_response`
+#### Case 169: `question_classifier_invalid_id_fallback_default`
+
+- mock server 返回 `{"category_id":"cat_unknown"}`
+- workflow 包含 `sourceHandle = "default"` 出边
+- 验证：路由到 default 分支，输出 `category_id = "default"`、`class_name = "default"`
+
+#### Case 170: `question_classifier_invalid_response`
 
 - mock server 返回无法解析的文本 `"I think this is support"`
 - workflow 无 error_strategy
 - 验证：`status = "failed"`, `error_contains = "Failed to parse"`
-
-#### Case 123: `question_classifier_markdown_response`
-
-- mock server 返回 `` ```json\n{"category_id":"cat_sales","category_name":"Sales"}\n``` ``
-- 验证：正确 strip markdown → 路由到 cat_sales
 
 ---
 
@@ -368,26 +406,31 @@ if let (Some(provider), Some(group)) = (context.credential_provider(), context.r
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `src/dsl/schema.rs` | 修改 | 添加 `ClassifierCategory` + `QuestionClassifierNodeData` |
+| `src/compiler/compiled_workflow.rs` | 修改 | 增加 `CompiledNodeConfig::QuestionClassifier` |
+| `src/compiler/compiler.rs` | 修改 | 在 `compile_node_config` 中支持 `question-classifier` typed compile |
 | `src/llm/question_classifier.rs` | **新建** | Executor + prompt 构建 + JSON 解析 + 单元测试 |
 | `src/llm/mod.rs` | 修改 | 添加 `pub mod question_classifier` + re-export |
-| `src/llm/executor.rs` | 修改 | 3 个函数改为 `pub(crate)` |
+| `src/llm/executor.rs` | 复用 | 调用已存在 `pub(crate)` 共享函数（memory/role/audit） |
 | `src/nodes/executor.rs` | 修改 | `set_llm_provider_registry` 注册 question-classifier |
-| `src/dsl/validation/known_types.rs` | 修改 | 从 `STUB_NODE_TYPES` 移除 + 更新测试 |
-| `tests/integration/cases/121_*/` | **新建** | 基本分类集成测试 |
-| `tests/integration/cases/122_*/` | **新建** | 无效响应集成测试 |
-| `tests/integration/cases/123_*/` | **新建** | Markdown code block 解析集成测试 |
+| `src/dsl/validation/layer3_semantic.rs` | 修改 | 增加 question-classifier 语义校验（严格分支 + default） |
+| `src/dsl/validation/known_types.rs` | 修改 | `is_stub_node_type` 按 feature 条件处理 + 更新测试 |
+| `tests/integration_tests.rs` | 修改 | 注册新增 case |
+| `tests/integration/cases/168_*/` | **新建** | 基本分类集成测试 |
+| `tests/integration/cases/169_*/` | **新建** | 非法分类 ID 路由 default 集成测试 |
+| `tests/integration/cases/170_*/` | **新建** | 解析失败集成测试 |
 
 ---
 
 ## 12. 实施顺序
 
 1. `src/dsl/schema.rs` — 添加类型定义
-2. `src/llm/executor.rs` — 提取共享函数为 `pub(crate)`
+2. `src/compiler/compiled_workflow.rs` + `src/compiler/compiler.rs` — 编译期 typed config 接入
 3. `src/llm/question_classifier.rs` — 核心实现 + 单元测试
 4. `src/llm/mod.rs` — 模块声明
 5. `src/nodes/executor.rs` — 注册 executor
-6. `src/dsl/validation/known_types.rs` — 移除 stub 标记
-7. 集成测试用例
+6. `src/dsl/validation/layer3_semantic.rs` — 语义校验补齐（严格分支 + default）
+7. `src/dsl/validation/known_types.rs` — stub 判定 feature 条件化
+8. `tests/integration_tests.rs` + `tests/integration/cases/168~170_*` — 集成测试
 
 ---
 
@@ -396,9 +439,10 @@ if let (Some(provider), Some(group)) = (context.credential_provider(), context.r
 ```bash
 cargo build --all-features
 cargo test --all-features --workspace --lib question_classifier
-cargo test --all-features --workspace --test integration_tests -- 121
-cargo test --all-features --workspace --test integration_tests -- 122
-cargo test --all-features --workspace --test integration_tests -- 123
+cargo test --all-features --workspace --test integration_tests -- 168
+cargo test --all-features --workspace --test integration_tests -- 169
+cargo test --all-features --workspace --test integration_tests -- 170
+cargo test --all-features --workspace dsl::validation
 cargo test --all-features --workspace
 cargo clippy --all-features --workspace
 ```

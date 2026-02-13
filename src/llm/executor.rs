@@ -14,6 +14,8 @@ use crate::dsl::schema::{
 };
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
+#[cfg(feature = "builtin-agent-node")]
+use crate::template::render_template_with_config;
 use crate::template::render_template_async_with_config;
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
@@ -70,6 +72,8 @@ impl NodeExecutor for LlmNodeExecutor {
             messages.push(ChatMessage {
                 role,
                 content: ChatContent::Text(rendered),
+                tool_calls: vec![],
+                tool_call_id: None,
             });
         }
 
@@ -124,6 +128,8 @@ impl NodeExecutor for LlmNodeExecutor {
                         messages.push(ChatMessage {
                             role: ChatRole::User,
                             content: ChatContent::MultiModal(parts),
+                            tool_calls: vec![],
+                            tool_call_id: None,
                         });
                     }
                 }
@@ -147,6 +153,7 @@ impl NodeExecutor for LlmNodeExecutor {
             max_tokens: completion.as_ref().and_then(|c| c.max_tokens),
             stream: data.stream.unwrap_or(false),
             credentials: data.model.credentials.clone().unwrap_or_default(),
+            tools: vec![],
         };
 
         #[cfg(feature = "security")]
@@ -304,7 +311,7 @@ impl NodeExecutor for LlmNodeExecutor {
 }
 
 #[cfg(feature = "security")]
-async fn audit_security_event(
+pub(crate) async fn audit_security_event(
     context: &RuntimeContext,
     event_type: SecurityEventType,
     severity: EventSeverity,
@@ -330,11 +337,12 @@ async fn audit_security_event(
     logger.log_event(event).await;
 }
 
-fn map_role(role: &str) -> Result<ChatRole, NodeError> {
+pub(crate) fn map_role(role: &str) -> Result<ChatRole, NodeError> {
     match role.to_lowercase().as_str() {
         "system" => Ok(ChatRole::System),
         "user" => Ok(ChatRole::User),
         "assistant" => Ok(ChatRole::Assistant),
+        "tool" => Ok(ChatRole::Tool),
         other => Err(NodeError::ConfigError(format!(
             "Unsupported role: {}",
             other
@@ -359,6 +367,8 @@ fn inject_context(messages: &mut Vec<ChatMessage>, ctx: String) {
             ChatMessage {
                 role: ChatRole::System,
                 content: ChatContent::Text(ctx),
+                tool_calls: vec![],
+                tool_call_id: None,
             },
         );
     }
@@ -376,7 +386,7 @@ fn extract_image_urls(seg: &Segment) -> Vec<String> {
     }
 }
 
-async fn append_memory_messages(
+pub(crate) async fn append_memory_messages(
     messages: &mut Vec<ChatMessage>,
     memory: &MemoryConfig,
     pool: &VariablePool,
@@ -403,10 +413,33 @@ async fn append_memory_messages(
             messages.push(ChatMessage {
                 role,
                 content: ChatContent::Text(prompt.text),
+                tool_calls: vec![],
+                tool_call_id: None,
             });
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "builtin-agent-node")]
+pub(crate) fn render_arguments(
+    arguments: &HashMap<String, Value>,
+    variable_pool: &VariablePool,
+    strict: bool,
+) -> Result<Value, NodeError> {
+    let mut rendered = serde_json::Map::new();
+    for (key, value) in arguments {
+        let rendered_value = match value {
+            Value::String(text) => {
+                let value = render_template_with_config(text, variable_pool, strict)
+                    .map_err(|e| NodeError::VariableNotFound(e.selector))?;
+                Value::String(value)
+            }
+            other => other.clone(),
+        };
+        rendered.insert(key.clone(), rendered_value);
+    }
+    Ok(Value::Object(rendered))
 }
 
 #[cfg(test)]
@@ -443,6 +476,7 @@ mod tests {
                 usage: LlmUsage::default(),
                 model: "mock".into(),
                 finish_reason: Some("stop".into()),
+                tool_calls: vec![],
             })
         }
 
@@ -463,6 +497,7 @@ mod tests {
                 usage: LlmUsage::default(),
                 model: "mock".into(),
                 finish_reason: Some("stop".into()),
+                tool_calls: vec![],
             })
         }
     }
@@ -510,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_map_role_invalid() {
-        let result = map_role("tool");
+        let result = map_role("unknown_role");
         assert!(result.is_err());
     }
 
@@ -520,10 +555,14 @@ mod tests {
             ChatMessage {
                 role: ChatRole::System,
                 content: ChatContent::Text("You are a bot.".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             },
             ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("Hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             },
         ];
         inject_context(&mut messages, "Context: foo".into());
@@ -542,6 +581,8 @@ mod tests {
         let mut messages = vec![ChatMessage {
             role: ChatRole::User,
             content: ChatContent::Text("Hi".into()),
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         inject_context(&mut messages, "Context: bar".into());
         assert_eq!(messages.len(), 2);
@@ -559,6 +600,8 @@ mod tests {
             content: ChatContent::MultiModal(vec![ContentPart::Text {
                 text: "base".into(),
             }]),
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         inject_context(&mut messages, "extra context".into());
         match &messages[0].content {

@@ -64,6 +64,8 @@ pub mod sandbox;
 pub mod template;
 pub mod scheduler;
 pub mod llm;
+#[cfg(feature = "builtin-agent-node")]
+pub mod mcp;
 #[cfg(feature = "security")]
 pub mod security;
 #[cfg(feature = "plugin-system")]

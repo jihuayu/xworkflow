@@ -247,4 +247,7 @@ pub use types::{
     ModelInfo,
     ProviderInfo,
     StreamChunk,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
 };

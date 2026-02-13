@@ -1,0 +1,4 @@
+status = "completed"
+
+[outputs]
+result = "tool-result:rust"

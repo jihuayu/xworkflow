@@ -40,6 +40,33 @@ pub struct WorkflowSchema {
     pub conversation_variables: Vec<ConversationVariable>,
     #[serde(default)]
     pub error_handler: Option<ErrorHandlerConfig>,
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct McpServerConfig {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(flatten)]
+    pub transport: McpTransport,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
 }
 
 /// Node definition in the DSL.
@@ -791,6 +818,39 @@ pub struct LlmNodeData {
     pub memory: Option<MemoryConfig>,
     #[serde(default)]
     pub stream: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ToolNodeData {
+    #[serde(default)]
+    pub mcp_server: Option<McpServerConfig>,
+    #[serde(default)]
+    pub mcp_server_ref: Option<String>,
+    pub tool_name: String,
+    #[serde(default)]
+    pub arguments: HashMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct AgentNodeData {
+    pub model: ModelConfig,
+    pub system_prompt: String,
+    pub query: String,
+    pub tools: AgentToolsConfig,
+    #[serde(default = "default_agent_max_iterations")]
+    pub max_iterations: i32,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+}
+
+fn default_agent_max_iterations() -> i32 { 10 }
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct AgentToolsConfig {
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub mcp_server_refs: Vec<String>,
 }
 
 /// LLM model selection and parameters.

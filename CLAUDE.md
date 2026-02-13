@@ -45,6 +45,54 @@ cargo run --example scheduler_demo
 cargo clippy --all-features --workspace
 ```
 
+## Design-to-Implementation Update Rules (General)
+
+When a task says “complete design gaps and update docs”, follow this sequence strictly:
+
+1. **Audit first, then code**
+  - Compare design doc requirements against current code paths before implementing.
+  - Mark each requirement as: implemented / partial / missing.
+  - Do not update status docs to ✅ before code + tests prove completeness.
+
+2. **Fix at the protocol boundary, not only local logic**
+  - If a feature changes runtime behavior (pause/resume, status transitions, control commands), update all related layers together:
+    - DSL schema + validation
+    - node executor
+    - dispatcher command handling
+    - scheduler/workflow handle APIs
+    - event bus/status surface
+  - Keep backward compatibility where possible (e.g., keep legacy command/API while adding richer protocol).
+
+3. **Feature-flag correctness is required**
+  - New capability behind optional features must compile cleanly for both enabled/disabled paths.
+  - Use `#[cfg(...)]` symmetrically for data structures, API methods, and runtime branches.
+
+4. **Documentation must match real code paths**
+  - After implementation, update at least:
+    - design index (`docs/设计文档索引.md`)
+    - implementation status summary (`docs/实现状态总结.md`)
+    - the specific design doc(s) that describe file locations/steps
+  - Ensure file paths and module names in docs match actual code locations.
+  - Keep status counts/percentages internally consistent after status flips.
+
+5. **Validation order: targeted → full regression**
+  - First run focused tests for changed areas.
+  - Then run full regression:
+    - `cargo test --all-features -- --nocapture`
+  - Then verify compile health and warning cleanliness:
+    - `cargo test --all-features --no-run`
+    - `cargo check --workspace --all-targets --all-features`
+
+6. **Warnings are treated as debt to clear immediately**
+  - Do not leave newly observed warnings unresolved.
+  - Prefer minimal, behavior-preserving fixes (remove dead code, tighten cfg scope, fix unused assignments/imports).
+
+7. **Deliverable quality bar**
+  - Final state should satisfy all of the following:
+    - changed feature behavior is covered by tests,
+    - no compiler warnings in full-target workspace check,
+    - documentation status reflects actual implementation truth.
+
 ## Feature Flags
 
 Default features: `security`, `plugin-system`, and all `builtin-*` node types. Use `--all-features` for full builds. Key optional features:

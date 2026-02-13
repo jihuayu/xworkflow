@@ -9,7 +9,13 @@ use serde_json::Value;
 use crate::dsl::schema::LlmUsage;
 use crate::llm::error::LlmError;
 use crate::llm::types::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatContent, ChatRole, ProviderInfo, StreamChunk,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatContent,
+    ChatRole,
+    ProviderInfo,
+    StreamChunk,
+    ToolCall,
 };
 use crate::llm::LlmProvider;
 
@@ -69,32 +75,30 @@ impl OpenAiProvider {
     }
 
     fn build_payload(&self, request: &ChatCompletionRequest, stream: bool) -> Value {
-        let messages = request
-            .messages
-            .iter()
-            .map(|m| {
-                let role = match m.role {
-                    ChatRole::System => "system",
-                    ChatRole::User => "user",
-                    ChatRole::Assistant => "assistant",
-                };
-                let content = match &m.content {
-                    ChatContent::Text(text) => Value::String(text.clone()),
-                    ChatContent::MultiModal(parts) => serde_json::to_value(parts)
-                        .unwrap_or_else(|_| Value::Array(vec![])),
-                };
-                serde_json::json!({
-                    "role": role,
-                    "content": content,
-                })
-            })
-            .collect::<Vec<_>>();
-
         let mut payload = serde_json::json!({
             "model": request.model,
-            "messages": messages,
+            "messages": self.build_messages(&request.messages),
             "stream": stream,
         });
+
+        if !request.tools.is_empty() {
+            payload["tools"] = Value::Array(
+                request
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": &tool.name,
+                                "description": &tool.description,
+                                "parameters": &tool.parameters,
+                            }
+                        })
+                    })
+                    .collect(),
+            );
+        }
 
         if let Some(temp) = request.temperature {
             payload["temperature"] = Value::Number(serde_json::Number::from_f64(temp).unwrap());
@@ -110,6 +114,55 @@ impl OpenAiProvider {
         }
 
         payload
+    }
+
+    fn build_messages(&self, messages: &[crate::llm::types::ChatMessage]) -> Vec<Value> {
+        messages
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    ChatRole::System => "system",
+                    ChatRole::User => "user",
+                    ChatRole::Assistant => "assistant",
+                    ChatRole::Tool => "tool",
+                };
+                let content = match &msg.content {
+                    ChatContent::Text(text) => Value::String(text.clone()),
+                    ChatContent::MultiModal(parts) => {
+                        serde_json::to_value(parts).unwrap_or_else(|_| Value::Array(vec![]))
+                    }
+                };
+
+                let mut message = serde_json::json!({
+                    "role": role,
+                    "content": content,
+                });
+
+                if !msg.tool_calls.is_empty() {
+                    message["tool_calls"] = Value::Array(
+                        msg.tool_calls
+                            .iter()
+                            .map(|tc| {
+                                serde_json::json!({
+                                    "id": &tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": &tc.name,
+                                        "arguments": tc.arguments.to_string(),
+                                    }
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+
+                if let Some(tool_call_id) = &msg.tool_call_id {
+                    message["tool_call_id"] = Value::String(tool_call_id.clone());
+                }
+
+                message
+            })
+            .collect()
     }
 
     fn parse_usage(body: &Value) -> LlmUsage {
@@ -133,6 +186,35 @@ impl OpenAiProvider {
             .unwrap_or("")
             .to_string();
 
+        let tool_calls = body
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("tool_calls"))
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|tc| {
+                        let id = tc.get("id")?.as_str()?.to_string();
+                        let name = tc.get("function")?.get("name")?.as_str()?.to_string();
+                        let arguments = tc
+                            .get("function")
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        Some(ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
         let finish_reason = body
             .get("choices")
             .and_then(|v| v.as_array())
@@ -152,6 +234,7 @@ impl OpenAiProvider {
             usage: Self::parse_usage(body),
             model,
             finish_reason,
+            tool_calls,
         })
     }
 
@@ -314,6 +397,7 @@ impl LlmProvider for OpenAiProvider {
             usage,
             model: request.model,
             finish_reason,
+            tool_calls: vec![],
         })
     }
 }
@@ -357,12 +441,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let resp = provider.chat_completion(request).await.unwrap();
@@ -392,12 +479,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: true,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let (tx, mut rx) = mpsc::channel(8);
@@ -424,12 +514,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let result = provider.chat_completion(request).await;
@@ -457,12 +550,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let result = provider.chat_completion(request).await;
@@ -490,12 +586,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let result = provider.chat_completion(request).await;
@@ -536,12 +635,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials,
+            tools: vec![],
         };
 
         let resp = provider.chat_completion(request).await.unwrap();
@@ -580,12 +682,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let resp = provider.chat_completion(request).await.unwrap();
@@ -616,12 +721,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: Some(0.7),
             top_p: Some(0.9),
             max_tokens: Some(100),
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let resp = provider.chat_completion(request).await.unwrap();
@@ -652,12 +760,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let resp = provider.chat_completion(request).await.unwrap();
@@ -681,12 +792,15 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: true,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let (tx, _rx) = mpsc::channel(8);
@@ -728,12 +842,15 @@ mod tests {
                         },
                     },
                 ]),
+                tool_calls: vec![],
+                tool_call_id: None,
             }],
             temperature: None,
             top_p: None,
             max_tokens: None,
             stream: false,
             credentials: HashMap::new(),
+            tools: vec![],
         };
 
         let resp = provider.chat_completion(request).await.unwrap();
@@ -754,6 +871,33 @@ mod tests {
     fn test_parse_stream_chunk_done() {
         let result = OpenAiProvider::parse_stream_chunk("[DONE]").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_response_with_tool_calls() {
+        let body = serde_json::json!({
+            "model": "gpt-4o",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": "{\"q\":\"rust\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        });
+
+        let parsed = OpenAiProvider::parse_response(&body).unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "search");
+        assert_eq!(parsed.tool_calls[0].arguments["q"], "rust");
     }
 
     #[test]
