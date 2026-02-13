@@ -9,13 +9,8 @@ use serde_json::Value;
 use crate::dsl::schema::LlmUsage;
 use crate::llm::error::LlmError;
 use crate::llm::types::{
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ChatContent,
-    ChatRole,
-    ProviderInfo,
-    StreamChunk,
-    ToolCall,
+    ChatCompletionRequest, ChatCompletionResponse, ChatContent, ChatRole, ProviderInfo,
+    StreamChunk, ToolCall,
 };
 use crate::llm::LlmProvider;
 
@@ -49,8 +44,7 @@ impl OpenAiProvider {
         let auth = format!("Bearer {}", api_key);
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&auth)
-                .map_err(|e| LlmError::InvalidRequest(e.to_string()))?,
+            HeaderValue::from_str(&auth).map_err(|e| LlmError::InvalidRequest(e.to_string()))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if let Some(org) = credentials
@@ -60,8 +54,7 @@ impl OpenAiProvider {
         {
             headers.insert(
                 "OpenAI-Organization",
-                HeaderValue::from_str(&org)
-                    .map_err(|e| LlmError::InvalidRequest(e.to_string()))?,
+                HeaderValue::from_str(&org).map_err(|e| LlmError::InvalidRequest(e.to_string()))?,
             );
         }
         Ok(headers)
@@ -168,9 +161,18 @@ impl OpenAiProvider {
     fn parse_usage(body: &Value) -> LlmUsage {
         let usage = body.get("usage").cloned().unwrap_or(Value::Null);
         LlmUsage {
-            prompt_tokens: usage.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-            completion_tokens: usage.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-            total_tokens: usage.get("total_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+            prompt_tokens: usage
+                .get("prompt_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            completion_tokens: usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            total_tokens: usage
+                .get("total_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
             ..LlmUsage::default()
         }
     }
@@ -242,8 +244,8 @@ impl OpenAiProvider {
         if data.trim() == "[DONE]" {
             return Ok(None);
         }
-        let value: Value = serde_json::from_str(data)
-            .map_err(|e| LlmError::SerializationError(e.to_string()))?;
+        let value: Value =
+            serde_json::from_str(data).map_err(|e| LlmError::SerializationError(e.to_string()))?;
         let delta = value
             .get("choices")
             .and_then(|v| v.as_array())
@@ -260,9 +262,7 @@ impl OpenAiProvider {
             .and_then(|c| c.get("finish_reason"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let usage = value
-            .get("usage")
-            .map(|_| Self::parse_usage(&value));
+        let usage = value.get("usage").map(|_| Self::parse_usage(&value));
 
         Ok(Some(StreamChunk {
             delta,
@@ -331,8 +331,8 @@ impl LlmProvider for OpenAiProvider {
             return Err(Self::map_error(status.as_u16(), &text));
         }
 
-        let body: Value = serde_json::from_str(&text)
-            .map_err(|e| LlmError::SerializationError(e.to_string()))?;
+        let body: Value =
+            serde_json::from_str(&text).map_err(|e| LlmError::SerializationError(e.to_string()))?;
         Self::parse_response(&body)
     }
 
@@ -528,7 +528,7 @@ mod tests {
         let result = provider.chat_completion(request).await;
         assert!(result.is_err());
         match result {
-            Err(LlmError::AuthenticationError(_)) => {},
+            Err(LlmError::AuthenticationError(_)) => {}
             other => panic!("Expected AuthenticationError, got {:?}", other),
         }
         mock.assert_async().await;
@@ -564,7 +564,7 @@ mod tests {
         let result = provider.chat_completion(request).await;
         assert!(result.is_err());
         match result {
-            Err(LlmError::RateLimitExceeded { .. }) => {},
+            Err(LlmError::RateLimitExceeded { .. }) => {}
             other => panic!("Expected RateLimitExceeded, got {:?}", other),
         }
         mock.assert_async().await;
@@ -602,7 +602,7 @@ mod tests {
         match result {
             Err(LlmError::ApiError { status, .. }) => {
                 assert_eq!(status, 500);
-            },
+            }
             other => panic!("Expected ApiError, got {:?}", other),
         }
         mock.assert_async().await;
@@ -629,7 +629,7 @@ mod tests {
         let provider = OpenAiProvider::new(base_config(server.url()));
         let mut credentials = HashMap::new();
         credentials.insert("api_key".to_string(), "custom-key".to_string());
-        
+
         let request = ChatCompletionRequest {
             model: "gpt-4o".into(),
             messages: vec![ChatMessage {
@@ -676,7 +676,7 @@ mod tests {
             default_model: "gpt-4o".into(),
         };
         let provider = OpenAiProvider::new(config);
-        
+
         let request = ChatCompletionRequest {
             model: "gpt-4o".into(),
             messages: vec![ChatMessage {

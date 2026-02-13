@@ -5,16 +5,18 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::compiler::compiled_workflow::CompiledWorkflow;
-use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
 #[cfg(feature = "checkpoint")]
 use crate::core::checkpoint::{CheckpointStore, ResumePolicy};
-use crate::core::SafeStopSignal;
+use crate::core::debug::{
+    DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode,
+};
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_group::RuntimeGroup;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 use crate::core::variable_pool::{Segment, SegmentType, VariablePool};
 use crate::core::workflow_context::WorkflowContext;
+use crate::core::SafeStopSignal;
 use crate::dsl::schema::{ErrorHandlingMode, WorkflowSchema};
 use crate::dsl::validation::ValidationReport;
 use crate::error::WorkflowError;
@@ -24,15 +26,14 @@ use crate::llm::LlmProviderRegistry;
 use crate::mcp::pool::McpConnectionPool;
 use crate::nodes::executor::NodeExecutorRegistry;
 use crate::scheduler::{
-    build_error_context,
-    segment_from_type,
-    SchedulerPluginGate,
-    SchedulerSecurityGate,
+    build_error_context, segment_from_type, SchedulerPluginGate, SchedulerSecurityGate,
 };
 use crate::scheduler::{new_scheduler_plugin_gate, new_scheduler_security_gate};
 
 #[cfg(feature = "security")]
-use crate::security::{AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, SecurityPolicy};
+use crate::security::{
+    AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, SecurityPolicy,
+};
 
 pub struct CompiledWorkflowRunnerBuilder {
     compiled: CompiledWorkflow,
@@ -228,7 +229,7 @@ impl CompiledWorkflowRunnerBuilder {
                 .security_gate
                 .audit_validation_failed(&builder.context, &report)
                 .await;
-            return Err(WorkflowError::ValidationFailed(report));
+            return Err(WorkflowError::ValidationFailed(Box::new(report)));
         }
 
         builder
@@ -242,7 +243,7 @@ impl CompiledWorkflowRunnerBuilder {
                 .security_gate
                 .audit_validation_failed(&builder.context, &report)
                 .await;
-            return Err(WorkflowError::ValidationFailed(report));
+            return Err(WorkflowError::ValidationFailed(Box::new(report)));
         }
 
         let graph = Graph::from_topology(Arc::clone(&builder.compiled.graph_template));
@@ -308,8 +309,12 @@ impl CompiledWorkflowRunnerBuilder {
         }
 
         let registry = Arc::new(registry);
-        builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));
-        builder.context = builder.context.with_llm_provider_registry(Arc::clone(&llm_registry));
+        builder.context = builder
+            .context
+            .with_node_executor_registry(Arc::clone(&registry));
+        builder.context = builder
+            .context
+            .with_llm_provider_registry(Arc::clone(&llm_registry));
 
         let (tx, mut rx) = mpsc::channel(256);
         let event_active = Arc::new(AtomicBool::new(builder.collect_events));
@@ -320,7 +325,10 @@ impl CompiledWorkflowRunnerBuilder {
             .effective_engine_config(&builder.context, builder.config);
         builder.context.strict_template = config.strict_template;
 
-        let workflow_id = builder.security_gate.on_workflow_start(&builder.context).await?;
+        let workflow_id = builder
+            .security_gate
+            .on_workflow_start(&builder.context)
+            .await?;
         builder.context.workflow_id = workflow_id.clone();
         builder.plugin_gate.customize_context(&mut builder.context);
 
@@ -408,7 +416,8 @@ impl CompiledWorkflowRunnerBuilder {
                         last_completed_node,
                         interrupted_nodes,
                         checkpoint_saved,
-                    } = &e {
+                    } = &e
+                    {
                         let _ = status_exec.send(crate::scheduler::ExecutionStatus::SafeStopped {
                             last_completed_node: last_completed_node.clone(),
                             interrupted_nodes: interrupted_nodes.clone(),
@@ -448,9 +457,7 @@ impl CompiledWorkflowRunnerBuilder {
                                 let recovered_outputs: HashMap<String, Value> = handler_outputs
                                     .as_object()
                                     .map(|o| {
-                                        o.iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect()
+                                        o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                                     })
                                     .unwrap_or_default();
 
@@ -464,15 +471,19 @@ impl CompiledWorkflowRunnerBuilder {
 
                                 match error_handler.mode {
                                     ErrorHandlingMode::Recover => {
-                                        let _ = status_exec
-                                            .send(crate::scheduler::ExecutionStatus::FailedWithRecovery {
+                                        let _ = status_exec.send(
+                                            crate::scheduler::ExecutionStatus::FailedWithRecovery {
                                                 original_error: e.to_string(),
                                                 recovered_outputs,
-                                            });
+                                            },
+                                        );
                                     }
                                     ErrorHandlingMode::Notify => {
-                                        let _ = status_exec
-                                            .send(crate::scheduler::ExecutionStatus::Failed(e.to_string()));
+                                        let _ = status_exec.send(
+                                            crate::scheduler::ExecutionStatus::Failed(
+                                                e.to_string(),
+                                            ),
+                                        );
                                     }
                                 }
                             }
@@ -523,7 +534,7 @@ impl CompiledWorkflowRunnerBuilder {
             .security_gate
             .validate_schema(schema.as_ref(), &builder.context);
         if !report.is_valid {
-            return Err(WorkflowError::ValidationFailed(report));
+            return Err(WorkflowError::ValidationFailed(Box::new(report)));
         }
 
         builder
@@ -533,7 +544,7 @@ impl CompiledWorkflowRunnerBuilder {
         builder.plugin_gate.after_dsl_validation(&report).await?;
 
         if !report.is_valid {
-            return Err(WorkflowError::ValidationFailed(report));
+            return Err(WorkflowError::ValidationFailed(Box::new(report)));
         }
 
         let graph = Graph::from_topology(Arc::clone(&builder.compiled.graph_template));
@@ -596,8 +607,12 @@ impl CompiledWorkflowRunnerBuilder {
         }
 
         let registry = Arc::new(registry);
-        builder.context = builder.context.with_node_executor_registry(Arc::clone(&registry));
-        builder.context = builder.context.with_llm_provider_registry(Arc::clone(&llm_registry));
+        builder.context = builder
+            .context
+            .with_node_executor_registry(Arc::clone(&registry));
+        builder.context = builder
+            .context
+            .with_llm_provider_registry(Arc::clone(&llm_registry));
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (debug_evt_tx, debug_evt_rx) = mpsc::channel(256);
@@ -632,7 +647,10 @@ impl CompiledWorkflowRunnerBuilder {
             .effective_engine_config(&builder.context, builder.config);
         builder.context.strict_template = config.strict_template;
 
-        let workflow_id = builder.security_gate.on_workflow_start(&builder.context).await?;
+        let workflow_id = builder
+            .security_gate
+            .on_workflow_start(&builder.context)
+            .await?;
         builder.context.workflow_id = workflow_id.clone();
         builder.plugin_gate.customize_context(&mut builder.context);
 
@@ -725,7 +743,8 @@ impl CompiledWorkflowRunnerBuilder {
                         last_completed_node,
                         interrupted_nodes,
                         checkpoint_saved,
-                    } = &e {
+                    } = &e
+                    {
                         let _ = status_exec.send(crate::scheduler::ExecutionStatus::SafeStopped {
                             last_completed_node: last_completed_node.clone(),
                             interrupted_nodes: interrupted_nodes.clone(),
@@ -765,9 +784,7 @@ impl CompiledWorkflowRunnerBuilder {
                                 let recovered_outputs: HashMap<String, Value> = handler_outputs
                                     .as_object()
                                     .map(|o| {
-                                        o.iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect()
+                                        o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                                     })
                                     .unwrap_or_default();
 
@@ -781,15 +798,19 @@ impl CompiledWorkflowRunnerBuilder {
 
                                 match error_handler.mode {
                                     ErrorHandlingMode::Recover => {
-                                        let _ = status_exec
-                                            .send(crate::scheduler::ExecutionStatus::FailedWithRecovery {
+                                        let _ = status_exec.send(
+                                            crate::scheduler::ExecutionStatus::FailedWithRecovery {
                                                 original_error: e.to_string(),
                                                 recovered_outputs,
-                                            });
+                                            },
+                                        );
                                     }
                                     ErrorHandlingMode::Notify => {
-                                        let _ = status_exec
-                                            .send(crate::scheduler::ExecutionStatus::Failed(e.to_string()));
+                                        let _ = status_exec.send(
+                                            crate::scheduler::ExecutionStatus::Failed(
+                                                e.to_string(),
+                                            ),
+                                        );
                                     }
                                 }
                             }
@@ -822,12 +843,8 @@ impl CompiledWorkflowRunnerBuilder {
             }
         });
 
-        let workflow_handle = crate::scheduler::WorkflowHandle::new(
-            status_rx,
-            events,
-            event_active,
-            command_tx,
-        );
+        let workflow_handle =
+            crate::scheduler::WorkflowHandle::new(status_rx, events, event_active, command_tx);
         let debug_handle = DebugHandle::new(cmd_tx, debug_evt_rx);
 
         Ok((workflow_handle, debug_handle))
@@ -874,12 +891,14 @@ edges:
         let compiled = create_test_compiled();
         let mut inputs = HashMap::new();
         inputs.insert("key".to_string(), Value::String("value".into()));
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .user_inputs(inputs.clone());
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).user_inputs(inputs.clone());
+
         assert_eq!(builder.user_inputs.len(), 1);
-        assert_eq!(builder.user_inputs.get("key"), Some(&Value::String("value".into())));
+        assert_eq!(
+            builder.user_inputs.get("key"),
+            Some(&Value::String("value".into()))
+        );
     }
 
     #[test]
@@ -887,10 +906,9 @@ edges:
         let compiled = create_test_compiled();
         let mut vars = HashMap::new();
         vars.insert("sys_var".to_string(), Value::String("sys_value".into()));
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .system_vars(vars.clone());
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).system_vars(vars.clone());
+
         assert_eq!(builder.system_vars.len(), 1);
     }
 
@@ -899,10 +917,9 @@ edges:
         let compiled = create_test_compiled();
         let mut vars = HashMap::new();
         vars.insert("env_var".to_string(), Value::String("env_value".into()));
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .environment_vars(vars.clone());
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).environment_vars(vars.clone());
+
         assert_eq!(builder.environment_vars.len(), 1);
     }
 
@@ -911,19 +928,17 @@ edges:
         let compiled = create_test_compiled();
         let mut vars = HashMap::new();
         vars.insert("conv_var".to_string(), Value::String("conv_value".into()));
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .conversation_vars(vars.clone());
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).conversation_vars(vars.clone());
+
         assert_eq!(builder.conversation_vars.len(), 1);
     }
 
     #[test]
     fn test_builder_collect_events() {
         let compiled = create_test_compiled();
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .collect_events(false);
-        
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).collect_events(false);
+
         assert!(!builder.collect_events);
     }
 
@@ -934,10 +949,9 @@ edges:
             strict_template: true,
             ..Default::default()
         };
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .config(config.clone());
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).config(config.clone());
+
         assert!(builder.config.strict_template);
     }
 
@@ -945,10 +959,9 @@ edges:
     fn test_builder_context() {
         let compiled = create_test_compiled();
         let context = WorkflowContext::default();
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .context(context);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).context(context);
+
         assert!(builder.context.workflow_id.is_none());
     }
 
@@ -956,10 +969,9 @@ edges:
     fn test_builder_runtime_group() {
         let compiled = create_test_compiled();
         let runtime_group = Arc::new(RuntimeGroup::default());
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .runtime_group(runtime_group);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).runtime_group(runtime_group);
+
         assert!(builder.context.runtime_group.credential_provider.is_none());
     }
 
@@ -967,10 +979,9 @@ edges:
     fn test_builder_sub_graph_runner() {
         let compiled = create_test_compiled();
         let runner = Arc::new(DefaultSubGraphRunner);
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .sub_graph_runner(runner);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).sub_graph_runner(runner);
+
         assert!(builder.context.sub_graph_runner().is_some());
     }
 
@@ -978,13 +989,12 @@ edges:
     #[test]
     fn test_builder_security_policy() {
         use crate::security::SecurityPolicy;
-        
+
         let compiled = create_test_compiled();
         let policy = SecurityPolicy::permissive();
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .security_policy(policy);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).security_policy(policy);
+
         assert!(builder.context.security_policy().is_some());
     }
 
@@ -992,7 +1002,7 @@ edges:
     #[test]
     fn test_builder_resource_group() {
         use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
-        
+
         let compiled = create_test_compiled();
         let group = ResourceGroup {
             group_id: "test".into(),
@@ -1001,10 +1011,9 @@ edges:
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .resource_group(group);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).resource_group(group);
+
         assert!(builder.context.resource_group().is_some());
     }
 
@@ -1012,10 +1021,9 @@ edges:
     fn test_builder_llm_providers() {
         let compiled = create_test_compiled();
         let registry = Arc::new(LlmProviderRegistry::new());
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .llm_providers(registry);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).llm_providers(registry);
+
         assert!(builder.llm_provider_registry.is_some());
     }
 
@@ -1026,10 +1034,9 @@ edges:
             break_on_start: true,
             ..Default::default()
         };
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .debug(debug_config.clone());
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).debug(debug_config.clone());
+
         assert!(builder.debug_config.is_some());
     }
 
@@ -1037,7 +1044,7 @@ edges:
     fn test_builder_validate() {
         let compiled = create_test_compiled();
         let builder = CompiledWorkflowRunnerBuilder::new(compiled);
-        
+
         let report = builder.validate();
         assert!(report.is_valid);
     }
@@ -1063,10 +1070,10 @@ edges:
 "#;
         let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
         let handle = compiled.runner().run().await.unwrap();
-        
+
         let status = handle.wait().await;
         match status {
-            crate::scheduler::ExecutionStatus::Completed(_) => {},
+            crate::scheduler::ExecutionStatus::Completed(_) => {}
             other => panic!("Expected Completed, got {:?}", other),
         }
     }
@@ -1100,18 +1107,14 @@ edges:
         let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), Value::String("test".into()));
-        
-        let handle = compiled.runner()
-            .user_inputs(inputs)
-            .run()
-            .await
-            .unwrap();
-        
+
+        let handle = compiled.runner().user_inputs(inputs).run().await.unwrap();
+
         let status = handle.wait().await;
         match status {
             crate::scheduler::ExecutionStatus::Completed(outputs) => {
                 assert_eq!(outputs.get("output"), Some(&Value::String("test".into())));
-            },
+            }
             other => panic!("Expected Completed, got {:?}", other),
         }
     }
@@ -1140,18 +1143,17 @@ edges:
         let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
         let mut sys_vars = HashMap::new();
         sys_vars.insert("test_var".to_string(), Value::String("sys_value".into()));
-        
-        let handle = compiled.runner()
-            .system_vars(sys_vars)
-            .run()
-            .await
-            .unwrap();
-        
+
+        let handle = compiled.runner().system_vars(sys_vars).run().await.unwrap();
+
         let status = handle.wait().await;
         match status {
             crate::scheduler::ExecutionStatus::Completed(outputs) => {
-                assert_eq!(outputs.get("output"), Some(&Value::String("sys_value".into())));
-            },
+                assert_eq!(
+                    outputs.get("output"),
+                    Some(&Value::String("sys_value".into()))
+                );
+            }
             other => panic!("Expected Completed, got {:?}", other),
         }
     }
@@ -1180,18 +1182,22 @@ edges:
         let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
         let mut env_vars = HashMap::new();
         env_vars.insert("env_var".to_string(), Value::String("env_value".into()));
-        
-        let handle = compiled.runner()
+
+        let handle = compiled
+            .runner()
             .environment_vars(env_vars)
             .run()
             .await
             .unwrap();
-        
+
         let status = handle.wait().await;
         match status {
             crate::scheduler::ExecutionStatus::Completed(outputs) => {
-                assert_eq!(outputs.get("output"), Some(&Value::String("env_value".into())));
-            },
+                assert_eq!(
+                    outputs.get("output"),
+                    Some(&Value::String("env_value".into()))
+                );
+            }
             other => panic!("Expected Completed, got {:?}", other),
         }
     }
@@ -1220,18 +1226,22 @@ edges:
         let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
         let mut conv_vars = HashMap::new();
         conv_vars.insert("conv_var".to_string(), Value::String("conv_value".into()));
-        
-        let handle = compiled.runner()
+
+        let handle = compiled
+            .runner()
             .conversation_vars(conv_vars)
             .run()
             .await
             .unwrap();
-        
+
         let status = handle.wait().await;
         match status {
             crate::scheduler::ExecutionStatus::Completed(outputs) => {
-                assert_eq!(outputs.get("output"), Some(&Value::String("conv_value".into())));
-            },
+                assert_eq!(
+                    outputs.get("output"),
+                    Some(&Value::String("conv_value".into()))
+                );
+            }
             other => panic!("Expected Completed, got {:?}", other),
         }
     }
@@ -1240,15 +1250,15 @@ edges:
     #[test]
     fn test_builder_resource_governor() {
         use crate::security::{InMemoryResourceGovernor, ResourceQuota};
-        
+
         let compiled = create_test_compiled();
         let mut quotas = HashMap::new();
         quotas.insert("default".to_string(), ResourceQuota::default());
         let governor = Arc::new(InMemoryResourceGovernor::new(quotas));
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .resource_governor(governor.clone());
-        
+
+        let builder =
+            CompiledWorkflowRunnerBuilder::new(compiled).resource_governor(governor.clone());
+
         assert!(builder.context.resource_governor().is_some());
     }
 
@@ -1256,11 +1266,11 @@ edges:
     #[test]
     fn test_builder_credential_provider() {
         use crate::security::CredentialProvider;
-        
+
         let compiled = create_test_compiled();
-        
+
         struct MockCredentialProvider;
-        
+
         #[async_trait::async_trait]
         impl CredentialProvider for MockCredentialProvider {
             async fn get_credentials(
@@ -1271,26 +1281,24 @@ edges:
                 Ok(HashMap::new())
             }
         }
-        
+
         let provider = Arc::new(MockCredentialProvider);
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .credential_provider(provider);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).credential_provider(provider);
+
         assert!(builder.context.credential_provider().is_some());
     }
 
     #[cfg(feature = "security")]
     #[test]
     fn test_builder_audit_logger() {
-        use crate::security::{TracingAuditLogger};
-        
+        use crate::security::TracingAuditLogger;
+
         let compiled = create_test_compiled();
         let logger = Arc::new(TracingAuditLogger);
-        
-        let builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .audit_logger(logger);
-        
+
+        let builder = CompiledWorkflowRunnerBuilder::new(compiled).audit_logger(logger);
+
         assert!(builder.context.audit_logger().is_some());
     }
 
@@ -1319,15 +1327,14 @@ edges:
             max_steps: 100,
             ..Default::default()
         };
-        
-        let handle = compiled.runner()
-            .config(config)
-            .run()
-            .await
-            .unwrap();
-        
+
+        let handle = compiled.runner().config(config).run().await.unwrap();
+
         let status = handle.wait().await;
-        assert!(matches!(status, crate::scheduler::ExecutionStatus::Completed(_)));
+        assert!(matches!(
+            status,
+            crate::scheduler::ExecutionStatus::Completed(_)
+        ));
     }
 
     #[cfg(all(test, feature = "builtin-core-nodes"))]
@@ -1350,13 +1357,9 @@ edges:
     target: end
 "#;
         let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
-        
-        let handle = compiled.runner()
-            .collect_events(false)
-            .run()
-            .await
-            .unwrap();
-        
+
+        let handle = compiled.runner().collect_events(false).run().await.unwrap();
+
         let events = handle.events().await;
         assert!(events.is_empty());
     }
@@ -1364,14 +1367,13 @@ edges:
     #[cfg(all(test, feature = "plugin-system"))]
     #[test]
     fn test_builder_plugin_config() {
-        use crate::plugin_system::{PluginSystemConfig};
-        
+        use crate::plugin_system::PluginSystemConfig;
+
         let compiled = create_test_compiled();
         let plugin_config = PluginSystemConfig::default();
-        
-        let _builder = CompiledWorkflowRunnerBuilder::new(compiled)
-            .plugin_config(plugin_config);
-        
+
+        let _builder = CompiledWorkflowRunnerBuilder::new(compiled).plugin_config(plugin_config);
+
         // Plugin config is set internally
     }
 }

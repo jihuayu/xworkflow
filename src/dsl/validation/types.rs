@@ -94,9 +94,7 @@ mod tests {
     fn test_validation_report_warnings_only() {
         let report = ValidationReport {
             is_valid: true,
-            diagnostics: vec![
-                make_diagnostic(DiagnosticLevel::Warning, "W001"),
-            ],
+            diagnostics: vec![make_diagnostic(DiagnosticLevel::Warning, "W001")],
         };
         assert_eq!(report.errors().len(), 0);
         assert_eq!(report.warnings().len(), 1);

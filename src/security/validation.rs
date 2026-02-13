@@ -116,7 +116,10 @@ mod tests {
         let deserialized: DslValidationConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.max_nodes, config.max_nodes);
         assert_eq!(deserialized.max_edges, config.max_edges);
-        assert_eq!(deserialized.enable_cycle_detection, config.enable_cycle_detection);
+        assert_eq!(
+            deserialized.enable_cycle_detection,
+            config.enable_cycle_detection
+        );
     }
 
     #[test]

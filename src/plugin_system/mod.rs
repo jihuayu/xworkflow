@@ -9,17 +9,17 @@
 //! See [`PluginRegistry`] for the central coordination point and
 //! [`Plugin`] for the trait that all plugins must implement.
 
+pub mod builtins;
 pub mod config;
 pub mod context;
 pub mod error;
 pub mod extensions;
 pub mod hooks;
 pub mod loader;
+pub mod loaders;
+pub mod macros;
 pub mod registry;
 pub mod traits;
-pub mod macros;
-pub mod loaders;
-pub mod builtins;
 #[cfg(feature = "wasm-runtime")]
 pub use xworkflow_plugin_wasm as wasm;
 
@@ -27,8 +27,8 @@ pub use config::PluginSystemConfig;
 pub use context::PluginContext;
 pub use error::PluginError;
 pub use extensions::{DslValidator, TemplateFunction};
-pub use xworkflow_types::template::{CompiledTemplateHandle, TemplateEngine};
 pub use hooks::{HookHandler, HookPayload, HookPoint};
 pub use loader::{PluginLoadSource, PluginLoader};
 pub use registry::{PluginPhase, PluginRegistry};
-pub use traits::{Plugin, PluginCategory, PluginMetadata, PluginSource, PluginCapabilities};
+pub use traits::{Plugin, PluginCapabilities, PluginCategory, PluginMetadata, PluginSource};
+pub use xworkflow_types::template::{CompiledTemplateHandle, TemplateEngine};

@@ -1,9 +1,17 @@
 //! Node-level error types.
 
-use thiserror::Error;
 use serde_json;
+use thiserror::Error;
 
 use super::error_context::{ErrorContext, ErrorRetryability};
+
+#[derive(Debug, Error)]
+#[error("{}", context.message)]
+pub struct NodeErrorWithContext {
+    #[source]
+    pub source: Box<NodeError>,
+    pub context: ErrorContext,
+}
 
 /// Node-level errors
 #[derive(Debug, Error)]
@@ -31,29 +39,29 @@ pub enum NodeError {
     #[error("Event send error: {0}")]
     EventSendError(String),
     #[error("Output too large for node {node_id} (max {max} bytes, got {actual} bytes)")]
-    OutputTooLarge { node_id: String, max: usize, actual: usize },
-
-    #[error("{}", .context.message)]
-    WithContext {
-        #[source]
-        source: Box<NodeError>,
-        context: ErrorContext,
+    OutputTooLarge {
+        node_id: String,
+        max: usize,
+        actual: usize,
     },
+
+    #[error(transparent)]
+    WithContext(Box<NodeErrorWithContext>),
 }
 
 impl NodeError {
     /// Wrap this error with structured [`ErrorContext`] metadata.
     pub fn with_context(self, context: ErrorContext) -> Self {
-        NodeError::WithContext {
+        NodeError::WithContext(Box::new(NodeErrorWithContext {
             source: Box::new(self),
             context,
-        }
+        }))
     }
 
     /// Return the attached [`ErrorContext`], if any.
     pub fn error_context(&self) -> Option<&ErrorContext> {
         match self {
-            NodeError::WithContext { context, .. } => Some(context),
+            NodeError::WithContext(with_ctx) => Some(&with_ctx.context),
             _ => None,
         }
     }
@@ -73,7 +81,7 @@ impl NodeError {
     /// Return a machine-readable error code string.
     pub fn error_code(&self) -> String {
         match self {
-            NodeError::WithContext { context, .. } => serde_json::to_value(&context.code)
+            NodeError::WithContext(with_ctx) => serde_json::to_value(&with_ctx.context.code)
                 .ok()
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "unknown".to_string()),
@@ -95,10 +103,12 @@ impl NodeError {
     /// Serialize this error into a structured JSON value.
     pub fn to_structured_json(&self) -> serde_json::Value {
         match self.error_context() {
-            Some(ctx) => serde_json::to_value(ctx).unwrap_or_else(|_| serde_json::json!({
-                "code": self.error_code(),
-                "message": self.to_string(),
-            })),
+            Some(ctx) => serde_json::to_value(ctx).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "code": self.error_code(),
+                    "message": self.to_string(),
+                })
+            }),
             None => serde_json::json!({
                 "code": self.error_code(),
                 "message": self.to_string(),
@@ -122,17 +132,50 @@ mod tests {
 
     #[test]
     fn test_node_error_display() {
-        assert_eq!(NodeError::ConfigError("x".into()).to_string(), "Configuration error: x");
-        assert_eq!(NodeError::VariableNotFound("v".into()).to_string(), "Variable not found: v");
-        assert_eq!(NodeError::ExecutionError("e".into()).to_string(), "Execution error: e");
-        assert_eq!(NodeError::TypeError("t".into()).to_string(), "Type error: t");
-        assert_eq!(NodeError::TemplateError("te".into()).to_string(), "Template error: te");
-        assert_eq!(NodeError::InputValidationError("iv".into()).to_string(), "Input validation error: iv");
-        assert_eq!(NodeError::Timeout.to_string(), "Timeout: node execution exceeded time limit");
-        assert_eq!(NodeError::SerializationError("s".into()).to_string(), "Serialization error: s");
-        assert_eq!(NodeError::HttpError("h".into()).to_string(), "HTTP error: h");
-        assert_eq!(NodeError::SandboxError("sb".into()).to_string(), "Sandbox error: sb");
-        assert_eq!(NodeError::EventSendError("es".into()).to_string(), "Event send error: es");
+        assert_eq!(
+            NodeError::ConfigError("x".into()).to_string(),
+            "Configuration error: x"
+        );
+        assert_eq!(
+            NodeError::VariableNotFound("v".into()).to_string(),
+            "Variable not found: v"
+        );
+        assert_eq!(
+            NodeError::ExecutionError("e".into()).to_string(),
+            "Execution error: e"
+        );
+        assert_eq!(
+            NodeError::TypeError("t".into()).to_string(),
+            "Type error: t"
+        );
+        assert_eq!(
+            NodeError::TemplateError("te".into()).to_string(),
+            "Template error: te"
+        );
+        assert_eq!(
+            NodeError::InputValidationError("iv".into()).to_string(),
+            "Input validation error: iv"
+        );
+        assert_eq!(
+            NodeError::Timeout.to_string(),
+            "Timeout: node execution exceeded time limit"
+        );
+        assert_eq!(
+            NodeError::SerializationError("s".into()).to_string(),
+            "Serialization error: s"
+        );
+        assert_eq!(
+            NodeError::HttpError("h".into()).to_string(),
+            "HTTP error: h"
+        );
+        assert_eq!(
+            NodeError::SandboxError("sb".into()).to_string(),
+            "Sandbox error: sb"
+        );
+        assert_eq!(
+            NodeError::EventSendError("es".into()).to_string(),
+            "Event send error: es"
+        );
     }
 
     #[test]
@@ -153,7 +196,7 @@ mod tests {
         let err = NodeError::HttpError("timeout".into());
         let ctx = ErrorContext::retryable(ErrorCode::HttpTimeout, "http timeout");
         let with_ctx = err.with_context(ctx.clone());
-        assert!(matches!(with_ctx, NodeError::WithContext { .. }));
+        assert!(matches!(with_ctx, NodeError::WithContext(_)));
         assert_eq!(with_ctx.to_string(), "http timeout");
     }
 
@@ -174,8 +217,10 @@ mod tests {
             .with_context(ErrorContext::retryable(ErrorCode::HttpTimeout, "timeout"));
         assert!(err.is_retryable());
 
-        let err2 = NodeError::HttpError("err".into())
-            .with_context(ErrorContext::non_retryable(ErrorCode::HttpClientError, "bad request"));
+        let err2 = NodeError::HttpError("err".into()).with_context(ErrorContext::non_retryable(
+            ErrorCode::HttpClientError,
+            "bad request",
+        ));
         assert!(!err2.is_retryable());
     }
 
@@ -192,23 +237,60 @@ mod tests {
         assert!(!NodeError::SerializationError("s".into()).is_retryable());
         assert!(!NodeError::SandboxError("sb".into()).is_retryable());
         assert!(!NodeError::EventSendError("es".into()).is_retryable());
-        assert!(!NodeError::OutputTooLarge { node_id: "n".into(), max: 1, actual: 2 }.is_retryable());
+        assert!(!NodeError::OutputTooLarge {
+            node_id: "n".into(),
+            max: 1,
+            actual: 2
+        }
+        .is_retryable());
     }
 
     #[test]
     fn test_error_code() {
-        assert_eq!(NodeError::ConfigError("e".into()).error_code(), "config_error");
-        assert_eq!(NodeError::VariableNotFound("v".into()).error_code(), "variable_not_found");
-        assert_eq!(NodeError::ExecutionError("e".into()).error_code(), "execution_error");
+        assert_eq!(
+            NodeError::ConfigError("e".into()).error_code(),
+            "config_error"
+        );
+        assert_eq!(
+            NodeError::VariableNotFound("v".into()).error_code(),
+            "variable_not_found"
+        );
+        assert_eq!(
+            NodeError::ExecutionError("e".into()).error_code(),
+            "execution_error"
+        );
         assert_eq!(NodeError::TypeError("t".into()).error_code(), "type_error");
-        assert_eq!(NodeError::TemplateError("te".into()).error_code(), "template_error");
-        assert_eq!(NodeError::InputValidationError("iv".into()).error_code(), "input_validation_error");
+        assert_eq!(
+            NodeError::TemplateError("te".into()).error_code(),
+            "template_error"
+        );
+        assert_eq!(
+            NodeError::InputValidationError("iv".into()).error_code(),
+            "input_validation_error"
+        );
         assert_eq!(NodeError::Timeout.error_code(), "timeout");
-        assert_eq!(NodeError::SerializationError("s".into()).error_code(), "serialization_error");
+        assert_eq!(
+            NodeError::SerializationError("s".into()).error_code(),
+            "serialization_error"
+        );
         assert_eq!(NodeError::HttpError("h".into()).error_code(), "http_error");
-        assert_eq!(NodeError::SandboxError("sb".into()).error_code(), "sandbox_error");
-        assert_eq!(NodeError::EventSendError("es".into()).error_code(), "event_send_error");
-        assert_eq!(NodeError::OutputTooLarge { node_id: "n".into(), max: 1, actual: 2 }.error_code(), "output_too_large");
+        assert_eq!(
+            NodeError::SandboxError("sb".into()).error_code(),
+            "sandbox_error"
+        );
+        assert_eq!(
+            NodeError::EventSendError("es".into()).error_code(),
+            "event_send_error"
+        );
+        assert_eq!(
+            NodeError::OutputTooLarge {
+                node_id: "n".into(),
+                max: 1,
+                actual: 2
+            }
+            .error_code(),
+            "output_too_large"
+        );
     }
 
     #[test]
@@ -248,4 +330,5 @@ mod tests {
         assert!(matches!(node_err, NodeError::SerializationError(_)));
         assert!(node_err.to_string().contains("Serialization error"));
     }
+
 }

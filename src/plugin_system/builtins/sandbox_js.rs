@@ -3,16 +3,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::plugin_system::{Plugin, PluginCategory, PluginContext, PluginError, PluginMetadata, PluginSource};
+use crate::plugin_system::{
+    Plugin, PluginCategory, PluginContext, PluginError, PluginMetadata, PluginSource,
+};
 use crate::sandbox::CodeLanguage;
 
 use xworkflow_sandbox_js::{BuiltinSandbox, BuiltinSandboxConfig};
 use xworkflow_types::{
-    CodeSandbox,
-    ExecutionConfig,
-    LanguageProvider,
-    LanguageProviderWrapper,
-    LANG_PROVIDE_KEY,
+    CodeSandbox, ExecutionConfig, LanguageProvider, LanguageProviderWrapper, LANG_PROVIDE_KEY,
 };
 
 /// Create a pair of JS sandbox plugins (Boot + Normal) sharing the same sandbox instance.
@@ -150,7 +148,7 @@ mod tests {
     fn test_create_js_sandbox_plugins() {
         let config = BuiltinSandboxConfig::default();
         let (boot, lang) = create_js_sandbox_plugins(config);
-        
+
         assert_eq!(boot.metadata().id, "xworkflow.sandbox-js.boot");
         assert_eq!(boot.metadata().category, PluginCategory::Bootstrap);
         assert_eq!(lang.metadata().id, "xworkflow.sandbox-js.lang");
@@ -161,7 +159,7 @@ mod tests {
     fn test_js_sandbox_boot_plugin_new() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let plugin = JsSandboxBootPlugin::new(sandbox);
-        
+
         assert_eq!(plugin.metadata().name, "JavaScript Sandbox (Boot)");
     }
 
@@ -169,7 +167,7 @@ mod tests {
     fn test_js_sandbox_boot_plugin_metadata() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let plugin = JsSandboxBootPlugin::new(sandbox);
-        
+
         let metadata = plugin.metadata();
         assert_eq!(metadata.id, "xworkflow.sandbox-js.boot");
         assert_eq!(metadata.category, PluginCategory::Bootstrap);
@@ -179,7 +177,7 @@ mod tests {
     fn test_js_sandbox_boot_plugin_as_any() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let plugin = JsSandboxBootPlugin::new(sandbox);
-        
+
         assert!(plugin.as_any().is::<JsSandboxBootPlugin>());
     }
 
@@ -187,7 +185,7 @@ mod tests {
     fn test_js_sandbox_lang_plugin_new() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let plugin = JsSandboxLangPlugin::new(sandbox);
-        
+
         assert_eq!(plugin.metadata().name, "JavaScript Language Provider");
         assert_eq!(plugin.metadata().category, PluginCategory::Normal);
     }
@@ -196,17 +194,20 @@ mod tests {
     fn test_js_sandbox_lang_plugin_metadata() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let plugin = JsSandboxLangPlugin::new(sandbox);
-        
+
         let metadata = plugin.metadata();
         assert_eq!(metadata.id, "xworkflow.sandbox-js.lang");
-        assert_eq!(metadata.description, "Provides JavaScript lang-provide for code node");
+        assert_eq!(
+            metadata.description,
+            "Provides JavaScript lang-provide for code node"
+        );
     }
 
     #[test]
     fn test_js_sandbox_lang_plugin_as_any() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let plugin = JsSandboxLangPlugin::new(sandbox);
-        
+
         assert!(plugin.as_any().is::<JsSandboxLangPlugin>());
     }
 
@@ -214,7 +215,7 @@ mod tests {
     fn test_js_language_provider_language() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let provider = JsLanguageProvider { sandbox };
-        
+
         assert_eq!(provider.language(), CodeLanguage::JavaScript);
     }
 
@@ -222,7 +223,7 @@ mod tests {
     fn test_js_language_provider_display_name() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let provider = JsLanguageProvider { sandbox };
-        
+
         assert_eq!(provider.display_name(), "JavaScript (boa)");
     }
 
@@ -230,7 +231,7 @@ mod tests {
     fn test_js_language_provider_default_config() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let provider = JsLanguageProvider { sandbox };
-        
+
         let config = provider.default_config();
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.max_memory, 32 * 1024 * 1024);
@@ -240,7 +241,7 @@ mod tests {
     fn test_js_language_provider_file_extensions() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let provider = JsLanguageProvider { sandbox };
-        
+
         let exts = provider.file_extensions();
         assert_eq!(exts, vec![".js", ".mjs"]);
     }
@@ -249,15 +250,17 @@ mod tests {
     fn test_js_language_provider_supports_streaming() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
         let provider = JsLanguageProvider { sandbox };
-        
+
         assert!(provider.supports_streaming());
     }
 
     #[test]
     fn test_js_language_provider_sandbox() {
         let sandbox = Arc::new(BuiltinSandbox::new(BuiltinSandboxConfig::default()));
-        let provider = JsLanguageProvider { sandbox: sandbox.clone() };
-        
+        let provider = JsLanguageProvider {
+            sandbox: sandbox.clone(),
+        };
+
         let _sandbox_ref = provider.sandbox();
     }
 }

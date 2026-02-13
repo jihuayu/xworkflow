@@ -108,10 +108,7 @@ fn alloc_in_guest(caller: &mut Caller<'_, PluginState>, size: i32) -> Result<i32
     alloc.call(caller, size).map_err(|e| anyhow!(e.to_string()))
 }
 
-fn write_json_to_guest(
-    caller: &mut Caller<'_, PluginState>,
-    value: &Value,
-) -> Result<(i32, i32)> {
+fn write_json_to_guest(caller: &mut Caller<'_, PluginState>, value: &Value) -> Result<(i32, i32)> {
     let bytes = serde_json::to_vec(value).map_err(|e| anyhow!(e.to_string()))?;
     let len = bytes.len() as i32;
     let ptr = alloc_in_guest(caller, len)?;
@@ -128,8 +125,8 @@ fn var_get_impl(
         return Err(anyhow!("Capability denied: read_variables"));
     }
     let selector_bytes = read_bytes(&mut caller, selector_ptr, selector_len)?;
-    let selector: Value = serde_json::from_slice(&selector_bytes)
-        .map_err(|e| anyhow!(e.to_string()))?;
+    let selector: Value =
+        serde_json::from_slice(&selector_bytes).map_err(|e| anyhow!(e.to_string()))?;
     let access = caller
         .data()
         .variable_access
@@ -150,11 +147,10 @@ fn var_set_impl(
         return Ok(-1);
     }
     let selector_bytes = read_bytes(&mut caller, selector_ptr, selector_len)?;
-    let selector: Value = serde_json::from_slice(&selector_bytes)
-        .map_err(|e| anyhow!(e.to_string()))?;
+    let selector: Value =
+        serde_json::from_slice(&selector_bytes).map_err(|e| anyhow!(e.to_string()))?;
     let value_bytes = read_bytes(&mut caller, value_ptr, value_len)?;
-    let value: Value = serde_json::from_slice(&value_bytes)
-        .map_err(|e| anyhow!(e.to_string()))?;
+    let value: Value = serde_json::from_slice(&value_bytes).map_err(|e| anyhow!(e.to_string()))?;
     let access = caller
         .data()
         .variable_access
@@ -164,7 +160,12 @@ fn var_set_impl(
     Ok(0)
 }
 
-fn log_impl(mut caller: Caller<'_, PluginState>, level: i32, msg_ptr: i32, msg_len: i32) -> Result<()> {
+fn log_impl(
+    mut caller: Caller<'_, PluginState>,
+    level: i32,
+    msg_ptr: i32,
+    msg_len: i32,
+) -> Result<()> {
     let msg_bytes = read_bytes(&mut caller, msg_ptr, msg_len)?;
     let msg = String::from_utf8_lossy(&msg_bytes);
     let prefix = &caller.data().plugin_id;
@@ -187,8 +188,8 @@ fn emit_event_impl(
         return Ok(-1);
     }
     let event_bytes = read_bytes(&mut caller, event_ptr, event_len)?;
-    let payload: Value = serde_json::from_slice(&event_bytes)
-        .map_err(|e| anyhow!(e.to_string()))?;
+    let payload: Value =
+        serde_json::from_slice(&event_bytes).map_err(|e| anyhow!(e.to_string()))?;
     let event_type = payload
         .get("type")
         .and_then(|v| v.as_str())
@@ -211,17 +212,13 @@ fn http_request_impl(
         return Err(anyhow!("Capability denied: http_access"));
     }
     let req_bytes = read_bytes(&mut caller, req_ptr, req_len)?;
-    let req_json: Value = serde_json::from_slice(&req_bytes)
-        .map_err(|e| anyhow!(e.to_string()))?;
+    let req_json: Value = serde_json::from_slice(&req_bytes).map_err(|e| anyhow!(e.to_string()))?;
 
     let method = req_json
         .get("method")
         .and_then(|v| v.as_str())
         .unwrap_or("GET");
-    let url = req_json
-        .get("url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let url = req_json.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
     let client = reqwest::blocking::Client::new();
     let builder = match method.to_uppercase().as_str() {
@@ -246,9 +243,7 @@ fn http_request_impl(
         builder = builder.body(body.to_string());
     }
 
-    let resp = builder
-        .send()
-        .map_err(|e| anyhow!(e.to_string()))?;
+    let resp = builder.send().map_err(|e| anyhow!(e.to_string()))?;
 
     let status = resp.status().as_u16();
     let mut resp_headers = serde_json::Map::new();

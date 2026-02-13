@@ -9,18 +9,19 @@
 //! - [`subgraph`] — Sub-graph definition and executor for embedded mini-workflows.
 //! - [`subgraph_nodes`] — Iteration, Loop, ListOperator container executors.
 
-pub mod executor;
-pub mod control_flow;
-pub mod data_transform;
-#[cfg(feature = "builtin-agent-node")]
-pub mod tool;
 #[cfg(feature = "builtin-agent-node")]
 pub mod agent;
+pub mod control_flow;
+pub mod data_transform;
 pub mod document_extract;
+pub mod executor;
 pub mod gather;
 pub mod human_input;
 pub mod subgraph;
 pub mod subgraph_nodes;
+#[cfg(feature = "builtin-agent-node")]
+#[allow(clippy::result_large_err)]
+pub mod tool;
 pub mod utils;
 
 pub use executor::*;

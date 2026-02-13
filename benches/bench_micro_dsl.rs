@@ -20,7 +20,9 @@ fn build_json_workflow(node_count: usize) -> String {
     let mut edges = Vec::new();
     if node_count > 1 {
         for i in 0..(node_count - 1) {
-            edges.push(serde_json::json!({"source": format!("n{}", i), "target": format!("n{}", i + 1)}));
+            edges.push(
+                serde_json::json!({"source": format!("n{}", i), "target": format!("n{}", i + 1)}),
+            );
         }
     }
 
@@ -34,21 +36,29 @@ fn build_json_workflow(node_count: usize) -> String {
 
 fn bench_dsl(c: &mut Criterion) {
     for size in [2usize, 10, 50, 200] {
-        c.bench_with_input(BenchmarkId::new("parse_yaml_nodes", size), &size, |b, size| {
-            let yaml = build_linear_workflow(*size, "template-transform");
-            b.iter(|| {
-                let _ = black_box(parse_dsl(&yaml, DslFormat::Yaml).unwrap());
-            });
-        });
+        c.bench_with_input(
+            BenchmarkId::new("parse_yaml_nodes", size),
+            &size,
+            |b, size| {
+                let yaml = build_linear_workflow(*size, "template-transform");
+                b.iter(|| {
+                    let _ = black_box(parse_dsl(&yaml, DslFormat::Yaml).unwrap());
+                });
+            },
+        );
     }
 
     for size in [2usize, 50, 200] {
-        c.bench_with_input(BenchmarkId::new("parse_json_nodes", size), &size, |b, size| {
-            let json = build_json_workflow(*size);
-            b.iter(|| {
-                let _ = black_box(parse_dsl(&json, DslFormat::Json).unwrap());
-            });
-        });
+        c.bench_with_input(
+            BenchmarkId::new("parse_json_nodes", size),
+            &size,
+            |b, size| {
+                let json = build_json_workflow(*size);
+                b.iter(|| {
+                    let _ = black_box(parse_dsl(&json, DslFormat::Json).unwrap());
+                });
+            },
+        );
     }
 
     c.bench_function("validate_schema_50_nodes", |b| {
@@ -60,13 +70,17 @@ fn bench_dsl(c: &mut Criterion) {
     });
 
     for size in [2usize, 50, 200] {
-        c.bench_with_input(BenchmarkId::new("build_graph_nodes", size), &size, |b, size| {
-            let yaml = build_linear_workflow(*size, "template-transform");
-            let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
-            b.iter(|| {
-                let _ = black_box(build_graph(&schema).unwrap());
-            });
-        });
+        c.bench_with_input(
+            BenchmarkId::new("build_graph_nodes", size),
+            &size,
+            |b, size| {
+                let yaml = build_linear_workflow(*size, "template-transform");
+                let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
+                b.iter(|| {
+                    let _ = black_box(build_graph(&schema).unwrap());
+                });
+            },
+        );
     }
 
     c.bench_function("is_node_ready_check", |b| {
@@ -92,7 +106,10 @@ fn bench_dsl(c: &mut Criterion) {
         let schema = parse_dsl(&yaml, DslFormat::Yaml).unwrap();
         let mut graph = build_graph(&schema).unwrap();
         b.iter(|| {
-            graph.process_branch_edges("if1", &xworkflow::dsl::schema::EdgeHandle::Branch("c0".to_string()));
+            graph.process_branch_edges(
+                "if1",
+                &xworkflow::dsl::schema::EdgeHandle::Branch("c0".to_string()),
+            );
         });
     });
 }

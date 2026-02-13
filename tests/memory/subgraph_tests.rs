@@ -50,7 +50,12 @@ async fn test_subgraph_resources_release() {
     let result = with_timeout(
         "subgraph run",
         Duration::from_secs(2),
-        runner.run_sub_graph(&simple_sub_graph(), &VariablePool::new(), scope_vars, &context),
+        runner.run_sub_graph(
+            &simple_sub_graph(),
+            &VariablePool::new(),
+            scope_vars,
+            &context,
+        ),
     )
     .await;
 

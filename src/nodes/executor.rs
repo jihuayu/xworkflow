@@ -1,12 +1,12 @@
 //! Node executor trait and registry.
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 #[cfg(any(feature = "builtin-docextract-node", feature = "builtin-agent-node"))]
 use std::sync::Arc;
-use parking_lot::Mutex;
+use std::sync::OnceLock;
 #[cfg(feature = "builtin-agent-node")]
 use tokio::sync::RwLock;
 
@@ -15,8 +15,11 @@ use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::NodeRunResult;
 use crate::error::NodeError;
-use crate::llm::LlmProviderRegistry;
 use crate::llm::LlmNodeExecutor;
+use crate::llm::LlmProviderRegistry;
+use crate::llm::QuestionClassifierExecutor;
+
+type ExecutorFactory = dyn Fn() -> Box<dyn NodeExecutor> + Send + Sync;
 
 /// Trait for node execution. Each node type implements this.
 #[async_trait]
@@ -46,7 +49,7 @@ pub trait NodeExecutor: Send + Sync {
 /// Registry of node executors by node type string
 pub struct NodeExecutorRegistry {
     executors: HashMap<String, OnceLock<Box<dyn NodeExecutor>>>,
-    factories: Mutex<HashMap<String, Box<dyn Fn() -> Box<dyn NodeExecutor> + Send + Sync>>>,
+    factories: Mutex<HashMap<String, Box<ExecutorFactory>>>,
     #[cfg(feature = "builtin-agent-node")]
     llm_registry: Option<std::sync::Arc<LlmProviderRegistry>>,
 }
@@ -94,17 +97,26 @@ impl NodeExecutorRegistry {
                 "variable-assigner",
                 Box::new(super::data_transform::LegacyVariableAggregatorExecutor),
             );
-            registry.register("assigner", Box::new(super::data_transform::VariableAssignerExecutor));
+            registry.register(
+                "assigner",
+                Box::new(super::data_transform::VariableAssignerExecutor),
+            );
         }
 
         #[cfg(feature = "builtin-http-node")]
         {
-            registry.register("http-request", Box::new(super::data_transform::HttpRequestExecutor));
+            registry.register(
+                "http-request",
+                Box::new(super::data_transform::HttpRequestExecutor),
+            );
         }
 
         #[cfg(feature = "builtin-code-node")]
         {
-            registry.register_lazy("code", Box::new(|| Box::new(super::data_transform::CodeNodeExecutor::new())));
+            registry.register_lazy(
+                "code",
+                Box::new(|| Box::new(super::data_transform::CodeNodeExecutor::new())),
+            );
         }
 
         #[cfg(feature = "builtin-subgraph-nodes")]
@@ -125,23 +137,33 @@ impl NodeExecutorRegistry {
 
         // Stub executors for types that need external services
         // LLM executor is injected via set_llm_provider_registry
-        registry.register("knowledge-retrieval", Box::new(StubExecutor("knowledge-retrieval")));
-        registry.register("question-classifier", Box::new(StubExecutor("question-classifier")));
-        registry.register("parameter-extractor", Box::new(StubExecutor("parameter-extractor")));
+        registry.register(
+            "knowledge-retrieval",
+            Box::new(StubExecutor("knowledge-retrieval")),
+        );
+        registry.register(
+            "question-classifier",
+            Box::new(StubExecutor("question-classifier")),
+        );
+        registry.register(
+            "parameter-extractor",
+            Box::new(StubExecutor("parameter-extractor")),
+        );
         registry.register("tool", Box::new(StubExecutor("tool")));
         #[cfg(feature = "builtin-docextract-node")]
         {
-            let provider = Arc::new(
-                xworkflow_docextract_builtin::BuiltinDocExtractProvider::new(),
+            let provider = Arc::new(xworkflow_docextract_builtin::BuiltinDocExtractProvider::new());
+            let router = Arc::new(super::document_extract::ExtractorRouter::from_providers(&[
+                provider,
+            ]));
+            registry.register_lazy(
+                "document-extractor",
+                Box::new(move || {
+                    Box::new(super::document_extract::DocumentExtractorExecutor::new(
+                        router.clone(),
+                    ))
+                }),
             );
-            let router = Arc::new(
-                super::document_extract::ExtractorRouter::from_providers(&[provider]),
-            );
-            registry.register_lazy("document-extractor", Box::new(move || {
-                Box::new(super::document_extract::DocumentExtractorExecutor::new(
-                    router.clone(),
-                ))
-            }));
         }
 
         #[cfg(not(feature = "builtin-docextract-node"))]
@@ -152,15 +174,15 @@ impl NodeExecutorRegistry {
             );
         }
         registry.register("agent", Box::new(StubExecutor("agent")));
-        registry.register("human-input", Box::new(super::human_input::HumanInputExecutor));
+        registry.register(
+            "human-input",
+            Box::new(super::human_input::HumanInputExecutor),
+        );
         registry
     }
 
     #[cfg(feature = "plugin-system")]
-    pub fn apply_plugin_executors(
-        &mut self,
-        executors: HashMap<String, Box<dyn NodeExecutor>>,
-    ) {
+    pub fn apply_plugin_executors(&mut self, executors: HashMap<String, Box<dyn NodeExecutor>>) {
         for (node_type, executor) in executors {
             self.register(&node_type, executor);
         }
@@ -182,7 +204,7 @@ impl NodeExecutorRegistry {
     ) {
         self.executors
             .entry(node_type.to_string())
-            .or_insert_with(OnceLock::new);
+            .or_default();
         self.factories.lock().insert(node_type.to_string(), factory);
     }
 
@@ -192,16 +214,22 @@ impl NodeExecutorRegistry {
         {
             self.llm_registry = Some(registry.clone());
         }
-        self.register("llm", Box::new(LlmNodeExecutor::new(registry)));
+        self.register("llm", Box::new(LlmNodeExecutor::new(registry.clone())));
+        self.register(
+            "question-classifier",
+            Box::new(QuestionClassifierExecutor::new(registry)),
+        );
     }
 
     #[cfg(not(feature = "builtin-llm-node"))]
-    pub fn set_llm_provider_registry(&mut self, _registry: std::sync::Arc<LlmProviderRegistry>) {
-    }
+    pub fn set_llm_provider_registry(&mut self, _registry: std::sync::Arc<LlmProviderRegistry>) {}
 
     #[cfg(feature = "builtin-agent-node")]
     pub fn set_mcp_pool(&mut self, pool: Arc<RwLock<crate::mcp::pool::McpConnectionPool>>) {
-        self.register("tool", Box::new(super::tool::ToolNodeExecutor::new(pool.clone())));
+        self.register(
+            "tool",
+            Box::new(super::tool::ToolNodeExecutor::new(pool.clone())),
+        );
 
         if let Some(llm_registry) = &self.llm_registry {
             self.register(
@@ -213,7 +241,6 @@ impl NodeExecutorRegistry {
             );
         }
     }
-
 
     /// Look up an executor for the given node type string.
     pub fn get(&self, node_type: &str) -> Option<&dyn NodeExecutor> {
@@ -264,7 +291,10 @@ impl NodeExecutor for StubExecutor {
                 let mut m = HashMap::new();
                 m.insert(
                     "text".to_string(),
-                    Segment::String(format!("[Stub: {} node {} not implemented]", self.0, node_id)),
+                    Segment::String(format!(
+                        "[Stub: {} node {} not implemented]",
+                        self.0, node_id
+                    )),
                 );
                 m
             }),
@@ -358,10 +388,15 @@ mod tests {
         let executor = StubExecutor("test-type");
         let vp = VariablePool::new();
         let ctx = RuntimeContext::default();
-        let result = executor.execute("node1", &serde_json::json!({}), &vp, &ctx).await;
+        let result = executor
+            .execute("node1", &serde_json::json!({}), &vp, &ctx)
+            .await;
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(matches!(result.status, crate::dsl::schema::WorkflowNodeExecutionStatus::Exception));
+        assert!(matches!(
+            result.status,
+            crate::dsl::schema::WorkflowNodeExecutionStatus::Exception
+        ));
         assert!(result.error.is_some());
         assert!(result.error.unwrap().message.contains("test-type"));
     }

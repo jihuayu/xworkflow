@@ -17,17 +17,19 @@ pub enum DslFormat {
 /// Parse DSL content into WorkflowSchema
 pub fn parse_dsl(content: &str, format: DslFormat) -> Result<WorkflowSchema, WorkflowError> {
     match format {
-        DslFormat::Yaml => serde_saphyr::from_str(content)
-            .map_err(|e| WorkflowError::DslParseError(e.to_string())),
-        DslFormat::Json => serde_json::from_str(content)
-            .map_err(|e| WorkflowError::DslParseError(e.to_string())),
+        DslFormat::Yaml => {
+            serde_saphyr::from_str(content).map_err(|e| WorkflowError::DslParseError(e.to_string()))
+        }
+        DslFormat::Json => {
+            serde_json::from_str(content).map_err(|e| WorkflowError::DslParseError(e.to_string()))
+        }
         DslFormat::Toml => {
             // Parse TOML → toml::Value, then convert to serde_json::Value,
             // and finally deserialize into WorkflowSchema.  This two-step
             // conversion ensures fields typed as serde_json::Value (e.g.
             // condition values) are handled correctly.
-            let toml_val: toml::Value = toml::from_str(content)
-                .map_err(|e| WorkflowError::DslParseError(e.to_string()))?;
+            let toml_val: toml::Value =
+                toml::from_str(content).map_err(|e| WorkflowError::DslParseError(e.to_string()))?;
             let json_val = toml_value_to_json(toml_val);
             serde_json::from_value(json_val)
                 .map_err(|e| WorkflowError::DslParseError(e.to_string()))
@@ -163,9 +165,9 @@ nodes:
 
     #[test]
     fn test_toml_value_to_json_float() {
-        let toml_val = toml::Value::Float(3.14);
+        let toml_val = toml::Value::Float(2.5);
         let json_val = toml_value_to_json(toml_val);
-        assert_eq!(json_val, serde_json::json!(3.14));
+        assert_eq!(json_val, serde_json::json!(2.5));
     }
 
     #[test]

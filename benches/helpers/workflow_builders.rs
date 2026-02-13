@@ -28,7 +28,11 @@ pub fn build_linear_workflow(node_count: usize, node_type: &str) -> String {
     }
 
     writeln!(&mut yaml, "  - id: end").ok();
-    writeln!(&mut yaml, "    data: {{ type: end, title: End, outputs: [] }}").ok();
+    writeln!(
+        &mut yaml,
+        "    data: {{ type: end, title: End, outputs: [] }}"
+    )
+    .ok();
 
     writeln!(&mut yaml, "edges:").ok();
     writeln!(&mut yaml, "  - source: start").ok();
@@ -129,7 +133,11 @@ pub fn build_fanout_workflow(branch_count: usize) -> String {
         .ok();
     }
     writeln!(&mut yaml, "  - id: b_false").ok();
-    writeln!(&mut yaml, "    data: {{ type: end, title: Branch F, outputs: [] }}").ok();
+    writeln!(
+        &mut yaml,
+        "    data: {{ type: end, title: Branch F, outputs: [] }}"
+    )
+    .ok();
 
     writeln!(&mut yaml, "edges:").ok();
     writeln!(&mut yaml, "  - source: start").ok();
@@ -195,7 +203,11 @@ pub fn build_diamond_workflow(branch_count: usize) -> String {
     writeln!(&mut yaml, "      template: \"b_false: {{ value }}\"").ok();
     writeln!(&mut yaml, "      variables:").ok();
     writeln!(&mut yaml, "        - variable: value").ok();
-    writeln!(&mut yaml, "          value_selector: [\"start\", \"query\"]").ok();
+    writeln!(
+        &mut yaml,
+        "          value_selector: [\"start\", \"query\"]"
+    )
+    .ok();
 
     writeln!(&mut yaml, "  - id: join").ok();
     writeln!(&mut yaml, "    data:").ok();
@@ -203,16 +215,15 @@ pub fn build_diamond_workflow(branch_count: usize) -> String {
     writeln!(&mut yaml, "      title: Join").ok();
     writeln!(&mut yaml, "      variables:").ok();
     for i in 0..branch_count {
-        writeln!(
-            &mut yaml,
-            "        - [\"b{}\", \"output\"]",
-            i
-        )
-        .ok();
+        writeln!(&mut yaml, "        - [\"b{}\", \"output\"]", i).ok();
     }
     writeln!(&mut yaml, "        - [\"b_false\", \"output\"]").ok();
     writeln!(&mut yaml, "  - id: end").ok();
-    writeln!(&mut yaml, "    data: {{ type: end, title: End, outputs: [] }}").ok();
+    writeln!(
+        &mut yaml,
+        "    data: {{ type: end, title: End, outputs: [] }}"
+    )
+    .ok();
 
     writeln!(&mut yaml, "edges:").ok();
     writeln!(&mut yaml, "  - source: start").ok();
@@ -264,7 +275,11 @@ pub fn build_deep_branch_chain(depth: usize) -> String {
     }
 
     writeln!(&mut yaml, "  - id: end").ok();
-    writeln!(&mut yaml, "    data: {{ type: end, title: End, outputs: [] }}").ok();
+    writeln!(
+        &mut yaml,
+        "    data: {{ type: end, title: End, outputs: [] }}"
+    )
+    .ok();
 
     writeln!(&mut yaml, "edges:").ok();
     writeln!(&mut yaml, "  - source: start").ok();
@@ -323,7 +338,11 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "      language: javascript").ok();
     writeln!(&mut yaml, "      variables:").ok();
     writeln!(&mut yaml, "        - variable: query").ok();
-    writeln!(&mut yaml, "          value_selector: [\"start\", \"query\"]").ok();
+    writeln!(
+        &mut yaml,
+        "          value_selector: [\"start\", \"query\"]"
+    )
+    .ok();
 
     writeln!(&mut yaml, "  - id: tpl1").ok();
     writeln!(&mut yaml, "    data:").ok();
@@ -342,7 +361,11 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "        - case_id: \"yes\"").ok();
     writeln!(&mut yaml, "          logical_operator: and").ok();
     writeln!(&mut yaml, "          conditions:").ok();
-    writeln!(&mut yaml, "            - variable_selector: [\"start\", \"flag\"]").ok();
+    writeln!(
+        &mut yaml,
+        "            - variable_selector: [\"start\", \"flag\"]"
+    )
+    .ok();
     writeln!(&mut yaml, "              comparison_operator: is").ok();
     writeln!(&mut yaml, "              value: true").ok();
 
@@ -388,7 +411,11 @@ pub fn build_realistic_mixed_workflow() -> String {
     writeln!(&mut yaml, "      title: End").ok();
     writeln!(&mut yaml, "      outputs:").ok();
     writeln!(&mut yaml, "        - variable: result").ok();
-    writeln!(&mut yaml, "          value_selector: [\"ans1\", \"answer\"]").ok();
+    writeln!(
+        &mut yaml,
+        "          value_selector: [\"ans1\", \"answer\"]"
+    )
+    .ok();
 
     writeln!(&mut yaml, "edges:").ok();
     writeln!(&mut yaml, "  - source: start").ok();
@@ -436,7 +463,12 @@ pub fn build_iteration_workflow(items: usize, parallel: bool, parallelism: usize
     writeln!(&mut yaml, "      title: Iteration").ok();
     writeln!(&mut yaml, "      input_selector: [\"start\", \"items\"]").ok();
     writeln!(&mut yaml, "      output_variable: results").ok();
-    writeln!(&mut yaml, "      parallel: {}", if parallel { "true" } else { "false" }).ok();
+    writeln!(
+        &mut yaml,
+        "      parallel: {}",
+        if parallel { "true" } else { "false" }
+    )
+    .ok();
     writeln!(&mut yaml, "      parallelism: {}", parallelism).ok();
     writeln!(&mut yaml, "      max_iterations: {}", items.max(1)).ok();
     writeln!(&mut yaml, "      sub_graph:").ok();
@@ -449,13 +481,21 @@ pub fn build_iteration_workflow(items: usize, parallel: bool, parallelism: usize
     writeln!(&mut yaml, "              template: \"Item: {{ item }}\"").ok();
     writeln!(&mut yaml, "              variables:").ok();
     writeln!(&mut yaml, "                - variable: item").ok();
-    writeln!(&mut yaml, "                  value_selector: [\"__scope__\", \"item\"]").ok();
+    writeln!(
+        &mut yaml,
+        "                  value_selector: [\"__scope__\", \"item\"]"
+    )
+    .ok();
     writeln!(&mut yaml, "          - id: sg_end").ok();
     writeln!(&mut yaml, "            type: end").ok();
     writeln!(&mut yaml, "            data:").ok();
     writeln!(&mut yaml, "              outputs:").ok();
     writeln!(&mut yaml, "                - variable: output").ok();
-    writeln!(&mut yaml, "                  value_selector: [\"sg_tpl\", \"output\"]").ok();
+    writeln!(
+        &mut yaml,
+        "                  value_selector: [\"sg_tpl\", \"output\"]"
+    )
+    .ok();
     writeln!(&mut yaml, "        edges:").ok();
     writeln!(&mut yaml, "          - source: sg_start").ok();
     writeln!(&mut yaml, "            target: sg_tpl").ok();
@@ -468,7 +508,11 @@ pub fn build_iteration_workflow(items: usize, parallel: bool, parallelism: usize
     writeln!(&mut yaml, "      title: End").ok();
     writeln!(&mut yaml, "      outputs:").ok();
     writeln!(&mut yaml, "        - variable: results").ok();
-    writeln!(&mut yaml, "          value_selector: [\"iter1\", \"results\"]").ok();
+    writeln!(
+        &mut yaml,
+        "          value_selector: [\"iter1\", \"results\"]"
+    )
+    .ok();
 
     writeln!(&mut yaml, "edges:").ok();
     writeln!(&mut yaml, "  - source: start").ok();

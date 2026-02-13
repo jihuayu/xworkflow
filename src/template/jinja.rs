@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_jinja_engine_default() {
-        let engine = JinjaTemplateEngine::default();
+        let engine = JinjaTemplateEngine;
         assert_eq!(engine.engine_name(), "jinja2");
     }
 
@@ -166,7 +166,7 @@ mod tests {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
         vars.insert("name".to_string(), Value::String("World".into()));
-        
+
         let result = engine.render("Hello {{ name }}!", &vars, None);
         assert_eq!(result.unwrap(), "Hello World!");
     }
@@ -177,7 +177,7 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("first".to_string(), Value::String("John".into()));
         vars.insert("last".to_string(), Value::String("Doe".into()));
-        
+
         let result = engine.render("{{ first }} {{ last }}", &vars, None);
         assert_eq!(result.unwrap(), "John Doe");
     }
@@ -187,7 +187,7 @@ mod tests {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
         vars.insert("items".to_string(), serde_json::json!(["a", "b", "c"]));
-        
+
         let result = engine.render("{% for item in items %}{{ item }}{% endfor %}", &vars, None);
         assert_eq!(result.unwrap(), "abc");
     }
@@ -197,7 +197,7 @@ mod tests {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
         vars.insert("show".to_string(), Value::Bool(true));
-        
+
         let result = engine.render("{% if show %}visible{% endif %}", &vars, None);
         assert_eq!(result.unwrap(), "visible");
     }
@@ -206,7 +206,7 @@ mod tests {
     fn test_jinja_render_parse_error() {
         let engine = JinjaTemplateEngine::new();
         let vars = HashMap::new();
-        
+
         let result = engine.render("{{ unclosed", &vars, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("parse error"));
@@ -216,7 +216,7 @@ mod tests {
     fn test_jinja_render_undefined_variable() {
         let engine = JinjaTemplateEngine::new();
         let vars = HashMap::new();
-        
+
         let result = engine.render("{{ undefined_var }}", &vars, None);
         // Jinja allows undefined variables, rendering as empty
         assert!(result.is_ok());
@@ -227,7 +227,7 @@ mod tests {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
         vars.insert("name".to_string(), Value::String("world".into()));
-        
+
         let result = engine.render("{{ name | upper }}", &vars, None);
         assert_eq!(result.unwrap(), "WORLD");
     }
@@ -236,12 +236,15 @@ mod tests {
     fn test_jinja_render_complex_object() {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
-        vars.insert("user".to_string(), serde_json::json!({
-            "name": "Alice",
-            "age": 30,
-            "active": true
-        }));
-        
+        vars.insert(
+            "user".to_string(),
+            serde_json::json!({
+                "name": "Alice",
+                "age": 30,
+                "active": true
+            }),
+        );
+
         let result = engine.render("{{ user.name }} is {{ user.age }}", &vars, None);
         assert_eq!(result.unwrap(), "Alice is 30");
     }
@@ -267,10 +270,10 @@ mod tests {
     fn test_jinja_compiled_render() {
         let engine = JinjaTemplateEngine::new();
         let compiled = engine.compile("Hello {{ name }}!", None).unwrap();
-        
+
         let mut vars = HashMap::new();
         vars.insert("name".to_string(), Value::String("World".into()));
-        
+
         let result = compiled.render(&vars);
         assert_eq!(result.unwrap(), "Hello World!");
     }
@@ -279,15 +282,15 @@ mod tests {
     fn test_jinja_compiled_render_multiple_times() {
         let engine = JinjaTemplateEngine::new();
         let compiled = engine.compile("Hello {{ name }}!", None).unwrap();
-        
+
         let mut vars1 = HashMap::new();
         vars1.insert("name".to_string(), Value::String("Alice".into()));
         let result1 = compiled.render(&vars1).unwrap();
-        
+
         let mut vars2 = HashMap::new();
         vars2.insert("name".to_string(), Value::String("Bob".into()));
         let result2 = compiled.render(&vars2).unwrap();
-        
+
         assert_eq!(result1, "Hello Alice!");
         assert_eq!(result2, "Hello Bob!");
     }
@@ -296,10 +299,10 @@ mod tests {
     fn test_jinja_compiled_render_with_null() {
         let engine = JinjaTemplateEngine::new();
         let compiled = engine.compile("Value is {{ items }}", None).unwrap();
-        
+
         let mut vars = HashMap::new();
         vars.insert("items".to_string(), Value::Null);
-        
+
         let result = compiled.render(&vars);
         // Minijinja renders null as empty string
         assert!(result.is_ok());
@@ -309,7 +312,7 @@ mod tests {
     fn test_jinja_compiled_render_missing_var() {
         let engine = JinjaTemplateEngine::new();
         let compiled = engine.compile("{{ value }}", None).unwrap();
-        
+
         let vars = HashMap::new();
         // Missing variable should render as empty string in minijinja
         let result = compiled.render(&vars);
@@ -320,7 +323,7 @@ mod tests {
     fn test_jinja_render_empty_template() {
         let engine = JinjaTemplateEngine::new();
         let vars = HashMap::new();
-        
+
         let result = engine.render("", &vars, None);
         assert_eq!(result.unwrap(), "");
     }
@@ -329,7 +332,7 @@ mod tests {
     fn test_jinja_render_no_variables() {
         let engine = JinjaTemplateEngine::new();
         let vars = HashMap::new();
-        
+
         let result = engine.render("Hello World!", &vars, None);
         assert_eq!(result.unwrap(), "Hello World!");
     }
@@ -338,14 +341,17 @@ mod tests {
     fn test_jinja_render_nested_object_access() {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
-        vars.insert("data".to_string(), serde_json::json!({
-            "user": {
-                "profile": {
-                    "name": "Alice"
+        vars.insert(
+            "data".to_string(),
+            serde_json::json!({
+                "user": {
+                    "profile": {
+                        "name": "Alice"
+                    }
                 }
-            }
-        }));
-        
+            }),
+        );
+
         let result = engine.render("{{ data.user.profile.name }}", &vars, None);
         assert_eq!(result.unwrap(), "Alice");
     }
@@ -354,8 +360,11 @@ mod tests {
     fn test_jinja_render_array_index() {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
-        vars.insert("items".to_string(), serde_json::json!(["first", "second", "third"]));
-        
+        vars.insert(
+            "items".to_string(),
+            serde_json::json!(["first", "second", "third"]),
+        );
+
         let result = engine.render("{{ items[1] }}", &vars, None);
         assert_eq!(result.unwrap(), "second");
     }
@@ -365,7 +374,7 @@ mod tests {
         let engine = JinjaTemplateEngine::new();
         let mut vars = HashMap::new();
         vars.insert("name".to_string(), Value::String("World".into()));
-        
+
         let result = engine.render("Hello {# comment #}{{ name }}!", &vars, None);
         assert_eq!(result.unwrap(), "Hello World!");
     }

@@ -42,7 +42,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("5_vars", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("start", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("start", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -65,7 +68,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("5_outputs", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("end", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("end", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -88,7 +94,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("5_vars", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("ans", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("ans", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -117,7 +126,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("5x5_conditions", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("if1", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -143,7 +155,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("5_vars", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("tpl", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("tpl", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -160,7 +175,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("5_selectors", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("agg", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("agg", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -176,7 +194,10 @@ fn bench_node_executors(c: &mut Criterion) {
     let context = RuntimeContext::default();
     group.bench_function("js_simple", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("code", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("code", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -188,17 +209,25 @@ fn bench_js_sandbox(c: &mut Criterion) {
     let manager = SandboxManager::new(SandboxManagerConfig::default());
 
     let noop = "function main(inputs) { return {}; }".to_string();
-    let arithmetic = "function main(inputs) { return { result: inputs.a + inputs.b }; }".to_string();
-    let string_ops = "function main(inputs) { return { out: (inputs.s + inputs.s).split('').join('') }; }".to_string();
-    let json_ops = "function main(inputs) { return { out: JSON.stringify(JSON.parse(inputs.s)) }; }".to_string();
-    let array_100 = "function main(inputs) { return { sum: inputs.arr.reduce((a,b)=>a+b,0) }; }".to_string();
+    let arithmetic =
+        "function main(inputs) { return { result: inputs.a + inputs.b }; }".to_string();
+    let string_ops =
+        "function main(inputs) { return { out: (inputs.s + inputs.s).split('').join('') }; }"
+            .to_string();
+    let json_ops =
+        "function main(inputs) { return { out: JSON.stringify(JSON.parse(inputs.s)) }; }"
+            .to_string();
+    let array_100 =
+        "function main(inputs) { return { sum: inputs.arr.reduce((a,b)=>a+b,0) }; }".to_string();
     let array_1000 = array_100.clone();
     let sha256 = "function main(inputs) { return { hash: crypto.sha256(inputs.s) }; }".to_string();
     let uuid = "function main(inputs) { return { id: uuidv4() }; }".to_string();
     let base64 = "function main(inputs) { return { out: btoa(inputs.s) }; }".to_string();
 
-    let input_small = serde_json::json!({"a": 1, "b": 2, "s": "hello", "arr": (0..100).collect::<Vec<i32>>()});
-    let input_large = serde_json::json!({"arr": (0..1000).collect::<Vec<i32>>(), "s": "x".repeat(1024)});
+    let input_small =
+        serde_json::json!({"a": 1, "b": 2, "s": "hello", "arr": (0..100).collect::<Vec<i32>>()});
+    let input_large =
+        serde_json::json!({"arr": (0..1000).collect::<Vec<i32>>(), "s": "x".repeat(1024)});
 
     let cases = vec![
         ("noop", noop, input_small.clone()),
@@ -294,7 +323,9 @@ fn execute_precompiled(engine: &Engine, module: &Module, inputs: &Value) -> Valu
 
     let instance = linker.instantiate(&mut store, module).unwrap();
     let memory = instance.get_memory(&mut store, "memory").unwrap();
-    let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc")
+        .unwrap();
     let dealloc = instance
         .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
         .unwrap();
@@ -360,15 +391,22 @@ fn bench_wasm_sandbox(c: &mut Criterion) {
 
     group.bench_function("validation", |b| {
         b.to_async(&rt).iter(|| async {
-            let _ = sandbox.validate(BASIC_WAT, CodeLanguage::Wasm).await.unwrap();
+            sandbox
+                .validate(BASIC_WAT, CodeLanguage::Wasm)
+                .await
+                .unwrap();
         });
     });
 
-    let mut fuel_config = WasmSandboxConfig::default();
-    fuel_config.enable_fuel = true;
+    let fuel_config = WasmSandboxConfig {
+        enable_fuel: true,
+        ..WasmSandboxConfig::default()
+    };
     let fuel_sandbox = WasmSandbox::new(fuel_config);
-    let mut no_fuel_config = WasmSandboxConfig::default();
-    no_fuel_config.enable_fuel = false;
+    let no_fuel_config = WasmSandboxConfig {
+        enable_fuel: false,
+        ..WasmSandboxConfig::default()
+    };
     let no_fuel_sandbox = WasmSandbox::new(no_fuel_config);
 
     for (label, sb) in [("enabled", &fuel_sandbox), ("disabled", &no_fuel_sandbox)] {

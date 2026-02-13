@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::Hasher;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -58,12 +58,12 @@ impl McpConnectionPool {
         }
 
         let client: Arc<dyn McpClient> = match &config.transport {
-            McpTransport::Stdio { command, args, env } => Arc::new(
-                RmcpClient::connect_stdio(command, args, env).await?,
-            ),
-            McpTransport::Http { url, headers } => Arc::new(
-                RmcpClient::connect_http(url, headers).await?,
-            ),
+            McpTransport::Stdio { command, args, env } => {
+                Arc::new(RmcpClient::connect_stdio(command, args, env).await?)
+            }
+            McpTransport::Http { url, headers } => {
+                Arc::new(RmcpClient::connect_http(url, headers).await?)
+            }
         };
 
         self.connections.insert(key, client.clone());

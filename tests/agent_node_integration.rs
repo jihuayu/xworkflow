@@ -8,15 +8,9 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use xworkflow::dsl::schema::{LlmUsage, McpServerConfig, McpTransport};
-use xworkflow::error::NodeError;
 use xworkflow::llm::error::LlmError;
 use xworkflow::llm::types::{
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ModelInfo,
-    ProviderInfo,
-    StreamChunk,
-    ToolCall,
+    ChatCompletionRequest, ChatCompletionResponse, ModelInfo, ProviderInfo, StreamChunk, ToolCall,
 };
 use xworkflow::llm::{LlmProvider, LlmProviderRegistry};
 use xworkflow::mcp::client::{McpClient, McpToolInfo};
@@ -92,7 +86,9 @@ impl LlmProvider for MockProvider {
         _request: ChatCompletionRequest,
         _chunk_tx: tokio::sync::mpsc::Sender<StreamChunk>,
     ) -> Result<ChatCompletionResponse, LlmError> {
-        Err(LlmError::InvalidRequest("stream not used in test".to_string()))
+        Err(LlmError::InvalidRequest(
+            "stream not used in test".to_string(),
+        ))
     }
 }
 
@@ -124,7 +120,10 @@ async fn case_130_tool_node_basic() {
 
     let variable_pool = VariablePool::new();
     let context = RuntimeContext::default();
-    let result = executor.execute("tool1", &config, &variable_pool, &context).await.unwrap();
+    let result = executor
+        .execute("tool1", &config, &variable_pool, &context)
+        .await
+        .unwrap();
 
     assert_eq!(
         result.outputs.ready().get("result"),
@@ -133,7 +132,7 @@ async fn case_130_tool_node_basic() {
 }
 
 #[tokio::test]
-async fn case_131_agent_node_basic() -> Result<(), NodeError> {
+async fn case_131_agent_node_basic() {
     let mut reg = LlmProviderRegistry::new();
     reg.register(Arc::new(MockProvider {
         responses: tokio::sync::Mutex::new(vec![
@@ -175,13 +174,19 @@ async fn case_131_agent_node_basic() -> Result<(), NodeError> {
 
     let variable_pool = VariablePool::new();
     let context = RuntimeContext::default();
-    let result = executor.execute("agent1", &config, &variable_pool, &context).await?;
+    let result = executor
+        .execute("agent1", &config, &variable_pool, &context)
+        .await
+        .expect("agent node should execute successfully");
 
     assert_eq!(
         result.outputs.ready().get("text"),
         Some(&Segment::String("final-answer".to_string()))
     );
-    assert_eq!(result.outputs.ready().get("iterations"), Some(&Segment::Integer(2)));
+    assert_eq!(
+        result.outputs.ready().get("iterations"),
+        Some(&Segment::Integer(2))
+    );
     assert_eq!(
         result.outputs.ready().get("tool_calls_count"),
         Some(&Segment::Integer(1))
@@ -189,11 +194,10 @@ async fn case_131_agent_node_basic() -> Result<(), NodeError> {
 
     let log = result.outputs.ready().get("tool_calls").unwrap().to_value();
     assert_eq!(log.as_array().map(|v| v.len()), Some(1));
-    Ok(())
 }
 
 #[tokio::test]
-async fn case_132_agent_node_max_iterations() -> Result<(), NodeError> {
+async fn case_132_agent_node_max_iterations() {
     let mut reg = LlmProviderRegistry::new();
     reg.register(Arc::new(MockProvider {
         responses: tokio::sync::Mutex::new(vec![
@@ -246,16 +250,21 @@ async fn case_132_agent_node_max_iterations() -> Result<(), NodeError> {
 
     let variable_pool = VariablePool::new();
     let context = RuntimeContext::default();
-    let result = executor.execute("agent1", &config, &variable_pool, &context).await?;
+    let result = executor
+        .execute("agent1", &config, &variable_pool, &context)
+        .await
+        .expect("agent node should execute successfully");
 
     assert_eq!(
         result.outputs.ready().get("text"),
         Some(&Segment::String("forced-final".to_string()))
     );
-    assert_eq!(result.outputs.ready().get("iterations"), Some(&Segment::Integer(3)));
+    assert_eq!(
+        result.outputs.ready().get("iterations"),
+        Some(&Segment::Integer(3))
+    );
     assert_eq!(
         result.outputs.ready().get("tool_calls_count"),
         Some(&Segment::Integer(2))
     );
-    Ok(())
 }

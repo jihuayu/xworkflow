@@ -6,8 +6,8 @@ use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 
 mod helpers;
 
-use helpers::{bench_runtime, DispatcherSetup};
 use helpers::workflow_builders::{build_fanout_workflow, build_linear_workflow};
+use helpers::{bench_runtime, DispatcherSetup};
 
 fn build_condition_count_workflow(count: usize) -> String {
     let mut yaml = String::new();
@@ -15,7 +15,9 @@ fn build_condition_count_workflow(count: usize) -> String {
     yaml.push_str("nodes:\n");
     yaml.push_str("  - id: start\n    data: { type: start, title: Start }\n");
     yaml.push_str("  - id: if1\n    data:\n      type: if-else\n      title: Cond\n      cases:\n");
-    yaml.push_str("        - case_id: c1\n          logical_operator: and\n          conditions:\n");
+    yaml.push_str(
+        "        - case_id: c1\n          logical_operator: and\n          conditions:\n",
+    );
     for i in 0..count {
         yaml.push_str(&format!(
             "            - variable_selector: [\"start\", \"c{}\"]\n              comparison_operator: is\n              value: true\n",

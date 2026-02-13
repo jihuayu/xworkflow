@@ -27,7 +27,11 @@ pub fn register_all(context: &mut Context) -> JsResult<()> {
 fn register_datetime(context: &mut Context) -> JsResult<()> {
     let mut initializer = ObjectInitializer::new(context);
     initializer
-        .function(NativeFunction::from_fn_ptr(datetime_now), js_string!("now"), 0)
+        .function(
+            NativeFunction::from_fn_ptr(datetime_now),
+            js_string!("now"),
+            0,
+        )
         .function(
             NativeFunction::from_fn_ptr(datetime_timestamp),
             js_string!("timestamp"),
@@ -52,8 +56,16 @@ fn register_datetime(context: &mut Context) -> JsResult<()> {
 fn register_crypto(context: &mut Context) -> JsResult<()> {
     let mut initializer = ObjectInitializer::new(context);
     initializer
-        .function(NativeFunction::from_fn_ptr(crypto_md5), js_string!("md5"), 1)
-        .function(NativeFunction::from_fn_ptr(crypto_sha1), js_string!("sha1"), 1)
+        .function(
+            NativeFunction::from_fn_ptr(crypto_md5),
+            js_string!("md5"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(crypto_sha1),
+            js_string!("sha1"),
+            1,
+        )
         .function(
             NativeFunction::from_fn_ptr(crypto_sha256),
             js_string!("sha256"),
@@ -91,16 +103,18 @@ fn register_crypto(context: &mut Context) -> JsResult<()> {
 }
 
 fn register_base64(context: &mut Context) -> JsResult<()> {
-    let btoa = FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(base64_btoa))
-        .name(js_string!("btoa"))
-        .length(1)
-        .constructor(false)
-        .build();
-    let atob = FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(base64_atob))
-        .name(js_string!("atob"))
-        .length(1)
-        .constructor(false)
-        .build();
+    let btoa =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(base64_btoa))
+            .name(js_string!("btoa"))
+            .length(1)
+            .constructor(false)
+            .build();
+    let atob =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(base64_atob))
+            .name(js_string!("atob"))
+            .length(1)
+            .constructor(false)
+            .build();
 
     context.register_global_property(js_string!("btoa"), btoa, Attribute::all())?;
     context.register_global_property(js_string!("atob"), atob, Attribute::all())?;
@@ -118,40 +132,58 @@ fn register_uuid(context: &mut Context) -> JsResult<()> {
 }
 
 fn register_random(context: &mut Context) -> JsResult<()> {
-    let random_int_fn = FunctionObjectBuilder::new(
-        context.realm(),
-        NativeFunction::from_fn_ptr(random_int),
-    )
-    .name(js_string!("randomInt"))
-    .length(2)
-    .constructor(false)
-    .build();
-    let random_float_fn = FunctionObjectBuilder::new(
-        context.realm(),
-        NativeFunction::from_fn_ptr(random_float),
-    )
-    .name(js_string!("randomFloat"))
-    .length(0)
-    .constructor(false)
-    .build();
-    let random_bytes_fn = FunctionObjectBuilder::new(
-        context.realm(),
-        NativeFunction::from_fn_ptr(random_bytes),
-    )
-    .name(js_string!("randomBytes"))
-    .length(1)
-    .constructor(false)
-    .build();
+    let random_int_fn =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(random_int))
+            .name(js_string!("randomInt"))
+            .length(2)
+            .constructor(false)
+            .build();
+    let random_float_fn =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(random_float))
+            .name(js_string!("randomFloat"))
+            .length(0)
+            .constructor(false)
+            .build();
+    let random_bytes_fn =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(random_bytes))
+            .name(js_string!("randomBytes"))
+            .length(1)
+            .constructor(false)
+            .build();
 
-    context.register_global_property(js_string!("randomInt"), random_int_fn.clone(), Attribute::all())?;
-    context.register_global_property(js_string!("randomFloat"), random_float_fn.clone(), Attribute::all())?;
-    context.register_global_property(js_string!("randomBytes"), random_bytes_fn.clone(), Attribute::all())?;
+    context.register_global_property(
+        js_string!("randomInt"),
+        random_int_fn.clone(),
+        Attribute::all(),
+    )?;
+    context.register_global_property(
+        js_string!("randomFloat"),
+        random_float_fn.clone(),
+        Attribute::all(),
+    )?;
+    context.register_global_property(
+        js_string!("randomBytes"),
+        random_bytes_fn.clone(),
+        Attribute::all(),
+    )?;
 
     let mut initializer = ObjectInitializer::new(context);
     initializer
-        .function(NativeFunction::from_fn_ptr(random_int), js_string!("randomInt"), 2)
-        .function(NativeFunction::from_fn_ptr(random_float), js_string!("randomFloat"), 0)
-        .function(NativeFunction::from_fn_ptr(random_bytes), js_string!("randomBytes"), 1);
+        .function(
+            NativeFunction::from_fn_ptr(random_int),
+            js_string!("randomInt"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(random_float),
+            js_string!("randomFloat"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(random_bytes),
+            js_string!("randomBytes"),
+            1,
+        );
     let random = initializer.build();
     context.register_global_property(js_string!("random"), random, Attribute::all())?;
     Ok(())
@@ -161,21 +193,12 @@ fn datetime_now(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsRes
     Ok(JsValue::from(Utc::now().timestamp_millis()))
 }
 
-fn datetime_timestamp(
-    _this: &JsValue,
-    _args: &[JsValue],
-    _ctx: &mut Context,
-) -> JsResult<JsValue> {
+fn datetime_timestamp(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(Utc::now().timestamp_millis()))
 }
 
-fn datetime_format(
-    _this: &JsValue,
-    args: &[JsValue],
-    _ctx: &mut Context,
-) -> JsResult<JsValue> {
-    let fmt = args
-        .get(0)
+fn datetime_format(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    let fmt = args.first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_else(|| "%Y-%m-%d %H:%M:%S".to_string());
@@ -193,7 +216,7 @@ fn datetime_iso_string(
 }
 
 fn crypto_md5(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let input = js_arg_to_string(args.get(0));
+    let input = js_arg_to_string(args.first());
     let mut hasher = Md5::new();
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
@@ -201,7 +224,7 @@ fn crypto_md5(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult
 }
 
 fn crypto_sha1(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let input = js_arg_to_string(args.get(0));
+    let input = js_arg_to_string(args.first());
     let mut hasher = Sha1::new();
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
@@ -209,7 +232,7 @@ fn crypto_sha1(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResul
 }
 
 fn crypto_sha256(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let input = js_arg_to_string(args.get(0));
+    let input = js_arg_to_string(args.first());
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
@@ -217,19 +240,15 @@ fn crypto_sha256(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsRes
 }
 
 fn crypto_sha512(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let input = js_arg_to_string(args.get(0));
+    let input = js_arg_to_string(args.first());
     let mut hasher = Sha512::new();
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
     Ok(JsValue::from(js_string!(hex::encode(result))))
 }
 
-fn crypto_hmac_sha256(
-    _this: &JsValue,
-    args: &[JsValue],
-    _ctx: &mut Context,
-) -> JsResult<JsValue> {
-    let key = js_arg_to_string(args.get(0));
+fn crypto_hmac_sha256(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    let key = js_arg_to_string(args.first());
     let msg = js_arg_to_string(args.get(1));
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key.as_bytes())
         .map_err(|_| JsNativeError::typ().with_message("Invalid HMAC key"))?;
@@ -238,12 +257,8 @@ fn crypto_hmac_sha256(
     Ok(JsValue::from(js_string!(hex::encode(result))))
 }
 
-fn crypto_hmac_sha512(
-    _this: &JsValue,
-    args: &[JsValue],
-    _ctx: &mut Context,
-) -> JsResult<JsValue> {
-    let key = js_arg_to_string(args.get(0));
+fn crypto_hmac_sha512(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    let key = js_arg_to_string(args.first());
     let msg = js_arg_to_string(args.get(1));
     let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(key.as_bytes())
         .map_err(|_| JsNativeError::typ().with_message("Invalid HMAC key"))?;
@@ -252,12 +267,8 @@ fn crypto_hmac_sha512(
     Ok(JsValue::from(js_string!(hex::encode(result))))
 }
 
-fn crypto_aes_encrypt(
-    _this: &JsValue,
-    args: &[JsValue],
-    _ctx: &mut Context,
-) -> JsResult<JsValue> {
-    let plaintext = js_arg_to_string(args.get(0));
+fn crypto_aes_encrypt(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    let plaintext = js_arg_to_string(args.first());
     let key_hex = js_arg_to_string(args.get(1));
 
     let key_bytes = hex::decode(key_hex)
@@ -299,12 +310,8 @@ fn crypto_aes_encrypt(
     Ok(result.into())
 }
 
-fn crypto_aes_decrypt(
-    _this: &JsValue,
-    args: &[JsValue],
-    _ctx: &mut Context,
-) -> JsResult<JsValue> {
-    let ciphertext_b64 = js_arg_to_string(args.get(0));
+fn crypto_aes_decrypt(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    let ciphertext_b64 = js_arg_to_string(args.first());
     let key_hex = js_arg_to_string(args.get(1));
     let iv_b64 = js_arg_to_string(args.get(2));
 
@@ -317,7 +324,9 @@ fn crypto_aes_decrypt(
         .map_err(|_| JsNativeError::typ().with_message("iv_base64 must be valid base64"))?;
 
     if iv.len() != 12 {
-        return Err(JsNativeError::typ().with_message("iv must be 12 bytes for AES-256-GCM").into());
+        return Err(JsNativeError::typ()
+            .with_message("iv must be 12 bytes for AES-256-GCM")
+            .into());
     }
 
     let key_bytes = hex::decode(key_hex)
@@ -343,12 +352,14 @@ fn crypto_aes_decrypt(
 }
 
 fn base64_btoa(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let input = js_arg_to_string(args.get(0));
-    Ok(JsValue::from(js_string!(BASE64_STANDARD.encode(input.as_bytes()))))
+    let input = js_arg_to_string(args.first());
+    Ok(JsValue::from(js_string!(
+        BASE64_STANDARD.encode(input.as_bytes())
+    )))
 }
 
 fn base64_atob(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let input = js_arg_to_string(args.get(0));
+    let input = js_arg_to_string(args.first());
     let decoded = BASE64_STANDARD
         .decode(input.as_bytes())
         .map_err(|_| JsNativeError::typ().with_message("Invalid base64 input"))?;
@@ -363,14 +374,8 @@ fn uuid_v4(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<J
 }
 
 fn random_int(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let min = args
-        .get(0)
-        .and_then(|v| v.as_number())
-        .unwrap_or(0.0) as i64;
-    let max = args
-        .get(1)
-        .and_then(|v| v.as_number())
-        .unwrap_or(100.0) as i64;
+    let min = args.first().and_then(|v| v.as_number()).unwrap_or(0.0) as i64;
+    let max = args.get(1).and_then(|v| v.as_number()).unwrap_or(100.0) as i64;
 
     if min > max {
         return Err(JsNativeError::range()
@@ -388,10 +393,7 @@ fn random_float(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsRes
 }
 
 fn random_bytes(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let len = args
-        .get(0)
-        .and_then(|v| v.as_number())
-        .unwrap_or(16.0) as usize;
+    let len = args.first().and_then(|v| v.as_number()).unwrap_or(16.0) as usize;
     let mut bytes = vec![0u8; len];
     rand::thread_rng().fill_bytes(&mut bytes);
     Ok(JsValue::from(js_string!(hex::encode(bytes))))
@@ -399,7 +401,7 @@ fn random_bytes(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResu
 
 fn js_arg_to_string(arg: Option<&JsValue>) -> String {
     arg.and_then(|v| v.as_string())
-    .map(|s| s.to_std_string_escaped())
+        .map(|s| s.to_std_string_escaped())
         .unwrap_or_default()
 }
 

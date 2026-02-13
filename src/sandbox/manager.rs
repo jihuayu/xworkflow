@@ -13,6 +13,7 @@ use super::WasmSandboxConfig;
 
 /// Sandbox manager configuration
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct SandboxManagerConfig {
     /// Built-in sandbox configuration
     #[cfg(feature = "builtin-sandbox-js")]
@@ -22,16 +23,6 @@ pub struct SandboxManagerConfig {
     pub wasm_config: WasmSandboxConfig,
 }
 
-impl Default for SandboxManagerConfig {
-    fn default() -> Self {
-        Self {
-            #[cfg(feature = "builtin-sandbox-js")]
-            builtin_config: BuiltinSandboxConfig::default(),
-            #[cfg(feature = "builtin-sandbox-wasm")]
-            wasm_config: WasmSandboxConfig::default(),
-        }
-    }
-}
 
 /// Sandbox manager - manages multiple sandbox implementations
 pub struct SandboxManager {
@@ -65,9 +56,8 @@ impl SandboxManager {
 
         #[cfg(feature = "builtin-sandbox-wasm")]
         {
-            let sandbox = Arc::new(super::WasmSandbox::new(
-                manager.config.wasm_config.clone(),
-            )) as Arc<dyn CodeSandbox>;
+            let sandbox = Arc::new(super::WasmSandbox::new(manager.config.wasm_config.clone()))
+                as Arc<dyn CodeSandbox>;
             manager.register_sandbox(CodeLanguage::Wasm, sandbox.clone());
             if manager.default_sandbox.is_none() {
                 manager.default_sandbox = Some(sandbox);
@@ -99,11 +89,7 @@ impl SandboxManager {
     }
 
     /// Register a sandbox implementation
-    pub fn register_sandbox(
-        &mut self,
-        language: CodeLanguage,
-        sandbox: Arc<dyn CodeSandbox>,
-    ) {
+    pub fn register_sandbox(&mut self, language: CodeLanguage, sandbox: Arc<dyn CodeSandbox>) {
         self.sandboxes.insert(language, sandbox);
         if self.default_sandbox.is_none() {
             self.default_sandbox = self.sandboxes.get(&language).cloned();
@@ -111,26 +97,20 @@ impl SandboxManager {
     }
 
     #[cfg(feature = "plugin-system")]
-    pub fn apply_plugin_sandboxes(
-        &mut self,
-        sandboxes: &[(CodeLanguage, Arc<dyn CodeSandbox>)],
-    ) {
+    pub fn apply_plugin_sandboxes(&mut self, sandboxes: &[(CodeLanguage, Arc<dyn CodeSandbox>)]) {
         for (language, sandbox) in sandboxes {
             self.register_sandbox(*language, sandbox.clone());
         }
     }
 
     /// Execute code (automatically select the appropriate sandbox)
-    pub async fn execute(
-        &self,
-        request: SandboxRequest,
-    ) -> Result<SandboxResult, SandboxError> {
+    pub async fn execute(&self, request: SandboxRequest) -> Result<SandboxResult, SandboxError> {
         // Select sandbox by language
         let sandbox = self
             .sandboxes
             .get(&request.language)
-            .or_else(|| self.default_sandbox.as_ref())
-            .ok_or_else(|| SandboxError::UnsupportedLanguage(request.language))?;
+            .or(self.default_sandbox.as_ref())
+            .ok_or(SandboxError::UnsupportedLanguage(request.language))?;
 
         // Check if the sandbox supports the language
         if !sandbox.supported_languages().contains(&request.language) {
@@ -142,16 +122,12 @@ impl SandboxManager {
     }
 
     /// Validate code
-    pub async fn validate(
-        &self,
-        code: &str,
-        language: CodeLanguage,
-    ) -> Result<(), SandboxError> {
+    pub async fn validate(&self, code: &str, language: CodeLanguage) -> Result<(), SandboxError> {
         let sandbox = self
             .sandboxes
             .get(&language)
-            .or_else(|| self.default_sandbox.as_ref())
-            .ok_or_else(|| SandboxError::UnsupportedLanguage(language))?;
+            .or(self.default_sandbox.as_ref())
+            .ok_or(SandboxError::UnsupportedLanguage(language))?;
 
         sandbox.validate(code, language).await
     }
@@ -191,12 +167,12 @@ impl SandboxManager {
         let sandbox = self
             .sandboxes
             .get(&language)
-            .or_else(|| self.default_sandbox.as_ref())
-            .ok_or_else(|| SandboxError::UnsupportedLanguage(language))?;
+            .or(self.default_sandbox.as_ref())
+            .ok_or(SandboxError::UnsupportedLanguage(language))?;
 
         sandbox
             .as_streaming()
-            .ok_or_else(|| SandboxError::UnsupportedLanguage(language))
+            .ok_or(SandboxError::UnsupportedLanguage(language))
     }
 }
 
@@ -222,8 +198,7 @@ mod tests {
         let manager = SandboxManager::new(SandboxManagerConfig::default());
 
         let request = SandboxRequest {
-            code: r#"function main(inputs) { return { result: inputs.value * 2 }; }"#
-                .to_string(),
+            code: r#"function main(inputs) { return { result: inputs.value * 2 }; }"#.to_string(),
             language: CodeLanguage::JavaScript,
             inputs: json!({ "value": 21 }),
             config: ExecutionConfig::default(),

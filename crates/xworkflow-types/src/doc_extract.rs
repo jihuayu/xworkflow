@@ -53,7 +53,10 @@ pub struct DocumentMetadata {
 pub enum ExtractError {
     /// Unsupported file format.
     #[error("unsupported format: {mime_type}")]
-    UnsupportedFormat { mime_type: String, filename: Option<String> },
+    UnsupportedFormat {
+        mime_type: String,
+        filename: Option<String>,
+    },
     /// File too large.
     #[error("file too large: {actual_mb:.2} MB > {max_mb} MB")]
     FileTooLarge { actual_mb: f64, max_mb: u64 },

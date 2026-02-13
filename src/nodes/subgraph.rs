@@ -62,6 +62,12 @@ pub enum SubGraphError {
 /// Sub-graph executor
 pub struct SubGraphExecutor;
 
+impl Default for SubGraphExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubGraphExecutor {
     pub fn new() -> Self {
         Self
@@ -85,7 +91,6 @@ impl SubGraphExecutor {
             .await
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -134,7 +139,10 @@ mod tests {
 
         let executor = SubGraphExecutor::new();
         let context = RuntimeContext::default();
-        let result = executor.execute(&sub_graph, &make_pool(), scope, &context).await.unwrap();
+        let result = executor
+            .execute(&sub_graph, &make_pool(), scope, &context)
+            .await
+            .unwrap();
         assert_eq!(result.get("value"), Some(&json!(42)));
     }
 }

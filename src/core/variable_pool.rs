@@ -277,8 +277,7 @@ impl SegmentObject {
             return v;
         }
         Value::Object(
-            self
-                .entries
+            self.entries
                 .into_iter()
                 .map(|(k, v)| (k, v.into_value()))
                 .collect(),
@@ -430,10 +429,11 @@ impl FileSegment {
     }
 
     pub fn extension(&self) -> Option<&str> {
-        self
-            .extension
-            .as_deref()
-            .or_else(|| Path::new(self.name.as_str()).extension().and_then(|s| s.to_str()))
+        self.extension.as_deref().or_else(|| {
+            Path::new(self.name.as_str())
+                .extension()
+                .and_then(|s| s.to_str())
+        })
     }
 
     pub fn file_category(&self) -> FileCategory {
@@ -609,7 +609,10 @@ impl SegmentStream {
                     return Ok(snapshot.final_value.clone().unwrap_or(Segment::None));
                 }
                 StreamStatus::Failed => {
-                    return Err(snapshot.error.clone().unwrap_or_else(|| "stream failed".into()));
+                    return Err(snapshot
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "stream failed".into()));
                 }
                 StreamStatus::Running => {}
             }
@@ -674,12 +677,7 @@ impl SegmentStream {
                 snapshot.final_value.clone(),
                 snapshot.error.clone(),
             ),
-            Err(_) => (
-                StreamStatus::Running,
-                Vec::new(),
-                None,
-                None,
-            ),
+            Err(_) => (StreamStatus::Running, Vec::new(), None, None),
         }
     }
 
@@ -903,9 +901,9 @@ impl Segment {
             SegmentType::Any => true,
             SegmentType::File => matches!(self, Segment::File(_)),
             SegmentType::ArrayFile => matches!(self, Segment::ArrayFile(_)),
-            SegmentType::ArrayNumber
-            | SegmentType::ArrayObject
-            | SegmentType::Array => matches!(self, Segment::Array(_) | Segment::ArrayString(_)),
+            SegmentType::ArrayNumber | SegmentType::ArrayObject | SegmentType::Array => {
+                matches!(self, Segment::Array(_) | Segment::ArrayString(_))
+            }
             _ => self.segment_type() == *t,
         }
     }
@@ -945,7 +943,9 @@ impl Segment {
             Segment::Float(f) => serde_json::json!(*f),
             Segment::Boolean(b) => Value::Bool(*b),
             Segment::Object(map) => map.to_value(),
-            Segment::ArrayString(v) => Value::Array(v.iter().map(|s| Value::String(s.clone())).collect()),
+            Segment::ArrayString(v) => {
+                Value::Array(v.iter().map(|s| Value::String(s.clone())).collect())
+            }
             Segment::Array(v) => v.to_value(),
             Segment::Stream(_) => self.snapshot_to_value(),
             Segment::File(file) => serde_json::to_value(file.as_ref()).unwrap_or(Value::Null),
@@ -999,7 +999,9 @@ impl Segment {
     pub fn snapshot_to_value(&self) -> Value {
         match self {
             Segment::Stream(stream) => match stream.snapshot_segment() {
-                Segment::Array(arr) => Value::Array(arr.iter().map(|s| s.snapshot_to_value()).collect()),
+                Segment::Array(arr) => {
+                    Value::Array(arr.iter().map(|s| s.snapshot_to_value()).collect())
+                }
                 other => other.snapshot_to_value(),
             },
             other => other.to_value(),
@@ -1078,7 +1080,8 @@ impl Segment {
     }
 
     pub fn as_u64(&self) -> Option<u64> {
-        self.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None })
+        self.as_i64()
+            .and_then(|v| if v >= 0 { Some(v as u64) } else { None })
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -1115,9 +1118,9 @@ impl Segment {
             Segment::Float(f) => f.to_string(),
             Segment::Boolean(b) => b.to_string(),
             Segment::Stream(stream) => match stream.snapshot_status() {
-                (StreamStatus::Completed, _chunks, final_value, _) => final_value
-                    .unwrap_or(Segment::None)
-                    .to_display_string(),
+                (StreamStatus::Completed, _chunks, final_value, _) => {
+                    final_value.unwrap_or(Segment::None).to_display_string()
+                }
                 (StreamStatus::Failed, _chunks, _final_value, error) => {
                     format!("[stream error: {}]", error.unwrap_or_default())
                 }
@@ -1164,10 +1167,7 @@ impl Segment {
             Segment::Integer(_) | Segment::Float(_) | Segment::Boolean(_) => 8,
             Segment::ArrayString(items) => items.iter().map(|s| s.len()).sum(),
             Segment::Array(items) => items.iter().map(|s| s.estimate_bytes()).sum(),
-            Segment::Object(map) => map
-                .iter()
-                .map(|(k, v)| k.len() + v.estimate_bytes())
-                .sum(),
+            Segment::Object(map) => map.iter().map(|(k, v)| k.len() + v.estimate_bytes()).sum(),
             Segment::Stream(stream) => stream.snapshot_segment().estimate_bytes(),
             Segment::File(file) => {
                 file.name.len()
@@ -1351,6 +1351,11 @@ impl VariablePool {
         self.variables.len()
     }
 
+    /// Return whether the pool contains no variables.
+    pub fn is_empty(&self) -> bool {
+        self.variables.is_empty()
+    }
+
     /// Estimate the total memory footprint of all variables in bytes.
     pub fn estimate_total_bytes(&self) -> usize {
         self.variables
@@ -1475,7 +1480,7 @@ impl VariablePool {
         }
         self.variables
             .get(&selector.pool_key())
-            .map_or(false, |s| !s.is_none())
+            .is_some_and(|s| !s.is_none())
     }
 
     /// Get all variables for a given node_id
@@ -1494,7 +1499,8 @@ impl VariablePool {
     /// Remove all variables for a given node
     pub fn remove_node(&mut self, node_id: &str) {
         let prefix = Self::key_prefix(node_id);
-        self.variables.retain(|key, _| !key.as_str().starts_with(prefix.as_str()));
+        self.variables
+            .retain(|key, _| !key.as_str().starts_with(prefix.as_str()));
     }
 
     /// Append value to an existing array variable
@@ -1515,7 +1521,8 @@ impl VariablePool {
                     arr.push(s);
                 }
                 other => {
-                    let mut promoted: Vec<Segment> = arr.iter().cloned().map(Segment::String).collect();
+                    let mut promoted: Vec<Segment> =
+                        arr.iter().cloned().map(Segment::String).collect();
                     promoted.push(other);
                     *existing = Segment::Array(Arc::new(SegmentArray::new(promoted)));
                 }
@@ -1554,8 +1561,7 @@ impl Default for VariablePool {
 }
 
 pub fn snapshot_for_checkpoint(pool: &VariablePool) -> HashMap<String, Value> {
-    pool
-        .snapshot()
+    pool.snapshot()
         .into_iter()
         .filter_map(|(key, segment)| match segment {
             Segment::Stream(stream) => {
@@ -1655,8 +1661,14 @@ mod tests {
         assert_eq!(snap.get("n1:b"), Some(&serde_json::json!("x")));
 
         let restored = restore_from_checkpoint(&snap);
-        assert_eq!(restored.get(&Selector::new("n1", "a")), Segment::Integer(10));
-        assert_eq!(restored.get(&Selector::new("n1", "b")), Segment::String("x".into()));
+        assert_eq!(
+            restored.get(&Selector::new("n1", "a")),
+            Segment::Integer(10)
+        );
+        assert_eq!(
+            restored.get(&Selector::new("n1", "b")),
+            Segment::String("x".into())
+        );
     }
 
     #[tokio::test]
@@ -1675,7 +1687,10 @@ mod tests {
     fn test_append() {
         let mut pool = VariablePool::new();
         let sel = Selector::new("n", "arr");
-        pool.set(&sel, Segment::Array(Arc::new(SegmentArray::new(Vec::new()))));
+        pool.set(
+            &sel,
+            Segment::Array(Arc::new(SegmentArray::new(Vec::new()))),
+        );
         pool.append(&sel, Segment::Integer(1));
         pool.append(&sel, Segment::Integer(2));
         match pool.get(&sel) {
@@ -1731,13 +1746,19 @@ mod tests {
 
     #[test]
     fn test_segment_type_mapping() {
-        assert_eq!(SegmentType::from_dsl_type("string"), Some(SegmentType::String));
-        assert_eq!(SegmentType::from_dsl_type("number"), Some(SegmentType::Number));
+        assert_eq!(
+            SegmentType::from_dsl_type("string"),
+            Some(SegmentType::String)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("number"),
+            Some(SegmentType::Number)
+        );
         assert_eq!(SegmentType::from_dsl_type("file"), Some(SegmentType::File));
         assert_eq!(SegmentType::from_dsl_type("invalid"), None);
 
         assert!(Segment::Integer(42).matches_type(&SegmentType::Number));
-        assert!(Segment::Float(3.14).matches_type(&SegmentType::Number));
+        assert!(Segment::Float(2.5).matches_type(&SegmentType::Number));
         assert!(!Segment::String("42".into()).matches_type(&SegmentType::Number));
     }
 
@@ -1866,7 +1887,7 @@ mod tests {
     fn test_segment_as_string() {
         assert_eq!(Segment::String("hi".into()).as_string(), Some("hi".into()));
         assert_eq!(Segment::Integer(42).as_string(), Some("42".into()));
-        assert_eq!(Segment::Float(3.14).as_string(), Some("3.14".into()));
+        assert_eq!(Segment::Float(2.5).as_string(), Some("2.5".into()));
         assert_eq!(Segment::Boolean(true).as_string(), Some("true".into()));
         assert_eq!(Segment::None.as_string(), None);
     }
@@ -1874,7 +1895,7 @@ mod tests {
     #[test]
     fn test_segment_as_f64() {
         assert_eq!(Segment::Integer(42).as_f64(), Some(42.0));
-        assert_eq!(Segment::Float(3.14).as_f64(), Some(3.14));
+        assert_eq!(Segment::Float(2.5).as_f64(), Some(2.5));
         assert_eq!(Segment::String("2.5".into()).as_f64(), Some(2.5));
         assert_eq!(Segment::String("not_num".into()).as_f64(), None);
         assert_eq!(Segment::None.as_f64(), None);
@@ -1896,7 +1917,10 @@ mod tests {
         assert_eq!(Segment::String("hello".into()).estimate_bytes(), 5);
         assert_eq!(Segment::Integer(42).estimate_bytes(), 8);
         assert_eq!(Segment::Boolean(true).estimate_bytes(), 8);
-        assert_eq!(Segment::ArrayString(Arc::new(vec!["ab".into(), "cd".into()])).estimate_bytes(), 4);
+        assert_eq!(
+            Segment::ArrayString(Arc::new(vec!["ab".into(), "cd".into()])).estimate_bytes(),
+            4
+        );
     }
 
     #[test]
@@ -1927,7 +1951,10 @@ mod tests {
     #[test]
     fn test_segment_into_value() {
         assert_eq!(Segment::None.into_value(), Value::Null);
-        assert_eq!(Segment::String("a".into()).into_value(), Value::String("a".into()));
+        assert_eq!(
+            Segment::String("a".into()).into_value(),
+            Value::String("a".into())
+        );
         assert_eq!(Segment::Integer(1).into_value(), serde_json::json!(1));
         assert_eq!(Segment::Float(2.5).into_value(), serde_json::json!(2.5));
         assert_eq!(Segment::Boolean(true).into_value(), Value::Bool(true));
@@ -1945,7 +1972,7 @@ mod tests {
 
     #[test]
     fn test_segment_from_value_float() {
-        let val = serde_json::json!(3.14);
+        let val = serde_json::json!(2.5);
         let seg = Segment::from_value(&val);
         assert!(matches!(seg, Segment::Float(_)));
     }
@@ -1953,7 +1980,10 @@ mod tests {
     #[test]
     fn test_segment_type() {
         assert_eq!(Segment::None.segment_type(), SegmentType::Any);
-        assert_eq!(Segment::String("a".into()).segment_type(), SegmentType::String);
+        assert_eq!(
+            Segment::String("a".into()).segment_type(),
+            SegmentType::String
+        );
         assert_eq!(Segment::Integer(1).segment_type(), SegmentType::Number);
         assert_eq!(Segment::Float(1.0).segment_type(), SegmentType::Number);
         assert_eq!(Segment::Boolean(true).segment_type(), SegmentType::Boolean);
@@ -1997,7 +2027,10 @@ mod tests {
         outputs.insert("y".to_string(), Segment::String("hi".into()));
         pool.set_node_outputs("node1", &outputs);
         assert_eq!(pool.get(&Selector::new("node1", "x")), Segment::Integer(10));
-        assert_eq!(pool.get(&Selector::new("node1", "y")), Segment::String("hi".into()));
+        assert_eq!(
+            pool.get(&Selector::new("node1", "y")),
+            Segment::String("hi".into())
+        );
     }
 
     #[test]
@@ -2102,15 +2135,39 @@ mod tests {
 
     #[test]
     fn test_segment_type_from_dsl_type_all() {
-        assert_eq!(SegmentType::from_dsl_type("string"), Some(SegmentType::String));
-        assert_eq!(SegmentType::from_dsl_type("number"), Some(SegmentType::Number));
-        assert_eq!(SegmentType::from_dsl_type("boolean"), Some(SegmentType::Boolean));
-        assert_eq!(SegmentType::from_dsl_type("object"), Some(SegmentType::Object));
-        assert_eq!(SegmentType::from_dsl_type("array[string]"), Some(SegmentType::ArrayString));
-        assert_eq!(SegmentType::from_dsl_type("array[number]"), Some(SegmentType::ArrayNumber));
-        assert_eq!(SegmentType::from_dsl_type("array[object]"), Some(SegmentType::ArrayObject));
+        assert_eq!(
+            SegmentType::from_dsl_type("string"),
+            Some(SegmentType::String)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("number"),
+            Some(SegmentType::Number)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("boolean"),
+            Some(SegmentType::Boolean)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("object"),
+            Some(SegmentType::Object)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("array[string]"),
+            Some(SegmentType::ArrayString)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("array[number]"),
+            Some(SegmentType::ArrayNumber)
+        );
+        assert_eq!(
+            SegmentType::from_dsl_type("array[object]"),
+            Some(SegmentType::ArrayObject)
+        );
         assert_eq!(SegmentType::from_dsl_type("file"), Some(SegmentType::File));
-        assert_eq!(SegmentType::from_dsl_type("array[file]"), Some(SegmentType::ArrayFile));
+        assert_eq!(
+            SegmentType::from_dsl_type("array[file]"),
+            Some(SegmentType::ArrayFile)
+        );
         assert_eq!(SegmentType::from_dsl_type("unknown"), None);
     }
 
@@ -2124,7 +2181,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_with_limits_max_chunks() {
-        let limits = StreamLimits { max_chunks: Some(1), max_buffer_bytes: None };
+        let limits = StreamLimits {
+            max_chunks: Some(1),
+            max_buffer_bytes: None,
+        };
         let (stream, writer) = SegmentStream::channel_with_limits(limits);
         writer.send(Segment::String("a".into())).await;
         writer.send(Segment::String("b".into())).await;
@@ -2134,7 +2194,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_with_limits_max_bytes() {
-        let limits = StreamLimits { max_chunks: None, max_buffer_bytes: Some(5) };
+        let limits = StreamLimits {
+            max_chunks: None,
+            max_buffer_bytes: Some(5),
+        };
         let (stream, writer) = SegmentStream::channel_with_limits(limits);
         writer.send(Segment::String("hello".into())).await;
         writer.send(Segment::String("world".into())).await;
@@ -2202,7 +2265,9 @@ mod tests {
     fn test_pool_set_checked() {
         let mut pool = VariablePool::new();
         let sel = Selector::new("n", "a");
-        assert!(pool.set_checked(&sel, Segment::Integer(1), 10, 10000).is_ok());
+        assert!(pool
+            .set_checked(&sel, Segment::Integer(1), 10, 10000)
+            .is_ok());
         assert_eq!(pool.len(), 1);
     }
 
@@ -2280,7 +2345,10 @@ mod tests {
     #[test]
     fn test_segment_into_value_shared_arc() {
         // When Arc has multiple owners, into_value should still work (clone path)
-        let arr = Arc::new(SegmentArray::new(vec![Segment::Integer(1), Segment::Integer(2)]));
+        let arr = Arc::new(SegmentArray::new(vec![
+            Segment::Integer(1),
+            Segment::Integer(2),
+        ]));
         let arr_clone = arr.clone(); // create second owner
         let seg = Segment::Array(arr);
         let val = seg.into_value();
@@ -2324,7 +2392,7 @@ mod tests {
         let seg = Segment::Stream(stream);
         let display = seg.to_display_string();
         // Completed with None final_value should display empty
-        assert!(display.is_empty() || display == "");
+        assert!(display.is_empty());
     }
 
     #[test]
@@ -2397,7 +2465,12 @@ mod tests {
         let mut pool = VariablePool::new();
         let sel = Selector::new("n", "x");
         // set_checked with very small memory limit
-        let result = pool.set_checked(&sel, Segment::String("a very long string that uses bytes".into()), 100, 1);
+        let result = pool.set_checked(
+            &sel,
+            Segment::String("a very long string that uses bytes".into()),
+            100,
+            1,
+        );
         assert!(result.is_err());
     }
 

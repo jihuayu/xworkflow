@@ -32,7 +32,7 @@ impl NodeResourceLimits {
     pub fn for_code_node() -> Self {
         Self {
             max_execution_time: Duration::from_secs(30),
-            max_output_bytes: 1 * 1024 * 1024,
+            max_output_bytes: 1024 * 1024,
             max_memory_bytes: Some(32 * 1024 * 1024),
         }
     }
@@ -50,7 +50,7 @@ impl NodeResourceLimits {
     pub fn for_llm_node() -> Self {
         Self {
             max_execution_time: Duration::from_secs(120),
-            max_output_bytes: 1 * 1024 * 1024,
+            max_output_bytes: 1024 * 1024,
             max_memory_bytes: None,
         }
     }
@@ -168,7 +168,7 @@ pub fn strict_node_limits() -> HashMap<String, NodeResourceLimits> {
         "http-request".into(),
         NodeResourceLimits {
             max_execution_time: Duration::from_secs(10),
-            max_output_bytes: 1 * 1024 * 1024,
+            max_output_bytes: 1024 * 1024,
             max_memory_bytes: None,
         },
     );
@@ -213,7 +213,7 @@ mod tests {
     fn test_node_resource_limits_for_code_node() {
         let limits = NodeResourceLimits::for_code_node();
         assert_eq!(limits.max_execution_time, Duration::from_secs(30));
-        assert_eq!(limits.max_output_bytes, 1 * 1024 * 1024);
+        assert_eq!(limits.max_output_bytes, 1024 * 1024);
         assert_eq!(limits.max_memory_bytes, Some(32 * 1024 * 1024));
     }
 
@@ -229,7 +229,7 @@ mod tests {
     fn test_node_resource_limits_for_llm_node() {
         let limits = NodeResourceLimits::for_llm_node();
         assert_eq!(limits.max_execution_time, Duration::from_secs(120));
-        assert_eq!(limits.max_output_bytes, 1 * 1024 * 1024);
+        assert_eq!(limits.max_output_bytes, 1024 * 1024);
         assert!(limits.max_memory_bytes.is_none());
     }
 
@@ -322,7 +322,7 @@ mod tests {
 
         let http = &limits["http-request"];
         assert_eq!(http.max_execution_time, Duration::from_secs(10));
-        assert_eq!(http.max_output_bytes, 1 * 1024 * 1024);
+        assert_eq!(http.max_output_bytes, 1024 * 1024);
 
         let llm = &limits["llm"];
         assert_eq!(llm.max_execution_time, Duration::from_secs(60));

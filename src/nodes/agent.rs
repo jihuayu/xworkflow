@@ -1,3 +1,8 @@
+#![expect(
+    clippy::result_large_err,
+    reason = "Agent executor APIs must return NodeError to satisfy NodeExecutor trait and shared callers"
+)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -5,17 +10,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-#[cfg(feature = "security")]
-use parking_lot::RwLock as ParkingRwLock;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, Selector, VariablePool};
 use crate::dsl::schema::{
-    AgentNodeData,
-    LlmUsage,
-    McpTransport,
-    McpServerConfig,
-    NodeOutputs,
-    NodeRunResult,
+    AgentNodeData, LlmUsage, McpServerConfig, McpTransport, NodeOutputs, NodeRunResult,
     WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
@@ -23,11 +21,7 @@ use crate::llm::executor::append_memory_messages;
 #[cfg(feature = "security")]
 use crate::llm::executor::audit_security_event;
 use crate::llm::types::{
-    ChatCompletionRequest,
-    ChatContent,
-    ChatMessage,
-    ChatRole,
-    ToolDefinition,
+    ChatCompletionRequest, ChatContent, ChatMessage, ChatRole, ToolDefinition,
 };
 use crate::llm::LlmProviderRegistry;
 use crate::mcp::client::McpClient;
@@ -39,6 +33,8 @@ use crate::security::audit::{EventSeverity, SecurityEventType};
 #[cfg(feature = "security")]
 use crate::security::network::validate_url;
 use crate::template::render_template_async_with_config;
+#[cfg(feature = "security")]
+use parking_lot::RwLock as ParkingRwLock;
 
 pub struct AgentNodeExecutor {
     llm_registry: Arc<LlmProviderRegistry>,
@@ -70,8 +66,10 @@ impl AgentNodeExecutor {
         let workflow_servers = variable_pool
             .get(&Selector::new("sys", "__mcp_servers"))
             .to_value();
-        let workflow_servers: HashMap<String, McpServerConfig> = serde_json::from_value(workflow_servers)
-            .map_err(|e| NodeError::ConfigError(format!("invalid workflow mcp_servers: {}", e)))?;
+        let workflow_servers: HashMap<String, McpServerConfig> =
+            serde_json::from_value(workflow_servers).map_err(|e| {
+                NodeError::ConfigError(format!("invalid workflow mcp_servers: {}", e))
+            })?;
 
         for server_ref in &cfg.tools.mcp_server_refs {
             let Some(server) = workflow_servers.get(server_ref) else {
@@ -99,10 +97,13 @@ impl AgentNodeExecutor {
         let mut tool_server_map: HashMap<String, String> = HashMap::new();
 
         for server in servers {
-            let server_name = server.name.clone().unwrap_or_else(|| match &server.transport {
-                McpTransport::Stdio { command, .. } => format!("stdio:{}", command),
-                McpTransport::Http { url, .. } => format!("http:{}", url),
-            });
+            let server_name = server
+                .name
+                .clone()
+                .unwrap_or_else(|| match &server.transport {
+                    McpTransport::Stdio { command, .. } => format!("stdio:{}", command),
+                    McpTransport::Http { url, .. } => format!("http:{}", url),
+                });
 
             #[cfg(feature = "security")]
             if let McpTransport::Http { url, .. } = &server.transport {
@@ -168,8 +169,7 @@ impl AgentNodeExecutor {
             "mcp_tool": tool_name,
             "arguments": arguments,
         });
-        gate
-            .check_before_node(node_id, "mcp-tool-call", &tool_config)
+        gate.check_before_node(node_id, "mcp-tool-call", &tool_config)
             .await?;
 
         audit_security_event(
@@ -198,25 +198,18 @@ impl NodeExecutor for AgentNodeExecutor {
         let cfg: AgentNodeData = serde_json::from_value(config.clone())
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
-        let provider = self
-            .llm_registry
-            .get(&cfg.model.provider)
-            .ok_or_else(|| NodeError::ConfigError(format!(
-                "LLM provider '{}' not found",
-                cfg.model.provider
-            )))?;
+        let provider = self.llm_registry.get(&cfg.model.provider).ok_or_else(|| {
+            NodeError::ConfigError(format!("LLM provider '{}' not found", cfg.model.provider))
+        })?;
 
         let (tool_defs, tool_map) = self
             .discover_all_tools(&cfg, variable_pool, context, node_id)
             .await?;
 
-        let rendered_query = render_template_async_with_config(
-            &cfg.query,
-            variable_pool,
-            context.strict_template(),
-        )
-        .await
-        .map_err(|e| NodeError::VariableNotFound(e.selector))?;
+        let rendered_query =
+            render_template_async_with_config(&cfg.query, variable_pool, context.strict_template())
+                .await
+                .map_err(|e| NodeError::VariableNotFound(e.selector))?;
 
         let mut messages = Vec::new();
 
@@ -266,7 +259,10 @@ impl NodeExecutor for AgentNodeExecutor {
                 },
             };
 
-            let response = provider.chat_completion(request).await.map_err(NodeError::from)?;
+            let response = provider
+                .chat_completion(request)
+                .await
+                .map_err(NodeError::from)?;
             iterations += 1;
             accumulate_usage(&mut total_usage, &response.usage);
 
@@ -284,18 +280,20 @@ impl NodeExecutor for AgentNodeExecutor {
 
             for tool_call in &response.tool_calls {
                 #[cfg(feature = "security")]
-                self
-                    .check_tool_security(
-                        context,
-                        node_id,
-                        &tool_call.name,
-                        &tool_call.arguments,
-                        variable_pool,
-                    )
-                    .await?;
+                self.check_tool_security(
+                    context,
+                    node_id,
+                    &tool_call.name,
+                    &tool_call.arguments,
+                    variable_pool,
+                )
+                .await?;
 
                 let (content, is_error) = match tool_map.get(&tool_call.name) {
-                    Some(client) => match client.call_tool(&tool_call.name, &tool_call.arguments).await {
+                    Some(client) => match client
+                        .call_tool(&tool_call.name, &tool_call.arguments)
+                        .await
+                    {
                         Ok(output) => (output, false),
                         Err(e) => (e.to_string(), true),
                     },
@@ -333,7 +331,10 @@ impl NodeExecutor for AgentNodeExecutor {
                     Segment::from_value(&Value::Array(tool_call_log)),
                 );
                 outputs.insert("iterations".to_string(), Segment::Integer(iterations));
-                outputs.insert("tool_calls_count".to_string(), Segment::Integer(tool_calls_count));
+                outputs.insert(
+                    "tool_calls_count".to_string(),
+                    Segment::Integer(tool_calls_count),
+                );
                 outputs
             }),
             llm_usage: Some(total_usage),
@@ -359,11 +360,7 @@ mod tests {
     use crate::dsl::schema::McpTransport;
     use crate::llm::error::LlmError;
     use crate::llm::types::{
-        ChatCompletionResponse,
-        ModelInfo,
-        ProviderInfo,
-        StreamChunk,
-        ToolCall,
+        ChatCompletionResponse, ModelInfo, ProviderInfo, StreamChunk, ToolCall,
     };
     use crate::llm::LlmProvider;
     use crate::mcp::client::McpToolInfo;
@@ -434,7 +431,9 @@ mod tests {
             _request: ChatCompletionRequest,
             _chunk_tx: tokio::sync::mpsc::Sender<StreamChunk>,
         ) -> Result<ChatCompletionResponse, LlmError> {
-            Err(LlmError::InvalidRequest("stream not used in test".to_string()))
+            Err(LlmError::InvalidRequest(
+                "stream not used in test".to_string(),
+            ))
         }
     }
 
@@ -478,11 +477,23 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("agent1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("agent1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
-        assert_eq!(result.outputs.ready().get("text"), Some(&Segment::String("answer".to_string())));
-        assert_eq!(result.outputs.ready().get("iterations"), Some(&Segment::Integer(1)));
-        assert_eq!(result.outputs.ready().get("tool_calls_count"), Some(&Segment::Integer(0)));
+        assert_eq!(
+            result.outputs.ready().get("text"),
+            Some(&Segment::String("answer".to_string()))
+        );
+        assert_eq!(
+            result.outputs.ready().get("iterations"),
+            Some(&Segment::Integer(1))
+        );
+        assert_eq!(
+            result.outputs.ready().get("tool_calls_count"),
+            Some(&Segment::Integer(0))
+        );
     }
 
     #[tokio::test]
@@ -528,11 +539,23 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("agent1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("agent1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
-        assert_eq!(result.outputs.ready().get("text"), Some(&Segment::String("final".to_string())));
-        assert_eq!(result.outputs.ready().get("iterations"), Some(&Segment::Integer(2)));
-        assert_eq!(result.outputs.ready().get("tool_calls_count"), Some(&Segment::Integer(1)));
+        assert_eq!(
+            result.outputs.ready().get("text"),
+            Some(&Segment::String("final".to_string()))
+        );
+        assert_eq!(
+            result.outputs.ready().get("iterations"),
+            Some(&Segment::Integer(2))
+        );
+        assert_eq!(
+            result.outputs.ready().get("tool_calls_count"),
+            Some(&Segment::Integer(1))
+        );
     }
 
     #[tokio::test]
@@ -589,14 +612,23 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("agent1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("agent1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Segment::String("forced-final".to_string()))
         );
-        assert_eq!(result.outputs.ready().get("iterations"), Some(&Segment::Integer(3)));
-        assert_eq!(result.outputs.ready().get("tool_calls_count"), Some(&Segment::Integer(2)));
+        assert_eq!(
+            result.outputs.ready().get("iterations"),
+            Some(&Segment::Integer(3))
+        );
+        assert_eq!(
+            result.outputs.ready().get("tool_calls_count"),
+            Some(&Segment::Integer(2))
+        );
     }
 
     #[tokio::test]
@@ -642,21 +674,22 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("agent1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("agent1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Segment::String("fallback".to_string()))
         );
 
-        let log = result
-            .outputs
-            .ready()
-            .get("tool_calls")
-            .unwrap()
-            .to_value();
+        let log = result.outputs.ready().get("tool_calls").unwrap().to_value();
         assert_eq!(log[0]["is_error"], true);
-        assert_eq!(result.outputs.ready().get("tool_calls_count"), Some(&Segment::Integer(1)));
+        assert_eq!(
+            result.outputs.ready().get("tool_calls_count"),
+            Some(&Segment::Integer(1))
+        );
     }
 
     #[tokio::test]
@@ -686,14 +719,23 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("agent1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("agent1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Segment::String("no-tools-answer".to_string()))
         );
-        assert_eq!(result.outputs.ready().get("iterations"), Some(&Segment::Integer(1)));
-        assert_eq!(result.outputs.ready().get("tool_calls_count"), Some(&Segment::Integer(0)));
+        assert_eq!(
+            result.outputs.ready().get("iterations"),
+            Some(&Segment::Integer(1))
+        );
+        assert_eq!(
+            result.outputs.ready().get("tool_calls_count"),
+            Some(&Segment::Integer(0))
+        );
     }
 
     #[tokio::test]
@@ -741,7 +783,9 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("agent1", &config, &variable_pool, &context).await;
+        let result = executor
+            .execute("agent1", &config, &variable_pool, &context)
+            .await;
 
         match result {
             Err(NodeError::ConfigError(msg)) => {
@@ -749,7 +793,10 @@ mod tests {
                 assert!(msg.contains("alpha"));
                 assert!(msg.contains("beta"));
             }
-            other => panic!("expected ConfigError for duplicate tool name, got {:?}", other),
+            other => panic!(
+                "expected ConfigError for duplicate tool name, got {:?}",
+                other
+            ),
         }
     }
 }

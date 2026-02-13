@@ -143,6 +143,9 @@ integration::integration_test_cases!(
     case_161_advanced_loop_state_management => "161_advanced_loop_state_management",
     case_165_advanced_parallel_sync => "165_advanced_parallel_sync",
     case_167_advanced_conversation_history => "167_advanced_conversation_history",
+    case_168_question_classifier_basic => "168_question_classifier_basic",
+    case_169_question_classifier_invalid_id_default => "169_question_classifier_invalid_id_default",
+    case_170_question_classifier_parse_error => "170_question_classifier_parse_error",
 );
 
 #[cfg(feature = "plugin-system")]

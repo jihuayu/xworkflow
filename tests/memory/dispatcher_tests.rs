@@ -149,7 +149,10 @@ async fn test_dispatcher_cleanup_on_error() {
 
     let weak = dispatcher.debug_resources();
     let result = dispatcher.run().await;
-    assert!(matches!(result, Err(WorkflowError::NodeExecutionError { .. })));
+    assert!(matches!(
+        result,
+        Err(WorkflowError::NodeExecutionError { .. })
+    ));
 
     drop(dispatcher);
     drop(registry);
@@ -166,14 +169,17 @@ async fn test_dispatcher_cleanup_on_timeout() {
     let schema = parse_dsl(SIMPLE_WORKFLOW_YAML, DslFormat::Yaml).expect("parse schema");
     let graph = build_graph(&schema).expect("build graph");
     let registry = Arc::new(NodeExecutorRegistry::new());
-    let mut ctx = RuntimeContext::default();
-    ctx.time_provider = Arc::new(FastForwardTimeProvider);
-    let context = Arc::new(ctx);
+    let context = Arc::new(RuntimeContext {
+      time_provider: Arc::new(FastForwardTimeProvider),
+      ..RuntimeContext::default()
+    });
     let pool = VariablePool::new();
     let emitter = make_emitter();
 
-    let mut config = EngineConfig::default();
-    config.max_execution_time_secs = 0;
+    let config = EngineConfig {
+      max_execution_time_secs: 0,
+      ..EngineConfig::default()
+    };
 
     let mut dispatcher = WorkflowDispatcher::new_with_registry(
         graph,

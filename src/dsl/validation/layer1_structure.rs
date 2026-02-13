@@ -1,14 +1,9 @@
-use std::collections::HashSet;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::dsl::schema::{
-    EdgeSchema,
-    FormFieldType,
-    HumanInputNodeData,
-    HumanInputResumeMode,
-    HumanInputTimeoutAction,
-    WorkflowSchema,
-    SUPPORTED_DSL_VERSIONS,
+    EdgeSchema, FormFieldType, HumanInputNodeData, HumanInputResumeMode, HumanInputTimeoutAction,
+    WorkflowSchema, SUPPORTED_DSL_VERSIONS,
 };
 
 use super::known_types::is_known_node_type;
@@ -32,7 +27,13 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
     }
 
     if schema.nodes.is_empty() {
-        diags.push(error("E003", "No nodes defined".to_string(), None, None, None));
+        diags.push(error(
+            "E003",
+            "No nodes defined".to_string(),
+            None,
+            None,
+            None,
+        ));
         return diags;
     }
 
@@ -90,7 +91,10 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
                         if !field_vars.insert(field.variable.clone()) {
                             diags.push(error(
                                 "E015",
-                                format!("duplicate human-input form field variable: {}", field.variable),
+                                format!(
+                                    "duplicate human-input form field variable: {}",
+                                    field.variable
+                                ),
                                 Some(node.id.clone()),
                                 None,
                                 Some(format!("form_fields[{}].variable", idx)),
@@ -98,7 +102,9 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
                         }
 
                         match field.field_type {
-                            FormFieldType::Radio | FormFieldType::Dropdown | FormFieldType::MultiSelect => {
+                            FormFieldType::Radio
+                            | FormFieldType::Dropdown
+                            | FormFieldType::MultiSelect => {
                                 if field.options.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
                                     diags.push(error(
                                         "E016",
@@ -113,12 +119,15 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
                         }
                     }
 
-                    if matches!(data.timeout_action, HumanInputTimeoutAction::AutoApprove | HumanInputTimeoutAction::AutoReject)
-                        && data.resume_mode != HumanInputResumeMode::Approval
+                    if matches!(
+                        data.timeout_action,
+                        HumanInputTimeoutAction::AutoApprove | HumanInputTimeoutAction::AutoReject
+                    ) && data.resume_mode != HumanInputResumeMode::Approval
                     {
                         diags.push(error(
                             "E017",
-                            "auto_approve/auto_reject timeout_action requires approval resume_mode".to_string(),
+                            "auto_approve/auto_reject timeout_action requires approval resume_mode"
+                                .to_string(),
                             Some(node.id.clone()),
                             None,
                             Some("timeout_action".to_string()),
@@ -134,7 +143,8 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
                     {
                         diags.push(error(
                             "E018",
-                            "default_value timeout_action requires timeout_default_values".to_string(),
+                            "default_value timeout_action requires timeout_default_values"
+                                .to_string(),
                             Some(node.id.clone()),
                             None,
                             Some("timeout_default_values".to_string()),
@@ -152,7 +162,8 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
                         if !handles.contains("approve") || !handles.contains("reject") {
                             diags.push(error(
                                 "E019",
-                                "approval mode requires both approve and reject outgoing edges".to_string(),
+                                "approval mode requires both approve and reject outgoing edges"
+                                    .to_string(),
                                 Some(node.id.clone()),
                                 None,
                                 Some("edges".to_string()),
@@ -189,13 +200,7 @@ pub fn validate(schema: &WorkflowSchema) -> Vec<Diagnostic> {
         .filter(|n| n.data.node_type == "start")
         .collect();
     if start_nodes.is_empty() {
-        diags.push(error(
-            "E004",
-            "No start node".to_string(),
-            None,
-            None,
-            None,
-        ));
+        diags.push(error("E004", "No start node".to_string(), None, None, None));
     } else if start_nodes.len() > 1 {
         diags.push(error(
             "E005",
@@ -270,7 +275,7 @@ fn edge_key(edge: &EdgeSchema) -> (String, String, String) {
     (
         edge.source.clone(),
         edge.target.clone(),
-        edge.source_handle.clone().unwrap_or_else(|| "".to_string()),
+        edge.source_handle.clone().unwrap_or_default(),
     )
 }
 

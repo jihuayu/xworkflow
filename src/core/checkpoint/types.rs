@@ -111,9 +111,12 @@ impl ResumeDiagnostic {
     }
 
     pub fn has_warnings(&self) -> bool {
-        self.changes
-            .iter()
-            .any(|change| matches!(change.severity, ChangeSeverity::Warning | ChangeSeverity::Danger))
+        self.changes.iter().any(|change| {
+            matches!(
+                change.severity,
+                ChangeSeverity::Warning | ChangeSeverity::Danger
+            )
+        })
     }
 
     pub fn report(&self) -> String {
@@ -124,7 +127,10 @@ impl ResumeDiagnostic {
                 ChangeSeverity::Warning => "⚠️",
                 ChangeSeverity::Danger => "🔴",
             };
-            lines.push(format!("{} [{}] {}", icon, change.component, change.description));
+            lines.push(format!(
+                "{} [{}] {}",
+                icon, change.component, change.description
+            ));
         }
         lines.join("\n")
     }

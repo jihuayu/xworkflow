@@ -69,7 +69,10 @@ pub trait Plugin: Send + Sync {
     fn metadata(&self) -> &PluginMetadata;
 
     /// Called during initialization. Use `context` to register extensions.
-    async fn register(&self, context: &mut super::context::PluginContext) -> Result<(), PluginError>;
+    async fn register(
+        &self,
+        context: &mut super::context::PluginContext,
+    ) -> Result<(), PluginError>;
 
     /// Called when the plugin system is shutting down.
     async fn shutdown(&self) -> Result<(), PluginError> {
@@ -94,7 +97,9 @@ mod tests {
 
     #[test]
     fn test_plugin_source_dll() {
-        let source = PluginSource::Dll { path: PathBuf::from("/lib/plugin.so") };
+        let source = PluginSource::Dll {
+            path: PathBuf::from("/lib/plugin.so"),
+        };
         match &source {
             PluginSource::Dll { path } => assert_eq!(path, &PathBuf::from("/lib/plugin.so")),
             _ => panic!("wrong variant"),
@@ -114,7 +119,10 @@ mod tests {
             detail: "path.wasm".into(),
         };
         match &source {
-            PluginSource::Custom { loader_type, detail } => {
+            PluginSource::Custom {
+                loader_type,
+                detail,
+            } => {
                 assert_eq!(loader_type, "wasm");
                 assert_eq!(detail, "path.wasm");
             }

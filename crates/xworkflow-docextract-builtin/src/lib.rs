@@ -9,11 +9,7 @@ mod text;
 
 use async_trait::async_trait;
 use xworkflow_types::{
-    DocumentExtractorProvider,
-    DocumentMetadata,
-    ExtractError,
-    ExtractionRequest,
-    ExtractionResult,
+    DocumentExtractorProvider, DocumentMetadata, ExtractError, ExtractionRequest, ExtractionResult,
     OutputFormat,
 };
 
@@ -61,45 +57,10 @@ impl DocumentExtractorProvider for BuiltinDocExtractProvider {
 
     fn supported_extensions(&self) -> Vec<&str> {
         vec![
-            "txt",
-            "md",
-            "markdown",
-            "pdf",
-            "docx",
-            "xlsx",
-            "xls",
-            "ods",
-            "csv",
-            "html",
-            "htm",
-            "json",
-            "yaml",
-            "yml",
-            "xml",
-            "rtf",
-            "rs",
-            "py",
-            "js",
-            "ts",
-            "go",
-            "java",
-            "cpp",
-            "c",
-            "h",
-            "cs",
-            "rb",
-            "php",
-            "swift",
-            "kt",
-            "scala",
-            "sql",
-            "sh",
-            "bash",
-            "ps1",
-            "toml",
-            "ini",
-            "cfg",
-            "conf",
+            "txt", "md", "markdown", "pdf", "docx", "xlsx", "xls", "ods", "csv", "html", "htm",
+            "json", "yaml", "yml", "xml", "rtf", "rs", "py", "js", "ts", "go", "java", "cpp", "c",
+            "h", "cs", "rb", "php", "swift", "kt", "scala", "sql", "sh", "bash", "ps1", "toml",
+            "ini", "cfg", "conf",
         ]
     }
 

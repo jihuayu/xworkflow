@@ -6,17 +6,9 @@ use serde_json::Value;
 
 use crate::core::variable_pool::SegmentType;
 use crate::dsl::schema::{
-    AnswerNodeData,
-    CodeNodeData,
-    DocumentExtractorNodeData,
-    EndNodeData,
-    HttpRequestNodeData,
-    IfElseNodeData,
-    LlmNodeData,
-    StartNodeData,
-    TemplateTransformNodeData,
-    VariableAggregatorNodeData,
-    VariableAssignerNodeData,
+    AnswerNodeData, CodeNodeData, DocumentExtractorNodeData, EndNodeData, HttpRequestNodeData,
+    IfElseNodeData, LlmNodeData, QuestionClassifierNodeData, StartNodeData,
+    TemplateTransformNodeData, VariableAggregatorNodeData, VariableAssignerNodeData,
     WorkflowSchema,
 };
 use crate::dsl::validation::ValidationReport;
@@ -54,6 +46,7 @@ pub enum CompiledNodeConfig {
     Loop(CompiledConfig<LoopNodeConfig>),
     ListOperator(CompiledConfig<ListOperatorNodeConfig>),
     Llm(CompiledConfig<LlmNodeData>),
+    QuestionClassifier(CompiledConfig<QuestionClassifierNodeData>),
 }
 
 impl CompiledNodeConfig {
@@ -74,6 +67,7 @@ impl CompiledNodeConfig {
             CompiledNodeConfig::Loop(config) => &config.raw,
             CompiledNodeConfig::ListOperator(config) => &config.raw,
             CompiledNodeConfig::Llm(config) => &config.raw,
+            CompiledNodeConfig::QuestionClassifier(config) => &config.raw,
         }
     }
 }
@@ -126,7 +120,7 @@ mod tests {
         let raw = json!({"key": "value"});
         let parsed = "parsed_data".to_string();
         let config = CompiledConfig::new(raw.clone(), parsed.clone());
-        
+
         assert_eq!(config.raw, raw);
         assert_eq!(config.parsed, parsed);
     }
@@ -135,16 +129,17 @@ mod tests {
     fn test_compiled_node_config_as_value_raw() {
         let value = json!({"type": "test"});
         let config = CompiledNodeConfig::Raw(value.clone());
-        
+
         assert_eq!(config.as_value(), &value);
     }
 
     #[test]
     fn test_compiled_node_config_as_value_start() {
         let raw = json!({"type": "start", "title": "Start"});
-        let parsed: crate::dsl::schema::StartNodeData = serde_json::from_value(raw.clone()).unwrap();
+        let parsed: crate::dsl::schema::StartNodeData =
+            serde_json::from_value(raw.clone()).unwrap();
         let config = CompiledNodeConfig::Start(CompiledConfig::new(raw.clone(), parsed));
-        
+
         assert_eq!(config.as_value(), &raw);
     }
 
@@ -153,7 +148,7 @@ mod tests {
         let raw = json!({"type": "end", "title": "End", "outputs": []});
         let parsed: crate::dsl::schema::EndNodeData = serde_json::from_value(raw.clone()).unwrap();
         let config = CompiledNodeConfig::End(CompiledConfig::new(raw.clone(), parsed));
-        
+
         assert_eq!(config.as_value(), &raw);
     }
 
@@ -175,11 +170,12 @@ edges:
   - source: start
     target: end
 "#;
-        let schema: WorkflowSchema = crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
-        
+        let schema: WorkflowSchema =
+            crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
+
         use crate::graph::build_graph;
         let graph = build_graph(&schema).unwrap();
-        
+
         let compiled = CompiledWorkflow {
             compiled_at: Instant::now(),
             content_hash: 12345,
@@ -218,11 +214,12 @@ edges:
   - source: start
     target: end
 "#;
-        let schema: WorkflowSchema = crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
-        
+        let schema: WorkflowSchema =
+            crate::dsl::parse_dsl(yaml, crate::dsl::DslFormat::Yaml).unwrap();
+
         use crate::graph::build_graph;
         let graph = build_graph(&schema).unwrap();
-        
+
         let compiled = CompiledWorkflow {
             compiled_at: Instant::now(),
             content_hash: 12345,
@@ -240,6 +237,9 @@ edges:
 
         let cloned = compiled.clone();
         assert_eq!(cloned.content_hash(), compiled.content_hash());
-        assert_eq!(cloned.start_node_id.as_ref(), compiled.start_node_id.as_ref());
+        assert_eq!(
+            cloned.start_node_id.as_ref(),
+            compiled.start_node_id.as_ref()
+        );
     }
 }

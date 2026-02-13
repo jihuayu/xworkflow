@@ -182,7 +182,9 @@ mod tests {
     #[test]
     fn test_chat_content_multimodal() {
         let content = ChatContent::MultiModal(vec![
-            ContentPart::Text { text: "hello".into() },
+            ContentPart::Text {
+                text: "hello".into(),
+            },
             ContentPart::ImageUrl {
                 image_url: ImageUrlDetail {
                     url: "https://example.com/img.png".into(),

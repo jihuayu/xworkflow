@@ -62,8 +62,8 @@ pub struct GraphEdge {
 pub struct GraphTopology {
     pub nodes: HashMap<String, GraphNode>,
     pub edges: HashMap<String, GraphEdge>,
-    pub in_edges: HashMap<String, Vec<String>>,   // node_id -> [edge_id]
-    pub out_edges: HashMap<String, Vec<String>>,  // node_id -> [edge_id]
+    pub in_edges: HashMap<String, Vec<String>>, // node_id -> [edge_id]
+    pub out_edges: HashMap<String, Vec<String>>, // node_id -> [edge_id]
     pub root_node_id: String,
 }
 
@@ -208,7 +208,7 @@ impl Graph {
             .topology
             .out_edges
             .get(node_id)
-            .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
+            .map(|ids| ids.to_vec())
             .unwrap_or_default();
         for eid in edge_ids {
             self.set_edge_state(&eid, EdgeTraversalState::Taken);
@@ -222,7 +222,7 @@ impl Graph {
             EdgeHandle::Default => "source",
         };
         let edge_ids = match self.topology.out_edges.get(node_id) {
-            Some(ids) => ids.iter().cloned().collect::<Vec<_>>(),
+            Some(ids) => ids.to_vec(),
             None => return,
         };
         let mut skipped_targets = Vec::new();
@@ -248,11 +248,15 @@ impl Graph {
     /// Recursively skip downstream nodes if all their in-edges are skipped
     pub fn propagate_skip(&mut self, node_id: &str) {
         // Only skip if ALL in-edges are skipped
-        let all_skipped = self.topology.in_edges.get(node_id)
+        let all_skipped = self
+            .topology
+            .in_edges
+            .get(node_id)
             .map(|eids| {
-                !eids.is_empty() && eids.iter().all(|eid| {
-                    matches!(self.edge_state(eid), Some(EdgeTraversalState::Skipped))
-                })
+                !eids.is_empty()
+                    && eids.iter().all(|eid| {
+                        matches!(self.edge_state(eid), Some(EdgeTraversalState::Skipped))
+                    })
             })
             .unwrap_or(false);
 
@@ -266,7 +270,7 @@ impl Graph {
             .topology
             .out_edges
             .get(node_id)
-            .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
+            .map(|ids| ids.to_vec())
             .unwrap_or_default();
         let mut targets = Vec::new();
         for eid in &out_edges {
@@ -286,12 +290,15 @@ impl Graph {
     ///
     /// When `propagate_upstream` is true, cancellation is propagated to upstream
     /// nodes that only contribute to the finalized gather path.
-    pub fn finalize_gather(&mut self, gather_node_id: &str, propagate_upstream: bool) -> Vec<String> {
+    pub fn finalize_gather(
+        &mut self,
+        gather_node_id: &str,
+        propagate_upstream: bool,
+    ) -> Vec<String> {
         let in_edges = self
             .topology
             .in_edges
-            .get(gather_node_id)
-            .map(|ids| ids.clone())
+            .get(gather_node_id).cloned()
             .unwrap_or_default();
 
         let mut cancelled_sources = Vec::new();
@@ -330,8 +337,7 @@ impl Graph {
         let out_edges = self
             .topology
             .out_edges
-            .get(node_id)
-            .map(|ids| ids.clone())
+            .get(node_id).cloned()
             .unwrap_or_default();
 
         if out_edges.is_empty() {
@@ -369,11 +375,15 @@ impl Graph {
         let parent_nodes = self
             .topology
             .in_edges
-            .get(node_id)
-            .map(|ids| ids.clone())
+            .get(node_id).cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|eid| self.topology.edges.get(&eid).map(|e| e.source_node_id.clone()))
+            .filter_map(|eid| {
+                self.topology
+                    .edges
+                    .get(&eid)
+                    .map(|e| e.source_node_id.clone())
+            })
             .collect::<Vec<_>>();
 
         for parent_node_id in parent_nodes {
@@ -388,7 +398,12 @@ impl Graph {
             .get(node_id)
             .into_iter()
             .flat_map(|eids| eids.iter())
-            .filter_map(|eid| self.topology.edges.get(eid).map(|e| e.target_node_id.as_str()))
+            .filter_map(|eid| {
+                self.topology
+                    .edges
+                    .get(eid)
+                    .map(|e| e.target_node_id.as_str())
+            })
     }
 
     /// Check if a node type is a branch type
@@ -434,22 +449,43 @@ mod tests {
 
     fn make_graph() -> Graph {
         let mut nodes = HashMap::new();
-        nodes.insert("start".into(), GraphNode {
-            id: "start".into(), node_type: "start".into(), title: "Start".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("end".into(), GraphNode {
-            id: "end".into(), node_type: "end".into(), title: "End".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
+        nodes.insert(
+            "start".into(),
+            GraphNode {
+                id: "start".into(),
+                node_type: "start".into(),
+                title: "Start".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "end".into(),
+            GraphNode {
+                id: "end".into(),
+                node_type: "end".into(),
+                title: "End".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
 
         let mut edges = HashMap::new();
-        edges.insert("e1".into(), GraphEdge {
-            id: "e1".into(), source_node_id: "start".into(), target_node_id: "end".into(),
-            source_handle: Some("source".into()),
-        });
+        edges.insert(
+            "e1".into(),
+            GraphEdge {
+                id: "e1".into(),
+                source_node_id: "start".into(),
+                target_node_id: "end".into(),
+                source_handle: Some("source".into()),
+            },
+        );
 
         let mut in_edges = HashMap::new();
         in_edges.insert("end".into(), vec!["e1".into()]);
@@ -457,7 +493,13 @@ mod tests {
         let mut out_edges = HashMap::new();
         out_edges.insert("start".into(), vec!["e1".into()]);
 
-        let topology = GraphTopology { nodes, edges, in_edges, out_edges, root_node_id: "start".into() };
+        let topology = GraphTopology {
+            nodes,
+            edges,
+            in_edges,
+            out_edges,
+            root_node_id: "start".into(),
+        };
         Graph::from_topology(Arc::new(topology))
     }
 
@@ -483,31 +525,65 @@ mod tests {
     #[test]
     fn test_branch_edges() {
         let mut nodes = HashMap::new();
-        nodes.insert("if".into(), GraphNode {
-            id: "if".into(), node_type: "if-else".into(), title: "IF".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("a".into(), GraphNode {
-            id: "a".into(), node_type: "code".into(), title: "A".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("b".into(), GraphNode {
-            id: "b".into(), node_type: "code".into(), title: "B".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
+        nodes.insert(
+            "if".into(),
+            GraphNode {
+                id: "if".into(),
+                node_type: "if-else".into(),
+                title: "IF".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "a".into(),
+            GraphNode {
+                id: "a".into(),
+                node_type: "code".into(),
+                title: "A".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "b".into(),
+            GraphNode {
+                id: "b".into(),
+                node_type: "code".into(),
+                title: "B".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
 
         let mut edges = HashMap::new();
-        edges.insert("e_true".into(), GraphEdge {
-            id: "e_true".into(), source_node_id: "if".into(), target_node_id: "a".into(),
-            source_handle: Some("case1".into()),
-        });
-        edges.insert("e_false".into(), GraphEdge {
-            id: "e_false".into(), source_node_id: "if".into(), target_node_id: "b".into(),
-            source_handle: Some("false".into()),
-        });
+        edges.insert(
+            "e_true".into(),
+            GraphEdge {
+                id: "e_true".into(),
+                source_node_id: "if".into(),
+                target_node_id: "a".into(),
+                source_handle: Some("case1".into()),
+            },
+        );
+        edges.insert(
+            "e_false".into(),
+            GraphEdge {
+                id: "e_false".into(),
+                source_node_id: "if".into(),
+                target_node_id: "b".into(),
+                source_handle: Some("false".into()),
+            },
+        );
 
         let mut in_edges = HashMap::new();
         in_edges.insert("a".into(), vec!["e_true".into()]);
@@ -516,7 +592,13 @@ mod tests {
         let mut out_edges = HashMap::new();
         out_edges.insert("if".into(), vec!["e_true".into(), "e_false".into()]);
 
-        let topology = GraphTopology { nodes, edges, in_edges, out_edges, root_node_id: "if".into() };
+        let topology = GraphTopology {
+            nodes,
+            edges,
+            in_edges,
+            out_edges,
+            root_node_id: "if".into(),
+        };
         let mut g = Graph::from_topology(Arc::new(topology));
 
         g.process_branch_edges("if", &EdgeHandle::Branch("case1".to_string()));
@@ -529,29 +611,65 @@ mod tests {
     #[test]
     fn test_gather_any_ready_with_single_taken() {
         let mut nodes = HashMap::new();
-        nodes.insert("a".into(), GraphNode {
-            id: "a".into(), node_type: "code".into(), title: "A".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("b".into(), GraphNode {
-            id: "b".into(), node_type: "code".into(), title: "B".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("g".into(), GraphNode {
-            id: "g".into(), node_type: "gather".into(), title: "Gather".into(),
-            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
+        nodes.insert(
+            "a".into(),
+            GraphNode {
+                id: "a".into(),
+                node_type: "code".into(),
+                title: "A".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "b".into(),
+            GraphNode {
+                id: "b".into(),
+                node_type: "code".into(),
+                title: "B".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "g".into(),
+            GraphNode {
+                id: "g".into(),
+                node_type: "gather".into(),
+                title: "Gather".into(),
+                config: serde_json::json!({"join_mode": {"type": "any"}}),
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
 
         let mut edges = HashMap::new();
-        edges.insert("e1".into(), GraphEdge {
-            id: "e1".into(), source_node_id: "a".into(), target_node_id: "g".into(), source_handle: None,
-        });
-        edges.insert("e2".into(), GraphEdge {
-            id: "e2".into(), source_node_id: "b".into(), target_node_id: "g".into(), source_handle: None,
-        });
+        edges.insert(
+            "e1".into(),
+            GraphEdge {
+                id: "e1".into(),
+                source_node_id: "a".into(),
+                target_node_id: "g".into(),
+                source_handle: None,
+            },
+        );
+        edges.insert(
+            "e2".into(),
+            GraphEdge {
+                id: "e2".into(),
+                source_node_id: "b".into(),
+                target_node_id: "g".into(),
+                source_handle: None,
+            },
+        );
 
         let mut in_edges = HashMap::new();
         in_edges.insert("g".into(), vec!["e1".into(), "e2".into()]);
@@ -560,7 +678,13 @@ mod tests {
         out_edges.insert("a".into(), vec!["e1".into()]);
         out_edges.insert("b".into(), vec!["e2".into()]);
 
-        let topology = GraphTopology { nodes, edges, in_edges, out_edges, root_node_id: "a".into() };
+        let topology = GraphTopology {
+            nodes,
+            edges,
+            in_edges,
+            out_edges,
+            root_node_id: "a".into(),
+        };
         let mut g = Graph::from_topology(Arc::new(topology));
         assert!(!g.is_node_ready("g"));
 
@@ -572,24 +696,52 @@ mod tests {
     fn test_finalize_gather_marks_pending_as_cancelled() {
         let mut g = make_graph();
         let mut nodes = g.topology.nodes.clone();
-        nodes.insert("mid".into(), GraphNode {
-            id: "mid".into(), node_type: "code".into(), title: "Mid".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("g".into(), GraphNode {
-            id: "g".into(), node_type: "gather".into(), title: "Gather".into(),
-            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
+        nodes.insert(
+            "mid".into(),
+            GraphNode {
+                id: "mid".into(),
+                node_type: "code".into(),
+                title: "Mid".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "g".into(),
+            GraphNode {
+                id: "g".into(),
+                node_type: "gather".into(),
+                title: "Gather".into(),
+                config: serde_json::json!({"join_mode": {"type": "any"}}),
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
 
         let mut edges = HashMap::new();
-        edges.insert("ea".into(), GraphEdge {
-            id: "ea".into(), source_node_id: "start".into(), target_node_id: "g".into(), source_handle: None,
-        });
-        edges.insert("eb".into(), GraphEdge {
-            id: "eb".into(), source_node_id: "mid".into(), target_node_id: "g".into(), source_handle: None,
-        });
+        edges.insert(
+            "ea".into(),
+            GraphEdge {
+                id: "ea".into(),
+                source_node_id: "start".into(),
+                target_node_id: "g".into(),
+                source_handle: None,
+            },
+        );
+        edges.insert(
+            "eb".into(),
+            GraphEdge {
+                id: "eb".into(),
+                source_node_id: "mid".into(),
+                target_node_id: "g".into(),
+                source_handle: None,
+            },
+        );
 
         let mut in_edges = HashMap::new();
         in_edges.insert("g".into(), vec!["ea".into(), "eb".into()]);
@@ -621,29 +773,65 @@ mod tests {
     #[test]
     fn test_finalize_gather_propagates_cancel_upstream() {
         let mut nodes = HashMap::new();
-        nodes.insert("u".into(), GraphNode {
-            id: "u".into(), node_type: "code".into(), title: "U".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("v".into(), GraphNode {
-            id: "v".into(), node_type: "code".into(), title: "V".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("g".into(), GraphNode {
-            id: "g".into(), node_type: "gather".into(), title: "G".into(),
-            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
+        nodes.insert(
+            "u".into(),
+            GraphNode {
+                id: "u".into(),
+                node_type: "code".into(),
+                title: "U".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "v".into(),
+            GraphNode {
+                id: "v".into(),
+                node_type: "code".into(),
+                title: "V".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "g".into(),
+            GraphNode {
+                id: "g".into(),
+                node_type: "gather".into(),
+                title: "G".into(),
+                config: serde_json::json!({"join_mode": {"type": "any"}}),
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
 
         let mut edges = HashMap::new();
-        edges.insert("e_uv".into(), GraphEdge {
-            id: "e_uv".into(), source_node_id: "u".into(), target_node_id: "v".into(), source_handle: None,
-        });
-        edges.insert("e_vg".into(), GraphEdge {
-            id: "e_vg".into(), source_node_id: "v".into(), target_node_id: "g".into(), source_handle: None,
-        });
+        edges.insert(
+            "e_uv".into(),
+            GraphEdge {
+                id: "e_uv".into(),
+                source_node_id: "u".into(),
+                target_node_id: "v".into(),
+                source_handle: None,
+            },
+        );
+        edges.insert(
+            "e_vg".into(),
+            GraphEdge {
+                id: "e_vg".into(),
+                source_node_id: "v".into(),
+                target_node_id: "g".into(),
+                source_handle: None,
+            },
+        );
 
         let mut in_edges = HashMap::new();
         in_edges.insert("v".into(), vec!["e_uv".into()]);
@@ -673,29 +861,65 @@ mod tests {
     #[test]
     fn test_finalize_gather_without_propagation_only_returns_direct_sources() {
         let mut nodes = HashMap::new();
-        nodes.insert("u".into(), GraphNode {
-            id: "u".into(), node_type: "code".into(), title: "U".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("v".into(), GraphNode {
-            id: "v".into(), node_type: "code".into(), title: "V".into(),
-            config: Value::Null, version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
-        nodes.insert("g".into(), GraphNode {
-            id: "g".into(), node_type: "gather".into(), title: "G".into(),
-            config: serde_json::json!({"join_mode": {"type": "any"}}), version: "1".into(),
-            error_strategy: None, retry_config: None, timeout_secs: None,
-        });
+        nodes.insert(
+            "u".into(),
+            GraphNode {
+                id: "u".into(),
+                node_type: "code".into(),
+                title: "U".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "v".into(),
+            GraphNode {
+                id: "v".into(),
+                node_type: "code".into(),
+                title: "V".into(),
+                config: Value::Null,
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
+        nodes.insert(
+            "g".into(),
+            GraphNode {
+                id: "g".into(),
+                node_type: "gather".into(),
+                title: "G".into(),
+                config: serde_json::json!({"join_mode": {"type": "any"}}),
+                version: "1".into(),
+                error_strategy: None,
+                retry_config: None,
+                timeout_secs: None,
+            },
+        );
 
         let mut edges = HashMap::new();
-        edges.insert("e_uv".into(), GraphEdge {
-            id: "e_uv".into(), source_node_id: "u".into(), target_node_id: "v".into(), source_handle: None,
-        });
-        edges.insert("e_vg".into(), GraphEdge {
-            id: "e_vg".into(), source_node_id: "v".into(), target_node_id: "g".into(), source_handle: None,
-        });
+        edges.insert(
+            "e_uv".into(),
+            GraphEdge {
+                id: "e_uv".into(),
+                source_node_id: "u".into(),
+                target_node_id: "v".into(),
+                source_handle: None,
+            },
+        );
+        edges.insert(
+            "e_vg".into(),
+            GraphEdge {
+                id: "e_vg".into(),
+                source_node_id: "v".into(),
+                target_node_id: "g".into(),
+                source_handle: None,
+            },
+        );
 
         let mut in_edges = HashMap::new();
         in_edges.insert("v".into(), vec!["e_uv".into()]);

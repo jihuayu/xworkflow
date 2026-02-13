@@ -11,11 +11,11 @@ use crate::sandbox::{CodeLanguage, CodeSandbox};
 
 use super::error::PluginError;
 use super::extensions::{DslValidator, TemplateFunction};
-use xworkflow_types::template::TemplateEngine;
 use super::hooks::{HookHandler, HookPoint};
 use super::loader::PluginLoader;
 use super::registry::{PluginPhase, PluginRegistryInner};
 use super::traits::PluginCapabilities;
+use xworkflow_types::template::TemplateEngine;
 
 /// Mutable context passed to [`Plugin::register()`](super::Plugin::register).
 ///
@@ -59,11 +59,17 @@ impl<'a> PluginContext<'a> {
     /// Emit a structured log line tagged with the plugin id.
     pub fn log(&self, level: tracing::Level, message: &str) {
         match level {
-            tracing::Level::TRACE => tracing::trace!(plugin_id = %self.plugin_id, message = %message),
-            tracing::Level::DEBUG => tracing::debug!(plugin_id = %self.plugin_id, message = %message),
+            tracing::Level::TRACE => {
+                tracing::trace!(plugin_id = %self.plugin_id, message = %message)
+            }
+            tracing::Level::DEBUG => {
+                tracing::debug!(plugin_id = %self.plugin_id, message = %message)
+            }
             tracing::Level::INFO => tracing::info!(plugin_id = %self.plugin_id, message = %message),
             tracing::Level::WARN => tracing::warn!(plugin_id = %self.plugin_id, message = %message),
-            tracing::Level::ERROR => tracing::error!(plugin_id = %self.plugin_id, message = %message),
+            tracing::Level::ERROR => {
+                tracing::error!(plugin_id = %self.plugin_id, message = %message)
+            }
         }
     }
 
@@ -163,7 +169,9 @@ impl<'a> PluginContext<'a> {
         self.ensure_phase(PluginPhase::Normal)?;
         if let Some(caps) = &self.capabilities {
             if !caps.register_llm_providers {
-                return Err(PluginError::CapabilityDenied("register_llm_providers".into()));
+                return Err(PluginError::CapabilityDenied(
+                    "register_llm_providers".into(),
+                ));
             }
         }
         self.registry_inner.llm_providers.push(provider);
@@ -244,7 +252,7 @@ impl<'a> PluginContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::runtime_context::{RealTimeProvider, RealIdGenerator};
+    use crate::core::runtime_context::{RealIdGenerator, RealTimeProvider};
     use crate::sandbox::{CodeLanguage, CodeSandbox};
     use async_trait::async_trait;
 
@@ -252,7 +260,10 @@ mod tests {
 
     #[async_trait]
     impl CodeSandbox for MockSandbox {
-        async fn execute(&self, _request: xworkflow_types::SandboxRequest) -> Result<xworkflow_types::SandboxResult, xworkflow_types::SandboxError> {
+        async fn execute(
+            &self,
+            _request: xworkflow_types::SandboxRequest,
+        ) -> Result<xworkflow_types::SandboxResult, xworkflow_types::SandboxError> {
             Ok(xworkflow_types::SandboxResult {
                 success: true,
                 output: "mock".into(),
@@ -307,7 +318,8 @@ mod tests {
         async fn chat_completion(
             &self,
             _request: crate::llm::types::ChatCompletionRequest,
-        ) -> Result<crate::llm::types::ChatCompletionResponse, crate::llm::error::LlmError> {
+        ) -> Result<crate::llm::types::ChatCompletionResponse, crate::llm::error::LlmError>
+        {
             Ok(crate::llm::types::ChatCompletionResponse {
                 content: "mock response".into(),
                 usage: Default::default(),
@@ -321,7 +333,8 @@ mod tests {
             &self,
             _request: crate::llm::types::ChatCompletionRequest,
             _chunk_tx: tokio::sync::mpsc::Sender<crate::llm::types::StreamChunk>,
-        ) -> Result<crate::llm::types::ChatCompletionResponse, crate::llm::error::LlmError> {
+        ) -> Result<crate::llm::types::ChatCompletionResponse, crate::llm::error::LlmError>
+        {
             Ok(crate::llm::types::ChatCompletionResponse {
                 content: "mock response".into(),
                 usage: Default::default(),
@@ -361,7 +374,10 @@ mod tests {
 
     #[async_trait]
     impl HookHandler for MockHookHandler {
-        async fn handle(&self, _payload: &crate::plugin_system::hooks::HookPayload) -> Result<Option<serde_json::Value>, PluginError> {
+        async fn handle(
+            &self,
+            _payload: &crate::plugin_system::hooks::HookPayload,
+        ) -> Result<Option<serde_json::Value>, PluginError> {
             Ok(None)
         }
 
@@ -389,7 +405,10 @@ mod tests {
             "mock_validator"
         }
 
-        fn validate(&self, _schema: &crate::dsl::schema::WorkflowSchema) -> Vec<crate::dsl::Diagnostic> {
+        fn validate(
+            &self,
+            _schema: &crate::dsl::schema::WorkflowSchema,
+        ) -> Vec<crate::dsl::Diagnostic> {
             Vec::new()
         }
     }
@@ -414,13 +433,7 @@ mod tests {
         inner: &'a mut PluginRegistryInner,
         loaders: Option<&'a mut HashMap<String, Arc<dyn PluginLoader>>>,
     ) -> PluginContext<'a> {
-        PluginContext::new(
-            phase,
-            inner,
-            loaders,
-            "test_plugin".into(),
-            None,
-        )
+        PluginContext::new(phase, inner, loaders, "test_plugin".into(), None)
     }
 
     #[test]
@@ -448,7 +461,7 @@ mod tests {
     fn test_register_sandbox_bootstrap_phase() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let result = ctx.register_sandbox(CodeLanguage::JavaScript, Arc::new(MockSandbox));
         assert!(result.is_ok());
         assert_eq!(inner.sandboxes.len(), 1);
@@ -458,7 +471,7 @@ mod tests {
     fn test_register_sandbox_wrong_phase() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let result = ctx.register_sandbox(CodeLanguage::JavaScript, Arc::new(MockSandbox));
         assert!(result.is_err());
         match result {
@@ -474,7 +487,7 @@ mod tests {
     fn test_provide_service() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let service: Arc<dyn Any + Send + Sync> = Arc::new(42i32);
         let result = ctx.provide_service("test_service", service);
         assert!(result.is_ok());
@@ -485,7 +498,7 @@ mod tests {
     fn test_provide_service_wrong_phase() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let service: Arc<dyn Any + Send + Sync> = Arc::new(42i32);
         let result = ctx.provide_service("test_service", service);
         assert!(result.is_err());
@@ -495,10 +508,10 @@ mod tests {
     fn test_query_services() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let service: Arc<dyn Any + Send + Sync> = Arc::new(42i32);
         ctx.provide_service("test_service", service).unwrap();
-        
+
         let services = ctx.query_services("test_service");
         assert_eq!(services.len(), 1);
     }
@@ -507,7 +520,7 @@ mod tests {
     fn test_query_services_not_found() {
         let mut inner = create_test_inner();
         let ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let services = ctx.query_services("nonexistent");
         assert_eq!(services.len(), 0);
     }
@@ -516,7 +529,7 @@ mod tests {
     fn test_register_time_provider() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let provider = Arc::new(RealTimeProvider::new());
         let result = ctx.register_time_provider(provider);
         assert!(result.is_ok());
@@ -527,7 +540,7 @@ mod tests {
     fn test_register_id_generator() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let generator = Arc::new(RealIdGenerator);
         let result = ctx.register_id_generator(generator);
         assert!(result.is_ok());
@@ -538,7 +551,7 @@ mod tests {
     fn test_register_node_executor() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let executor = Box::new(MockNodeExecutor);
         let result = ctx.register_node_executor("test_node", executor);
         assert!(result.is_ok());
@@ -549,7 +562,7 @@ mod tests {
     fn test_register_node_executor_wrong_phase() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let executor = Box::new(MockNodeExecutor);
         let result = ctx.register_node_executor("test_node", executor);
         assert!(result.is_err());
@@ -559,15 +572,15 @@ mod tests {
     fn test_register_node_executor_conflict() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let executor1 = Box::new(MockNodeExecutor);
         ctx.register_node_executor("test_node", executor1).unwrap();
-        
+
         let executor2 = Box::new(MockNodeExecutor);
         let result = ctx.register_node_executor("test_node", executor2);
         assert!(result.is_err());
         match result {
-            Err(PluginError::ConflictError(_)) => {},
+            Err(PluginError::ConflictError(_)) => {}
             _ => panic!("Expected ConflictError"),
         }
     }
@@ -594,12 +607,12 @@ mod tests {
             "test_plugin".into(),
             Some(capabilities),
         );
-        
+
         let executor = Box::new(MockNodeExecutor);
         let result = ctx.register_node_executor("test_node", executor);
         assert!(result.is_err());
         match result {
-            Err(PluginError::CapabilityDenied(_)) => {},
+            Err(PluginError::CapabilityDenied(_)) => {}
             _ => panic!("Expected CapabilityDenied error"),
         }
     }
@@ -608,7 +621,7 @@ mod tests {
     fn test_register_llm_provider() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let provider = Arc::new(MockLlmProvider);
         let result = ctx.register_llm_provider(provider);
         assert!(result.is_ok());
@@ -619,7 +632,7 @@ mod tests {
     fn test_register_llm_provider_wrong_phase() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let provider = Arc::new(MockLlmProvider);
         let result = ctx.register_llm_provider(provider);
         assert!(result.is_err());
@@ -647,7 +660,7 @@ mod tests {
             "test_plugin".into(),
             Some(capabilities),
         );
-        
+
         let provider = Arc::new(MockLlmProvider);
         let result = ctx.register_llm_provider(provider);
         assert!(result.is_err());
@@ -657,7 +670,7 @@ mod tests {
     fn test_register_hook() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let handler = Arc::new(MockHookHandler);
         let result = ctx.register_hook(HookPoint::BeforeNodeExecute, handler);
         assert!(result.is_ok());
@@ -668,7 +681,7 @@ mod tests {
     fn test_register_hook_wrong_phase() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let handler = Arc::new(MockHookHandler);
         let result = ctx.register_hook(HookPoint::BeforeNodeExecute, handler);
         assert!(result.is_err());
@@ -696,7 +709,7 @@ mod tests {
             "test_plugin".into(),
             Some(capabilities),
         );
-        
+
         let handler = Arc::new(MockHookHandler);
         let result = ctx.register_hook(HookPoint::BeforeNodeExecute, handler);
         assert!(result.is_err());
@@ -706,7 +719,7 @@ mod tests {
     fn test_register_template_function() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let func = Arc::new(MockTemplateFunction);
         let result = ctx.register_template_function("test_func", func);
         assert!(result.is_ok());
@@ -717,7 +730,7 @@ mod tests {
     fn test_register_template_engine() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let engine = Arc::new(MockTemplateEngine);
         let result = ctx.register_template_engine(engine);
         assert!(result.is_ok());
@@ -728,15 +741,15 @@ mod tests {
     fn test_register_template_engine_conflict() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let engine1 = Arc::new(MockTemplateEngine);
         ctx.register_template_engine(engine1).unwrap();
-        
+
         let engine2 = Arc::new(MockTemplateEngine);
         let result = ctx.register_template_engine(engine2);
         assert!(result.is_err());
         match result {
-            Err(PluginError::ConflictError(_)) => {},
+            Err(PluginError::ConflictError(_)) => {}
             _ => panic!("Expected ConflictError"),
         }
     }
@@ -745,10 +758,10 @@ mod tests {
     fn test_query_template_engine() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Bootstrap, &mut inner, None);
-        
+
         let engine = Arc::new(MockTemplateEngine);
         ctx.register_template_engine(engine).unwrap();
-        
+
         let queried = ctx.query_template_engine();
         assert!(queried.is_some());
     }
@@ -757,7 +770,7 @@ mod tests {
     fn test_register_dsl_validator() {
         let mut inner = create_test_inner();
         let mut ctx = create_test_context(PluginPhase::Normal, &mut inner, None);
-        
+
         let validator = Arc::new(MockDslValidator);
         let result = ctx.register_dsl_validator(validator);
         assert!(result.is_ok());

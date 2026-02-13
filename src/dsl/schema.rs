@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::core::variable_pool::{Selector, Segment, SegmentStream};
+use crate::core::variable_pool::{Segment, SegmentStream, Selector};
 
 // ================================
 // Variable Selector
@@ -173,10 +173,18 @@ pub enum BackoffStrategy {
     ExponentialWithJitter,
 }
 
-fn default_backoff_strategy() -> BackoffStrategy { BackoffStrategy::Fixed }
-fn default_backoff_multiplier() -> f64 { 2.0 }
-fn default_max_retry_interval() -> i32 { 60000 }
-fn default_retry_on_retryable_only() -> bool { true }
+fn default_backoff_strategy() -> BackoffStrategy {
+    BackoffStrategy::Fixed
+}
+fn default_backoff_multiplier() -> f64 {
+    2.0
+}
+fn default_max_retry_interval() -> i32 {
+    60000
+}
+fn default_retry_on_retryable_only() -> bool {
+    true
+}
 
 // ================================
 // Workflow Error Handler
@@ -185,16 +193,13 @@ fn default_retry_on_retryable_only() -> bool { true }
 /// How the global error handler processes a workflow-level failure.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ErrorHandlingMode {
     Recover,
+    #[default]
     Notify,
 }
 
-impl Default for ErrorHandlingMode {
-    fn default() -> Self {
-        Self::Notify
-    }
-}
 
 /// Global error handler configuration with an embedded recovery sub-graph.
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -531,7 +536,11 @@ pub enum ComparisonOperator {
     GreaterThan,
     #[serde(alias = "<", alias = "less_than")]
     LessThan,
-    #[serde(alias = "≥", alias = "greater_than_or_equal", alias = "greater_or_equal")]
+    #[serde(
+        alias = "≥",
+        alias = "greater_than_or_equal",
+        alias = "greater_or_equal"
+    )]
     GreaterOrEqual,
     #[serde(alias = "≤", alias = "less_than_or_equal", alias = "less_or_equal")]
     LessOrEqual,
@@ -663,18 +672,35 @@ pub enum HttpBody {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Authorization {
     NoAuth,
-    ApiKey { key: String, value: String, position: ApiKeyPosition },
-    BearerToken { token: String },
-    BasicAuth { username: String, password: String },
-    CustomHeaders { headers: Vec<KeyValuePair> },
+    ApiKey {
+        key: String,
+        value: String,
+        position: ApiKeyPosition,
+    },
+    BearerToken {
+        token: String,
+    },
+    BasicAuth {
+        username: String,
+        password: String,
+    },
+    CustomHeaders {
+        headers: Vec<KeyValuePair>,
+    },
 }
 
 /// Where to place an API key in the request.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
-pub enum ApiKeyPosition { Header, Query, Body }
+pub enum ApiKeyPosition {
+    Header,
+    Query,
+    Body,
+}
 
-fn default_timeout() -> u64 { 10 }
+fn default_timeout() -> u64 {
+    10
+}
 
 // ================================
 // Variable Aggregator (Dify: returns first non-null)
@@ -704,30 +730,24 @@ pub struct GatherNodeData {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum JoinMode {
+    #[default]
     All,
     Any,
     NOfM { n: usize },
 }
 
-impl Default for JoinMode {
-    fn default() -> Self {
-        Self::All
-    }
-}
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TimeoutStrategy {
+    #[default]
     ProceedWithAvailable,
     Fail,
 }
 
-impl Default for TimeoutStrategy {
-    fn default() -> Self {
-        Self::ProceedWithAvailable
-    }
-}
 
 fn default_cancel_remaining() -> bool {
     true
@@ -770,7 +790,9 @@ pub enum WriteMode {
     Clear,
 }
 
-fn default_write_mode() -> WriteMode { WriteMode::Overwrite }
+fn default_write_mode() -> WriteMode {
+    WriteMode::Overwrite
+}
 
 // ================================
 // Iteration Node Config
@@ -798,7 +820,9 @@ pub enum IterationErrorMode {
     ContinueOnError,
 }
 
-fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Terminated }
+fn default_iteration_error_mode() -> IterationErrorMode {
+    IterationErrorMode::Terminated
+}
 
 // ================================
 // LLM Node Config (stub)
@@ -818,6 +842,24 @@ pub struct LlmNodeData {
     pub memory: Option<MemoryConfig>,
     #[serde(default)]
     pub stream: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ClassifierCategory {
+    pub category_id: String,
+    pub category_name: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct QuestionClassifierNodeData {
+    pub model: ModelConfig,
+    pub query_variable_selector: VariableSelector,
+    #[serde(default)]
+    pub categories: Vec<ClassifierCategory>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -843,7 +885,9 @@ pub struct AgentNodeData {
     pub memory: Option<MemoryConfig>,
 }
 
-fn default_agent_max_iterations() -> i32 { 10 }
+fn default_agent_max_iterations() -> i32 {
+    10
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct AgentToolsConfig {
@@ -958,18 +1002,15 @@ impl Default for NodeRunResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum EdgeHandle {
     /// Non-branch nodes: all edges are taken
+    #[default]
     Default,
     /// Branch nodes: select specific edge handle
     Branch(String),
 }
 
-impl Default for EdgeHandle {
-    fn default() -> Self {
-        EdgeHandle::Default
-    }
-}
 
 /// Node output container, supporting both synchronous and streaming outputs.
 #[derive(Debug, Clone)]
@@ -1006,8 +1047,7 @@ impl NodeOutputs {
     }
 
     pub fn to_value_map(&self) -> HashMap<String, Value> {
-        self
-            .ready()
+        self.ready()
             .iter()
             .map(|(k, v)| (k.clone(), v.to_value()))
             .collect()
@@ -1050,7 +1090,10 @@ mod tests {
         assert_eq!(NodeType::IfElse.to_string(), "if-else");
         assert_eq!(NodeType::Code.to_string(), "code");
         assert_eq!(NodeType::HttpRequest.to_string(), "http-request");
-        assert_eq!(NodeType::TemplateTransform.to_string(), "template-transform");
+        assert_eq!(
+            NodeType::TemplateTransform.to_string(),
+            "template-transform"
+        );
         assert_eq!(NodeType::VariableAssigner.to_string(), "assigner");
     }
 
@@ -1058,13 +1101,31 @@ mod tests {
     fn test_node_type_execution_type() {
         assert_eq!(NodeType::Start.execution_type(), NodeExecutionType::Root);
         assert_eq!(NodeType::End.execution_type(), NodeExecutionType::Response);
-        assert_eq!(NodeType::Answer.execution_type(), NodeExecutionType::Response);
+        assert_eq!(
+            NodeType::Answer.execution_type(),
+            NodeExecutionType::Response
+        );
         assert_eq!(NodeType::IfElse.execution_type(), NodeExecutionType::Branch);
-        assert_eq!(NodeType::QuestionClassifier.execution_type(), NodeExecutionType::Branch);
-        assert_eq!(NodeType::Iteration.execution_type(), NodeExecutionType::Container);
-        assert_eq!(NodeType::Loop.execution_type(), NodeExecutionType::Container);
-        assert_eq!(NodeType::Code.execution_type(), NodeExecutionType::Executable);
-        assert_eq!(NodeType::Llm.execution_type(), NodeExecutionType::Executable);
+        assert_eq!(
+            NodeType::QuestionClassifier.execution_type(),
+            NodeExecutionType::Branch
+        );
+        assert_eq!(
+            NodeType::Iteration.execution_type(),
+            NodeExecutionType::Container
+        );
+        assert_eq!(
+            NodeType::Loop.execution_type(),
+            NodeExecutionType::Container
+        );
+        assert_eq!(
+            NodeType::Code.execution_type(),
+            NodeExecutionType::Executable
+        );
+        assert_eq!(
+            NodeType::Llm.execution_type(),
+            NodeExecutionType::Executable
+        );
     }
 
     #[test]

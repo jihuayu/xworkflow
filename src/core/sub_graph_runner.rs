@@ -201,8 +201,14 @@ fn build_sub_graph(sub_graph: &SubGraphDefinition) -> Result<Graph, SubGraphErro
             source_handle: e.source_handle.clone(),
         };
 
-        in_edges.entry(e.target.clone()).or_default().push(edge_id.clone());
-        out_edges.entry(e.source.clone()).or_default().push(edge_id.clone());
+        in_edges
+            .entry(e.target.clone())
+            .or_default()
+            .push(edge_id.clone());
+        out_edges
+            .entry(e.source.clone())
+            .or_default()
+            .push(edge_id.clone());
         edges.insert(edge_id, edge);
     }
 

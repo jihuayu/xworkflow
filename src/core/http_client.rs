@@ -1,3 +1,8 @@
+#![expect(
+    clippy::result_large_err,
+    reason = "HTTP client helpers return NodeError to align with node execution API contracts"
+)]
+
 use std::time::Duration;
 
 #[cfg(feature = "security")]
@@ -127,12 +132,18 @@ impl HttpClientProvider {
     }
 
     #[cfg(not(feature = "security"))]
-    pub fn client_for_context(&self, _context: &RuntimeContext) -> Result<reqwest::Client, NodeError> {
+    pub fn client_for_context(
+        &self,
+        _context: &RuntimeContext,
+    ) -> Result<reqwest::Client, NodeError> {
         Ok(self.standard_client.clone())
     }
 
     #[cfg(feature = "security")]
-    pub fn client_for_context(&self, context: &RuntimeContext) -> Result<reqwest::Client, NodeError> {
+    pub fn client_for_context(
+        &self,
+        context: &RuntimeContext,
+    ) -> Result<reqwest::Client, NodeError> {
         let group = context.resource_group();
         let policy = context.security_policy();
 
@@ -233,8 +244,8 @@ impl HttpClientProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn test_http_pool_config_default() {
@@ -321,11 +332,11 @@ mod tests {
     #[cfg(feature = "security")]
     #[tokio::test]
     async fn test_client_for_context_with_security() {
-        use crate::core::workflow_context::WorkflowContext;
         use crate::core::runtime_group::RuntimeGroup;
-        use crate::security::{ResourceGroup, SecurityLevel, ResourceQuota};
+        use crate::core::workflow_context::WorkflowContext;
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
         use std::collections::HashMap;
-        
+
         let provider = HttpClientProvider::default();
         let group = ResourceGroup {
             group_id: "test_group".to_string(),
@@ -334,12 +345,10 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        
-        let runtime_group = RuntimeGroup::builder()
-            .resource_group(group)
-            .build();
+
+        let runtime_group = RuntimeGroup::builder().resource_group(group).build();
         let context = WorkflowContext::new(Arc::new(runtime_group));
-        
+
         let client = provider.client_for_context(&context).unwrap();
         assert!(client.get("https://example.com").build().is_ok());
     }
@@ -347,11 +356,11 @@ mod tests {
     #[cfg(feature = "security")]
     #[tokio::test]
     async fn test_client_caching_same_group() {
-        use crate::core::workflow_context::WorkflowContext;
         use crate::core::runtime_group::RuntimeGroup;
-        use crate::security::{ResourceGroup, SecurityLevel, ResourceQuota};
+        use crate::core::workflow_context::WorkflowContext;
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
         use std::collections::HashMap;
-        
+
         let provider = HttpClientProvider::default();
         let group = ResourceGroup {
             group_id: "test_group".to_string(),
@@ -360,18 +369,16 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        
-        let runtime_group = RuntimeGroup::builder()
-            .resource_group(group)
-            .build();
+
+        let runtime_group = RuntimeGroup::builder().resource_group(group).build();
         let context = WorkflowContext::new(Arc::new(runtime_group));
-        
+
         // First request should create a new client
         let _client1 = provider.client_for_context(&context).unwrap();
-        
+
         // Second request should reuse cached client
         let _client2 = provider.client_for_context(&context).unwrap();
-        
+
         let stats = provider.stats();
         assert_eq!(stats.active_groups, 1);
         assert_eq!(stats.entries.len(), 1);
@@ -382,13 +389,13 @@ mod tests {
     #[cfg(feature = "security")]
     #[tokio::test]
     async fn test_client_caching_different_groups() {
-        use crate::core::workflow_context::WorkflowContext;
         use crate::core::runtime_group::RuntimeGroup;
-        use crate::security::{ResourceGroup, SecurityLevel, ResourceQuota};
+        use crate::core::workflow_context::WorkflowContext;
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
         use std::collections::HashMap;
-        
+
         let provider = HttpClientProvider::default();
-        
+
         let group1 = ResourceGroup {
             group_id: "group1".to_string(),
             group_name: Some("Group 1".to_string()),
@@ -396,11 +403,9 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        let runtime_group1 = RuntimeGroup::builder()
-            .resource_group(group1)
-            .build();
+        let runtime_group1 = RuntimeGroup::builder().resource_group(group1).build();
         let context1 = WorkflowContext::new(Arc::new(runtime_group1));
-        
+
         let group2 = ResourceGroup {
             group_id: "group2".to_string(),
             group_name: Some("Group 2".to_string()),
@@ -408,14 +413,12 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        let runtime_group2 = RuntimeGroup::builder()
-            .resource_group(group2)
-            .build();
+        let runtime_group2 = RuntimeGroup::builder().resource_group(group2).build();
         let context2 = WorkflowContext::new(Arc::new(runtime_group2));
-        
+
         let _client1 = provider.client_for_context(&context1).unwrap();
         let _client2 = provider.client_for_context(&context2).unwrap();
-        
+
         let stats = provider.stats();
         assert_eq!(stats.active_groups, 2);
         assert_eq!(stats.entries.len(), 2);
@@ -424,17 +427,17 @@ mod tests {
     #[cfg(feature = "security")]
     #[tokio::test]
     async fn test_client_cache_eviction() {
-        use crate::core::workflow_context::WorkflowContext;
         use crate::core::runtime_group::RuntimeGroup;
-        use crate::security::{ResourceGroup, SecurityLevel, ResourceQuota};
+        use crate::core::workflow_context::WorkflowContext;
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
         use std::collections::HashMap;
-        
+
         let config = HttpPoolConfig {
             max_group_clients: 2,
             ..Default::default()
         };
         let provider = HttpClientProvider::new(config);
-        
+
         // Add 3 groups (should evict the oldest)
         for i in 0..3 {
             let group = ResourceGroup {
@@ -444,16 +447,14 @@ mod tests {
                 quota: ResourceQuota::default(),
                 credential_refs: HashMap::new(),
             };
-            let runtime_group = RuntimeGroup::builder()
-                .resource_group(group)
-                .build();
+            let runtime_group = RuntimeGroup::builder().resource_group(group).build();
             let context = WorkflowContext::new(Arc::new(runtime_group));
             let _client = provider.client_for_context(&context).unwrap();
-            
+
             // Add small delay to ensure different timestamps
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        
+
         let stats = provider.stats();
         // Should only have 2 groups (max_group_clients)
         assert_eq!(stats.active_groups, 2);
@@ -462,17 +463,17 @@ mod tests {
     #[cfg(feature = "security")]
     #[tokio::test]
     async fn test_cleanup_expired() {
-        use crate::core::workflow_context::WorkflowContext;
         use crate::core::runtime_group::RuntimeGroup;
-        use crate::security::{ResourceGroup, SecurityLevel, ResourceQuota};
+        use crate::core::workflow_context::WorkflowContext;
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
         use std::collections::HashMap;
-        
+
         let config = HttpPoolConfig {
             group_client_idle_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         let provider = HttpClientProvider::new(config);
-        
+
         let group = ResourceGroup {
             group_id: "test_group".to_string(),
             group_name: Some("Test Group".to_string()),
@@ -480,21 +481,19 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        let runtime_group = RuntimeGroup::builder()
-            .resource_group(group)
-            .build();
+        let runtime_group = RuntimeGroup::builder().resource_group(group).build();
         let context = WorkflowContext::new(Arc::new(runtime_group));
-        
+
         let _client = provider.client_for_context(&context).unwrap();
-        
+
         let stats_before = provider.stats();
         assert_eq!(stats_before.active_groups, 1);
-        
+
         // Wait for timeout
         tokio::time::sleep(Duration::from_millis(150)).await;
-        
+
         provider.cleanup_expired();
-        
+
         let stats_after = provider.stats();
         assert_eq!(stats_after.active_groups, 0);
     }
@@ -502,11 +501,11 @@ mod tests {
     #[cfg(feature = "security")]
     #[tokio::test]
     async fn test_stats_accuracy() {
-        use crate::core::workflow_context::WorkflowContext;
         use crate::core::runtime_group::RuntimeGroup;
-        use crate::security::{ResourceGroup, SecurityLevel, ResourceQuota};
+        use crate::core::workflow_context::WorkflowContext;
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
         use std::collections::HashMap;
-        
+
         let provider = HttpClientProvider::default();
         let group = ResourceGroup {
             group_id: "test_group".to_string(),
@@ -515,16 +514,14 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: HashMap::new(),
         };
-        let runtime_group = RuntimeGroup::builder()
-            .resource_group(group)
-            .build();
+        let runtime_group = RuntimeGroup::builder().resource_group(group).build();
         let context = WorkflowContext::new(Arc::new(runtime_group));
-        
+
         // Make multiple requests
         for _ in 0..5 {
             let _client = provider.client_for_context(&context).unwrap();
         }
-        
+
         let stats = provider.stats();
         assert_eq!(stats.active_groups, 1);
         assert_eq!(stats.entries[0].request_count, 5);
@@ -538,11 +535,11 @@ mod tests {
     async fn test_no_group_context() {
         let provider = HttpClientProvider::default();
         let context = RuntimeContext::default();
-        
+
         // Should build a client without caching
         let client = provider.client_for_context(&context).unwrap();
         assert!(client.get("https://example.com").build().is_ok());
-        
+
         // Stats should show no cached groups
         let stats = provider.stats();
         assert_eq!(stats.active_groups, 0);

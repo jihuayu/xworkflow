@@ -23,7 +23,8 @@ pub enum CheckpointError {
 
 #[async_trait]
 pub trait CheckpointStore: Send + Sync {
-    async fn save(&self, workflow_id: &str, checkpoint: &Checkpoint) -> Result<(), CheckpointError>;
+    async fn save(&self, workflow_id: &str, checkpoint: &Checkpoint)
+        -> Result<(), CheckpointError>;
     async fn load(&self, workflow_id: &str) -> Result<Option<Checkpoint>, CheckpointError>;
     async fn delete(&self, workflow_id: &str) -> Result<(), CheckpointError>;
 }
@@ -43,7 +44,11 @@ impl MemoryCheckpointStore {
 
 #[async_trait]
 impl CheckpointStore for MemoryCheckpointStore {
-    async fn save(&self, workflow_id: &str, checkpoint: &Checkpoint) -> Result<(), CheckpointError> {
+    async fn save(
+        &self,
+        workflow_id: &str,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), CheckpointError> {
         self.data
             .write()
             .await
@@ -79,10 +84,14 @@ impl FileCheckpointStore {
 
 #[async_trait]
 impl CheckpointStore for FileCheckpointStore {
-    async fn save(&self, workflow_id: &str, checkpoint: &Checkpoint) -> Result<(), CheckpointError> {
+    async fn save(
+        &self,
+        workflow_id: &str,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), CheckpointError> {
         let path = self.path_for(workflow_id);
-        let bytes =
-            serde_json::to_vec(checkpoint).map_err(|e| CheckpointError::SerializationError(e.to_string()))?;
+        let bytes = serde_json::to_vec(checkpoint)
+            .map_err(|e| CheckpointError::SerializationError(e.to_string()))?;
         tokio::fs::write(path, bytes)
             .await
             .map_err(|e| CheckpointError::StorageError(e.to_string()))
@@ -111,7 +120,9 @@ impl CheckpointStore for FileCheckpointStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::checkpoint::types::{Checkpoint, ConsumedResources, ContextFingerprint, SerializableEdgeState};
+    use crate::core::checkpoint::types::{
+        Checkpoint, ConsumedResources, ContextFingerprint, SerializableEdgeState,
+    };
 
     fn sample_checkpoint() -> Checkpoint {
         Checkpoint {

@@ -16,12 +16,7 @@ use crate::plugin_system::TemplateFunction;
 
 #[cfg(feature = "security")]
 use crate::security::{
-    AuditLogger,
-    CredentialProvider,
-    ResourceGovernor,
-    ResourceGroup,
-    ResourceQuota,
-    SecurityPolicy,
+    AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, ResourceQuota, SecurityPolicy,
 };
 
 /// Workflow execution context (instance-specific).
@@ -41,7 +36,7 @@ pub struct WorkflowContext {
 impl WorkflowContext {
     pub fn new(runtime_group: Arc<RuntimeGroup>) -> Self {
         let time_provider = Arc::new(RealTimeProvider::default());
-        let id_generator = Arc::new(RealIdGenerator::default());
+        let id_generator = Arc::new(RealIdGenerator);
         let execution_id = id_generator.next_id();
         let start_time = time_provider.now_timestamp();
 
@@ -371,7 +366,7 @@ mod tests {
         let tp = RealTimeProvider::new();
         let past = tp.now_timestamp() - 10;
         let elapsed = tp.elapsed_secs(past);
-        assert!(elapsed >= 9 && elapsed <= 12);
+        assert!((9..=12).contains(&elapsed));
     }
 
     #[test]
@@ -389,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_real_id_generator() {
-        let gen = RealIdGenerator::default();
+        let gen = RealIdGenerator;
         let id1 = gen.next_id();
         let id2 = gen.next_id();
         assert_ne!(id1, id2);
@@ -446,16 +441,19 @@ mod tests {
     async fn test_event_publishing() {
         let (tx, mut rx) = mpsc::channel::<GraphEngineEvent>(16);
         let ctx = WorkflowContext::default().with_event_tx(tx);
-        
+
         // Send an event through the context
         if let Some(event_tx) = ctx.event_tx() {
-            event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
+            event_tx
+                .send(GraphEngineEvent::GraphRunStarted)
+                .await
+                .unwrap();
         }
-        
+
         // Receive and verify
         let event = rx.recv().await.unwrap();
         match event {
-            GraphEngineEvent::GraphRunStarted => {},
+            GraphEngineEvent::GraphRunStarted => {}
             _ => panic!("Unexpected event type"),
         }
     }
@@ -464,17 +462,23 @@ mod tests {
     async fn test_event_subscription_multiple_events() {
         let (tx, mut rx) = mpsc::channel::<GraphEngineEvent>(32);
         let ctx = WorkflowContext::default().with_event_tx(tx);
-        
+
         if let Some(event_tx) = ctx.event_tx() {
-            event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
-            event_tx.send(GraphEngineEvent::GraphRunSucceeded { 
-                outputs: std::collections::HashMap::new() 
-            }).await.unwrap();
+            event_tx
+                .send(GraphEngineEvent::GraphRunStarted)
+                .await
+                .unwrap();
+            event_tx
+                .send(GraphEngineEvent::GraphRunSucceeded {
+                    outputs: std::collections::HashMap::new(),
+                })
+                .await
+                .unwrap();
         }
-        
+
         let event1 = rx.recv().await.unwrap();
         let event2 = rx.recv().await.unwrap();
-        
+
         assert!(matches!(event1, GraphEngineEvent::GraphRunStarted));
         assert!(matches!(event2, GraphEngineEvent::GraphRunSucceeded { .. }));
     }
@@ -483,10 +487,10 @@ mod tests {
     async fn test_event_channel_closed() {
         let (tx, rx) = mpsc::channel::<GraphEngineEvent>(16);
         let ctx = WorkflowContext::default().with_event_tx(tx);
-        
+
         // Drop receiver to close channel
         drop(rx);
-        
+
         // Sending should fail
         if let Some(event_tx) = ctx.event_tx() {
             let result = event_tx.send(GraphEngineEvent::GraphRunStarted).await;
@@ -498,11 +502,14 @@ mod tests {
     async fn test_event_channel_full() {
         let (tx, rx) = mpsc::channel::<GraphEngineEvent>(1);
         let ctx = WorkflowContext::default().with_event_tx(tx);
-        
+
         if let Some(event_tx) = ctx.event_tx() {
             // Fill the channel
-            event_tx.send(GraphEngineEvent::GraphRunStarted).await.unwrap();
-            
+            event_tx
+                .send(GraphEngineEvent::GraphRunStarted)
+                .await
+                .unwrap();
+
             // Keep receiver alive but don't consume - this tests backpressure
             let send_future = event_tx.send(GraphEngineEvent::GraphRunStarted);
             tokio::select! {
@@ -512,7 +519,7 @@ mod tests {
                 }
             }
         }
-        
+
         // Drop receiver to clean up
         drop(rx);
     }
@@ -529,24 +536,28 @@ mod tests {
     fn test_workflow_context_accessors() {
         let runtime_group = Arc::new(RuntimeGroup::default());
         let ctx = WorkflowContext::new(runtime_group);
-        
+
         assert!(ctx.node_executor_registry().get("start").is_some());
         // Just verify the registry exists
         let _registry = ctx.llm_provider_registry();
-        assert!(ctx.execution_id.len() > 0);
+        assert!(!ctx.execution_id.is_empty());
     }
 
     #[test]
     fn test_workflow_context_workflow_id_field() {
-        let mut ctx = WorkflowContext::default();
-        ctx.workflow_id = Some("test_workflow".to_string());
+        let ctx = WorkflowContext {
+            workflow_id: Some("test_workflow".to_string()),
+            ..WorkflowContext::default()
+        };
         assert_eq!(ctx.workflow_id, Some("test_workflow".to_string()));
     }
 
     #[test]
     fn test_workflow_context_strict_template_field() {
-        let mut ctx = WorkflowContext::default();
-        ctx.strict_template = true;
+        let ctx = WorkflowContext {
+            strict_template: true,
+            ..WorkflowContext::default()
+        };
         assert!(ctx.strict_template());
     }
 
@@ -575,12 +586,12 @@ mod tests {
             workflow_id: None,
             start_time: 5000,
             time_provider: fake_time.clone(),
-            id_generator: Arc::new(RealIdGenerator::default()),
+            id_generator: Arc::new(RealIdGenerator),
             event_tx: None,
             sub_graph_runner: None,
             strict_template: false,
         };
-        
+
         assert_eq!(ctx.time_provider.now_timestamp(), 5000);
     }
 
@@ -599,7 +610,7 @@ mod tests {
             sub_graph_runner: None,
             strict_template: false,
         };
-        
+
         assert_eq!(ctx.id_generator.next_id(), "custom-0");
         assert_eq!(ctx.id_generator.next_id(), "custom-1");
     }

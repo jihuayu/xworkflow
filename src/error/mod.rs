@@ -4,12 +4,12 @@
 //! - [`WorkflowError`] — Top-level errors for workflow parsing, building, and running.
 //! - [`ErrorContext`] — Structured error metadata (code, retryability, severity).
 
-pub mod node_error;
 pub mod error_context;
+pub mod node_error;
 pub mod workflow_error;
 
-pub use node_error::NodeError;
 pub use error_context::{ErrorCode, ErrorContext, ErrorRetryability, ErrorSeverity};
+pub use node_error::NodeError;
 pub use workflow_error::WorkflowError;
 
 /// Convenience alias for workflow-level results.

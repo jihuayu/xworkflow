@@ -79,14 +79,20 @@ fn bench_template(c: &mut Criterion) {
         let items: Vec<String> = (0..100).map(|i| format!("i{}", i)).collect();
         vars.insert("items".to_string(), serde_json::json!(items));
         b.iter(|| {
-            let _ = black_box(render_jinja2("{% for i in items %}{{ i }} {% endfor %}", &vars));
+            let _ = black_box(render_jinja2(
+                "{% for i in items %}{{ i }} {% endfor %}",
+                &vars,
+            ));
         });
     });
 
     c.bench_function("jinja2_conditional", |b| {
         let vars = build_jinja_vars(1);
         b.iter(|| {
-            let _ = black_box(render_jinja2("{% if v0 %}yes{% else %}no{% endif %}", &vars));
+            let _ = black_box(render_jinja2(
+                "{% if v0 %}yes{% else %}no{% endif %}",
+                &vars,
+            ));
         });
     });
 

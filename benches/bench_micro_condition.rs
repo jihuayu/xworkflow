@@ -98,7 +98,11 @@ fn bench_condition(c: &mut Criterion) {
             let mut cases = Vec::new();
             for i in 0..10 {
                 let value = if last_match {
-                    if i == 9 { 20 } else { 5 }
+                    if i == 9 {
+                        20
+                    } else {
+                        5
+                    }
                 } else if i == 0 {
                     20
                 } else {

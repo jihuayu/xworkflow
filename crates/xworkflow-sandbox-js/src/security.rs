@@ -3,10 +3,10 @@ use std::ops::ControlFlow;
 use boa_engine::ast::expression::access::{PropertyAccess, PropertyAccessField};
 use boa_engine::ast::expression::literal::Literal;
 use boa_engine::ast::expression::{Call, Expression, Identifier, ImportCall, New};
+use boa_engine::ast::scope::Scope;
 use boa_engine::ast::statement::iteration::{DoWhileLoop, ForLoop, WhileLoop};
 use boa_engine::ast::visitor::{VisitWith, Visitor};
 use boa_engine::ast::Script;
-use boa_engine::ast::scope::Scope;
 use boa_engine::interner::Interner;
 use boa_engine::parser::{Parser, Source};
 
@@ -28,7 +28,7 @@ impl Default for JsSandboxSecurityConfig {
             max_code_length: 1_000_000,
             default_timeout: std::time::Duration::from_secs(30),
             max_memory_estimate: 32 * 1024 * 1024,
-            max_output_bytes: 1 * 1024 * 1024,
+            max_output_bytes: 1024 * 1024,
             freeze_globals: true,
             allowed_globals: vec![
                 "JSON".into(),
@@ -214,10 +214,7 @@ impl<'ast> Visitor<'ast> for AstSecurityVisitor<'_> {
 
     fn visit_for_loop(&mut self, node: &'ast ForLoop) -> ControlFlow<Self::BreakTy> {
         if node.condition().is_none()
-            || node
-                .condition()
-                .map(Self::is_literal_true)
-                .unwrap_or(false)
+            || node.condition().map(Self::is_literal_true).unwrap_or(false)
         {
             self.push_violation(ViolationKind::InfiniteLoopRisk, "for(;;)");
         }

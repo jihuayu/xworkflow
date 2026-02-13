@@ -1,0 +1,3 @@
+# Question classifier invalid-id fallback input
+
+query = "can you quote the price"

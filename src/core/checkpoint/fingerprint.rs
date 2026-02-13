@@ -9,7 +9,11 @@ use super::types::{ChangeSeverity, ContextFingerprint, EnvironmentChange, Resume
 
 impl ContextFingerprint {
     #[cfg(feature = "security")]
-    pub fn capture(context: &RuntimeContext, schema_hash: String, engine_config_hash: String) -> Self {
+    pub fn capture(
+        context: &RuntimeContext,
+        schema_hash: String,
+        engine_config_hash: String,
+    ) -> Self {
         let mut llm_providers: Vec<String> = context
             .llm_provider_registry()
             .list()
@@ -18,9 +22,7 @@ impl ContextFingerprint {
             .collect();
         llm_providers.sort();
 
-        let mut registered_node_types = context
-            .node_executor_registry()
-            .list_registered_types();
+        let mut registered_node_types = context.node_executor_registry().list_registered_types();
         registered_node_types.sort();
 
         let mut credential_groups: Vec<String> = context
@@ -72,7 +74,10 @@ impl ContextFingerprint {
     }
 }
 
-pub fn diff_fingerprints(saved: &ContextFingerprint, current: &ContextFingerprint) -> ResumeDiagnostic {
+pub fn diff_fingerprints(
+    saved: &ContextFingerprint,
+    current: &ContextFingerprint,
+) -> ResumeDiagnostic {
     let mut changes = Vec::new();
 
     if saved.schema_hash != current.schema_hash {
@@ -93,14 +98,18 @@ pub fn diff_fingerprints(saved: &ContextFingerprint, current: &ContextFingerprin
             };
             changes.push(EnvironmentChange {
                 component: "security_level".to_string(),
-                description: format!("Security level changed: {} → {}", saved_level, current_level),
+                description: format!(
+                    "Security level changed: {} → {}",
+                    saved_level, current_level
+                ),
                 severity,
             });
         }
         (Some(_), None) => {
             changes.push(EnvironmentChange {
                 component: "security_level".to_string(),
-                description: "Security was enabled at checkpoint time but is now disabled.".to_string(),
+                description: "Security was enabled at checkpoint time but is now disabled."
+                    .to_string(),
                 severity: ChangeSeverity::Danger,
             });
         }
@@ -145,7 +154,8 @@ pub fn diff_fingerprints(saved: &ContextFingerprint, current: &ContextFingerprin
         changes.push(EnvironmentChange {
             component: "network_policy".to_string(),
             description:
-                "Network policy has changed. HTTP/MCP nodes may be blocked by new restrictions.".to_string(),
+                "Network policy has changed. HTTP/MCP nodes may be blocked by new restrictions."
+                    .to_string(),
             severity: ChangeSeverity::Warning,
         });
     }

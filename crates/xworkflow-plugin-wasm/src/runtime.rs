@@ -212,8 +212,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::RwLock;
 
-    use anyhow::{anyhow, Result};
     use crate::host_functions::VariableAccess;
+    use anyhow::{anyhow, Result};
 
     fn basic_plugin_wat() -> &'static str {
         r#"(module
@@ -467,7 +467,9 @@ mod tests {
 
         let node_type = &manifest.node_types[0];
         let state = PluginState::new(manifest.id.clone(), manifest.capabilities.clone());
-        let result = runtime.execute_node(node_type, &Value::Null, state).unwrap();
+        let result = runtime
+            .execute_node(node_type, &Value::Null, state)
+            .unwrap();
         assert_eq!(result.get("echo"), Some(&Value::String("ok".to_string())));
 
         let hook_state = PluginState::new(manifest.id.clone(), manifest.capabilities.clone());

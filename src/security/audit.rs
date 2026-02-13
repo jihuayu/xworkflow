@@ -19,15 +19,40 @@ pub struct SecurityEvent {
 /// Categorisation of a security event.
 #[derive(Debug, Clone, Serialize)]
 pub enum SecurityEventType {
-    SsrfBlocked { url: String, reason: String },
-    SandboxViolation { sandbox_type: String, violation: String },
-    QuotaExceeded { quota_type: String, limit: u64, current: u64 },
-    CredentialAccess { provider: String, success: bool },
-    ToolInvocation { tool_name: String },
-    CodeAnalysisBlocked { violations: Vec<String> },
-    TemplateRenderingAnomaly { template_length: usize },
-    DslValidationFailed { errors: Vec<String> },
-    OutputSizeExceeded { node_id: String, max: usize, actual: usize },
+    SsrfBlocked {
+        url: String,
+        reason: String,
+    },
+    SandboxViolation {
+        sandbox_type: String,
+        violation: String,
+    },
+    QuotaExceeded {
+        quota_type: String,
+        limit: u64,
+        current: u64,
+    },
+    CredentialAccess {
+        provider: String,
+        success: bool,
+    },
+    ToolInvocation {
+        tool_name: String,
+    },
+    CodeAnalysisBlocked {
+        violations: Vec<String>,
+    },
+    TemplateRenderingAnomaly {
+        template_length: usize,
+    },
+    DslValidationFailed {
+        errors: Vec<String>,
+    },
+    OutputSizeExceeded {
+        node_id: String,
+        max: usize,
+        actual: usize,
+    },
 }
 
 /// Severity level attached to a [`SecurityEvent`].

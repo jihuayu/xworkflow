@@ -7,11 +7,11 @@ use xworkflow::core::variable_pool::{Segment, SegmentArray, Selector, VariablePo
 
 mod helpers;
 
-use helpers::{bench_runtime, DispatcherSetup};
 use helpers::workflow_builders::{
     build_branch_workflow, build_deep_branch_chain, build_diamond_workflow, build_fanout_workflow,
     build_iteration_workflow, build_linear_workflow, build_realistic_mixed_workflow,
 };
+use helpers::{bench_runtime, DispatcherSetup};
 
 fn build_start_end_workflow() -> String {
     r#"
@@ -47,7 +47,8 @@ fn bench_dispatch(c: &mut Criterion) {
     let yaml = build_start_end_workflow();
     let setup = DispatcherSetup::from_yaml(&yaml);
     group.bench_function("2_nodes", |b| {
-        b.to_async(&rt).iter(|| async { setup.run_hot(VariablePool::new()).await });
+        b.to_async(&rt)
+            .iter(|| async { setup.run_hot(VariablePool::new()).await });
     });
 
     for total_nodes in [5usize, 10, 50] {
@@ -56,7 +57,8 @@ fn bench_dispatch(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         let name = format!("{}_nodes", total_nodes);
         group.bench_function(&name, |b| {
-            b.to_async(&rt).iter(|| async { setup.run_hot(VariablePool::new()).await });
+            b.to_async(&rt)
+                .iter(|| async { setup.run_hot(VariablePool::new()).await });
         });
     }
     group.finish();
@@ -155,10 +157,7 @@ fn bench_dispatch(c: &mut Criterion) {
                 &Selector::new("start", "query"),
                 Segment::String("world".into()),
             );
-            pool.set(
-                &Selector::new("start", "flag"),
-                Segment::Boolean(true),
-            );
+            pool.set(&Selector::new("start", "flag"), Segment::Boolean(true));
             setup.run_hot(pool).await;
         });
     });

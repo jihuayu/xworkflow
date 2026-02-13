@@ -4,10 +4,7 @@ use crate::encoding::decode_text;
 use crate::{extraction_failed, metadata};
 
 pub fn extract_text(request: &ExtractionRequest) -> Result<ExtractionResult, ExtractError> {
-    let encoding = request
-        .options
-        .get("encoding")
-        .and_then(|v| v.as_str());
+    let encoding = request.options.get("encoding").and_then(|v| v.as_str());
     let decoded = decode_text(&request.content, encoding)?;
 
     let mut text = decoded.text;
@@ -24,10 +21,7 @@ pub fn extract_text(request: &ExtractionRequest) -> Result<ExtractionResult, Ext
 }
 
 pub fn extract_rtf(request: &ExtractionRequest) -> Result<ExtractionResult, ExtractError> {
-    let encoding = request
-        .options
-        .get("encoding")
-        .and_then(|v| v.as_str());
+    let encoding = request.options.get("encoding").and_then(|v| v.as_str());
     let decoded = decode_text(&request.content, encoding)?;
     let text = strip_rtf(&decoded.text);
 
@@ -120,7 +114,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn make_request(content: &str, filename: Option<&str>, format: OutputFormat) -> ExtractionRequest {
+    fn make_request(
+        content: &str,
+        filename: Option<&str>,
+        format: OutputFormat,
+    ) -> ExtractionRequest {
         ExtractionRequest {
             content: content.as_bytes().to_vec(),
             mime_type: "text/plain".to_string(),

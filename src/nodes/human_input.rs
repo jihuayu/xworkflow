@@ -6,12 +6,8 @@ use std::collections::HashMap;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::VariablePool;
 use crate::dsl::schema::{
-    FormFieldDefinition,
-    HumanInputNodeData,
-    HumanInputResumeMode,
-    HumanInputTimeoutAction,
-    NodeRunResult,
-    WorkflowNodeExecutionStatus,
+    FormFieldDefinition, HumanInputNodeData, HumanInputResumeMode, HumanInputTimeoutAction,
+    NodeRunResult, WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
@@ -65,22 +61,29 @@ impl NodeExecutor for HumanInputExecutor {
         variable_pool: &VariablePool,
         context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
-        let cfg: HumanInputNodeData =
-            serde_json::from_value(config.clone()).map_err(|e| NodeError::ConfigError(e.to_string()))?;
+        let cfg: HumanInputNodeData = serde_json::from_value(config.clone())
+            .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
         let prompt_text = match cfg.prompt_text.as_deref() {
             Some(template) => Some(
-                render_template_async_with_config(template, variable_pool, context.strict_template())
-                    .await
-                    .map_err(|e| NodeError::TemplateError(e.to_string()))?,
+                render_template_async_with_config(
+                    template,
+                    variable_pool,
+                    context.strict_template(),
+                )
+                .await
+                .map_err(|e| NodeError::TemplateError(e.to_string()))?,
             ),
             None => None,
         };
 
         let resume_token = context.id_generator.next_id();
-        let timeout_at = cfg
-            .timeout_secs
-            .map(|secs| context.time_provider.now_timestamp().saturating_add(secs as i64));
+        let timeout_at = cfg.timeout_secs.map(|secs| {
+            context
+                .time_provider
+                .now_timestamp()
+                .saturating_add(secs as i64)
+        });
         let node_title = config
             .get("title")
             .and_then(|v| v.as_str())
@@ -103,7 +106,8 @@ impl NodeExecutor for HumanInputExecutor {
         let mut metadata = HashMap::new();
         metadata.insert(
             HUMAN_INPUT_REQUEST_KEY.to_string(),
-            serde_json::to_value(&request).map_err(|e| NodeError::SerializationError(e.to_string()))?,
+            serde_json::to_value(&request)
+                .map_err(|e| NodeError::SerializationError(e.to_string()))?,
         );
         metadata.insert("resume_token".to_string(), Value::String(resume_token));
         metadata.insert("node_title".to_string(), Value::String(node_title));
@@ -129,7 +133,10 @@ mod tests {
     async fn test_human_input_executor_paused() {
         let executor = HumanInputExecutor;
         let mut pool = VariablePool::new();
-        pool.set(&Selector::new("start", "name"), Segment::String("alice".into()));
+        pool.set(
+            &Selector::new("start", "name"),
+            Segment::String("alice".into()),
+        );
         let context = RuntimeContext::default();
 
         let config = serde_json::json!({
@@ -155,11 +162,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.status, WorkflowNodeExecutionStatus::Paused);
-        assert_eq!(result.metadata.get("prompt"), Some(&Value::String("Hello alice".to_string())));
-        assert_eq!(result.metadata.get("node_title"), Some(&Value::String("Approval".to_string())));
+        assert_eq!(
+            result.metadata.get("prompt"),
+            Some(&Value::String("Hello alice".to_string()))
+        );
+        assert_eq!(
+            result.metadata.get("node_title"),
+            Some(&Value::String("Approval".to_string()))
+        );
 
-        let request_value = result.metadata.get(HUMAN_INPUT_REQUEST_KEY).expect("missing request metadata");
-        let request: HumanInputPauseRequest = serde_json::from_value(request_value.clone()).unwrap();
+        let request_value = result
+            .metadata
+            .get(HUMAN_INPUT_REQUEST_KEY)
+            .expect("missing request metadata");
+        let request: HumanInputPauseRequest =
+            serde_json::from_value(request_value.clone()).unwrap();
         assert_eq!(request.node_id, "approval");
         assert_eq!(request.node_title, "Approval");
         assert_eq!(request.resume_mode, HumanInputResumeMode::Form);
@@ -173,7 +190,10 @@ mod tests {
     async fn test_human_input_executor_resolve_default_selector() {
         let executor = HumanInputExecutor;
         let mut pool = VariablePool::new();
-        pool.set(&Selector::new("start", "city"), Segment::String("Shanghai".into()));
+        pool.set(
+            &Selector::new("start", "city"),
+            Segment::String("Shanghai".into()),
+        );
         let context = RuntimeContext::default();
 
         let config = serde_json::json!({
@@ -190,9 +210,16 @@ mod tests {
             ]
         });
 
-        let result = executor.execute("human", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("human", &config, &pool, &context)
+            .await
+            .unwrap();
         let request_value = result.metadata.get(HUMAN_INPUT_REQUEST_KEY).unwrap();
-        let request: HumanInputPauseRequest = serde_json::from_value(request_value.clone()).unwrap();
-        assert_eq!(request.form_fields[0].default_value, Some(Value::String("Shanghai".into())));
+        let request: HumanInputPauseRequest =
+            serde_json::from_value(request_value.clone()).unwrap();
+        assert_eq!(
+            request.form_fields[0].default_value,
+            Some(Value::String("Shanghai".into()))
+        );
     }
 }

@@ -3,6 +3,11 @@
 //! These nodes contain embedded sub-graphs that are executed via
 //! [`SubGraphRunner`](crate::core::SubGraphRunner).
 
+#![expect(
+    clippy::result_large_err,
+    reason = "Subgraph node executors use NodeError across recursive execution boundaries"
+)]
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,11 +25,11 @@ use crate::dsl::schema::{
 };
 use crate::error::NodeError;
 use crate::evaluator::condition::{evaluate_condition, ConditionResult};
-#[cfg(feature = "security")]
-use crate::security::SecurityLevel;
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::subgraph::SubGraphDefinition;
 use crate::nodes::utils::selector_from_value;
+#[cfg(feature = "security")]
+use crate::security::SecurityLevel;
 
 // ================================
 // Iteration Node
@@ -54,12 +59,14 @@ pub struct IterationNodeConfig {
     pub parallel_nums: Option<u32>,
 }
 
-fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Terminated }
+fn default_iteration_error_mode() -> IterationErrorMode {
+    IterationErrorMode::Terminated
+}
 
 fn resolve_sub_graph_runner(context: &RuntimeContext) -> Arc<dyn SubGraphRunner> {
     context
-    .sub_graph_runner()
-    .cloned()
+        .sub_graph_runner()
+        .cloned()
         .unwrap_or_else(|| Arc::new(DefaultSubGraphRunner))
 }
 
@@ -103,6 +110,12 @@ impl IterationNodeExecutor {
     }
 }
 
+impl Default for IterationNodeExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl NodeExecutor for IterationNodeExecutor {
     async fn execute(
@@ -131,9 +144,11 @@ impl NodeExecutor for IterationNodeExecutor {
         }
 
         let results = if Self::resolve_parallel(&config) {
-            self.execute_parallel(&config, items, variable_pool, context).await?
+            self.execute_parallel(&config, items, variable_pool, context)
+                .await?
         } else {
-            self.execute_sequential(&config, items, variable_pool, context).await?
+            self.execute_sequential(&config, items, variable_pool, context)
+                .await?
         };
 
         let mut outputs = HashMap::new();
@@ -285,6 +300,12 @@ pub struct LoopNodeConfig {
 
 pub struct LoopNodeExecutor;
 
+impl Default for LoopNodeExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoopNodeExecutor {
     pub fn new() -> Self {
         Self
@@ -338,7 +359,10 @@ impl NodeExecutor for LoopNodeExecutor {
                 )));
             }
 
-            match self.evaluate_condition(&config.condition, &loop_vars).await? {
+            match self
+                .evaluate_condition(&config.condition, &loop_vars)
+                .await?
+            {
                 ConditionResult::True => {}
                 ConditionResult::False => break,
                 ConditionResult::TypeMismatch(mismatch) => {
@@ -395,7 +419,10 @@ impl NodeExecutor for LoopNodeExecutor {
             config.output_variable.clone(),
             Segment::from_value(&Value::Object(loop_vars.into_iter().collect())),
         );
-        outputs.insert("_iterations".to_string(), Segment::Integer(iteration_count as i64));
+        outputs.insert(
+            "_iterations".to_string(),
+            Segment::Integer(iteration_count as i64),
+        );
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -459,6 +486,12 @@ pub struct ListOperatorNodeConfig {
 
 pub struct ListOperatorNodeExecutor;
 
+impl Default for ListOperatorNodeExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ListOperatorNodeExecutor {
     pub fn new() -> Self {
         Self
@@ -482,12 +515,8 @@ impl NodeExecutor for ListOperatorNodeExecutor {
         let input = pool.get(&input_selector).snapshot_to_value();
 
         let result = match config.operation {
-            ListOperation::Filter => {
-                self.execute_filter(&config, &input, pool, context).await?
-            }
-            ListOperation::Map => {
-                self.execute_map(&config, &input, pool, context).await?
-            }
+            ListOperation::Filter => self.execute_filter(&config, &input, pool, context).await?,
+            ListOperation::Map => self.execute_map(&config, &input, pool, context).await?,
             ListOperation::Sort => self.execute_sort(&config, &input)?,
             ListOperation::Slice => self.execute_slice(&config, &input)?,
             ListOperation::First => self.execute_first(&input)?,
@@ -530,7 +559,9 @@ impl ListOperatorNodeExecutor {
         })?;
 
         if config.parallel {
-            return self.execute_filter_parallel(items, sub_graph, pool, context).await;
+            return self
+                .execute_filter_parallel(items, sub_graph, pool, context)
+                .await;
         }
 
         let mut results = Vec::new();
@@ -596,10 +627,7 @@ impl ListOperatorNodeExecutor {
                 .await
                 .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
             let value = result.map_err(|e| NodeError::ExecutionError(e.to_string()))?;
-            keep_flags[index] = value
-                .get("keep")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            keep_flags[index] = value.get("keep").and_then(|v| v.as_bool()).unwrap_or(false);
         }
 
         let mut results = Vec::new();
@@ -646,7 +674,11 @@ impl ListOperatorNodeExecutor {
         Ok(Value::Array(results))
     }
 
-    fn execute_sort(&self, config: &ListOperatorNodeConfig, input: &Value) -> Result<Value, NodeError> {
+    fn execute_sort(
+        &self,
+        config: &ListOperatorNodeConfig,
+        input: &Value,
+    ) -> Result<Value, NodeError> {
         let mut items = input
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Input must be an array".to_string()))?
@@ -679,7 +711,11 @@ impl ListOperatorNodeExecutor {
         Ok(Value::Array(items))
     }
 
-    fn execute_slice(&self, config: &ListOperatorNodeConfig, input: &Value) -> Result<Value, NodeError> {
+    fn execute_slice(
+        &self,
+        config: &ListOperatorNodeConfig,
+        input: &Value,
+    ) -> Result<Value, NodeError> {
         let items = input
             .as_array()
             .ok_or_else(|| NodeError::TypeError("Input must be an array".to_string()))?;
@@ -887,7 +923,10 @@ mod tests {
             "output_variable": "results"
         });
 
-        let result = executor.execute("iter1", &config, &make_pool(), &context).await.unwrap();
+        let result = executor
+            .execute("iter1", &config, &make_pool(), &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("results"),
             Some(&Segment::from_value(&serde_json::json!([
@@ -927,7 +966,10 @@ mod tests {
             "output_variable": "loop_result"
         });
 
-        let result = executor.execute("loop1", &config, &make_pool(), &context).await.unwrap();
+        let result = executor
+            .execute("loop1", &config, &make_pool(), &context)
+            .await
+            .unwrap();
         assert!(result.outputs.ready().contains_key("loop_result"));
         assert_eq!(
             result.outputs.ready().get("_iterations"),
@@ -960,7 +1002,10 @@ mod tests {
             "output_variable": "filtered"
         });
 
-        let result = executor.execute("list1", &config, &make_pool(), &context).await.unwrap();
+        let result = executor
+            .execute("list1", &config, &make_pool(), &context)
+            .await
+            .unwrap();
         assert!(result.outputs.ready().get("filtered").is_some());
     }
 
@@ -988,7 +1033,10 @@ mod tests {
             "output_variable": "sorted"
         });
 
-        let result = executor.execute("ls1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ls1", &config, &pool, &context)
+            .await
+            .unwrap();
         let sorted = result.outputs.ready().get("sorted").unwrap();
         let arr = sorted.as_array().unwrap();
         assert_eq!(arr[0]["val"], 1);
@@ -1014,7 +1062,10 @@ mod tests {
             "sort_order": "desc",
             "output_variable": "sorted"
         });
-        let result = executor.execute("ls2", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ls2", &config, &pool, &context)
+            .await
+            .unwrap();
         let sorted = result.outputs.ready().get("sorted").unwrap();
         let arr = sorted.as_array().unwrap();
         assert_eq!(arr[0]["val"], 2);
@@ -1031,7 +1082,10 @@ mod tests {
             "end": 3,
             "output_variable": "sliced"
         });
-        let result = executor.execute("ls3", &config, &make_pool(), &context).await.unwrap();
+        let result = executor
+            .execute("ls3", &config, &make_pool(), &context)
+            .await
+            .unwrap();
         let sliced = result.outputs.ready().get("sliced").unwrap();
         assert_eq!(sliced.as_array().unwrap().len(), 2);
     }
@@ -1045,8 +1099,14 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "first_item"
         });
-        let result = executor.execute("ls4", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("first_item"), Some(&Segment::Integer(1)));
+        let result = executor
+            .execute("ls4", &config, &make_pool(), &context)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.outputs.ready().get("first_item"),
+            Some(&Segment::Integer(1))
+        );
     }
 
     #[tokio::test]
@@ -1058,8 +1118,14 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "last_item"
         });
-        let result = executor.execute("ls5", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("last_item"), Some(&Segment::Integer(3)));
+        let result = executor
+            .execute("ls5", &config, &make_pool(), &context)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.outputs.ready().get("last_item"),
+            Some(&Segment::Integer(3))
+        );
     }
 
     #[tokio::test]
@@ -1076,7 +1142,10 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "flat"
         });
-        let result = executor.execute("ls6", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ls6", &config, &pool, &context)
+            .await
+            .unwrap();
         let flat = result.outputs.ready().get("flat").unwrap();
         assert_eq!(flat.as_array().unwrap().len(), 4);
     }
@@ -1095,7 +1164,10 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "uniq"
         });
-        let result = executor.execute("ls7", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ls7", &config, &pool, &context)
+            .await
+            .unwrap();
         let uniq = result.outputs.ready().get("uniq").unwrap();
         assert_eq!(uniq.as_array().unwrap().len(), 3);
     }
@@ -1109,7 +1181,10 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "reversed"
         });
-        let result = executor.execute("ls8", &config, &make_pool(), &context).await.unwrap();
+        let result = executor
+            .execute("ls8", &config, &make_pool(), &context)
+            .await
+            .unwrap();
         let reversed = result.outputs.ready().get("reversed").unwrap();
         let arr = reversed.as_array().unwrap();
         assert_eq!(arr[0], 3);
@@ -1131,7 +1206,10 @@ mod tests {
             "second_input_selector": "other.list",
             "output_variable": "concated"
         });
-        let result = executor.execute("ls9", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ls9", &config, &pool, &context)
+            .await
+            .unwrap();
         let concated = result.outputs.ready().get("concated").unwrap();
         assert_eq!(concated.as_array().unwrap().len(), 5);
     }
@@ -1145,8 +1223,14 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "len"
         });
-        let result = executor.execute("ls10", &config, &make_pool(), &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("len"), Some(&Segment::Integer(3)));
+        let result = executor
+            .execute("ls10", &config, &make_pool(), &context)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.outputs.ready().get("len"),
+            Some(&Segment::Integer(3))
+        );
     }
 
     #[tokio::test]
@@ -1163,8 +1247,14 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "first_item"
         });
-        let result = executor.execute("ls11", &config, &pool, &context).await.unwrap();
-        assert_eq!(result.outputs.ready().get("first_item"), Some(&Segment::None));
+        let result = executor
+            .execute("ls11", &config, &pool, &context)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.outputs.ready().get("first_item"),
+            Some(&Segment::None)
+        );
     }
 
     #[tokio::test]
@@ -1192,7 +1282,8 @@ mod tests {
         let config: IterationNodeConfig = serde_json::from_value(serde_json::json!({
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "out"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(IterationNodeExecutor::resolve_parallelism(&config), 10);
     }
 
@@ -1202,7 +1293,8 @@ mod tests {
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "out",
             "parallelism": 4
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(IterationNodeExecutor::resolve_parallelism(&config), 4);
     }
 
@@ -1212,7 +1304,8 @@ mod tests {
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "out",
             "is_parallel": true
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(IterationNodeExecutor::resolve_parallel(&config));
     }
 
@@ -1221,7 +1314,8 @@ mod tests {
         let config: IterationNodeConfig = serde_json::from_value(serde_json::json!({
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "out"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(IterationNodeExecutor::resolve_max_iterations(&config), 1000);
     }
 
@@ -1265,10 +1359,18 @@ mod tests {
     #[test]
     fn test_list_operation_serde_roundtrip() {
         let ops = vec![
-            ListOperation::Filter, ListOperation::Map, ListOperation::Sort,
-            ListOperation::Slice, ListOperation::First, ListOperation::Last,
-            ListOperation::Flatten, ListOperation::Unique, ListOperation::Reverse,
-            ListOperation::Concat, ListOperation::Reduce, ListOperation::Length,
+            ListOperation::Filter,
+            ListOperation::Map,
+            ListOperation::Sort,
+            ListOperation::Slice,
+            ListOperation::First,
+            ListOperation::Last,
+            ListOperation::Flatten,
+            ListOperation::Unique,
+            ListOperation::Reverse,
+            ListOperation::Concat,
+            ListOperation::Reduce,
+            ListOperation::Length,
         ];
         for op in ops {
             let json = serde_json::to_string(&op).unwrap();
@@ -1317,7 +1419,9 @@ mod tests {
         });
         let executor = ListOperatorNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("concat_err", &config, &pool, &context).await;
+        let result = executor
+            .execute("concat_err", &config, &pool, &context)
+            .await;
         assert!(result.is_err());
     }
 
@@ -1340,7 +1444,9 @@ mod tests {
         });
         let executor = ListOperatorNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("concat_type", &config, &pool, &context).await;
+        let result = executor
+            .execute("concat_type", &config, &pool, &context)
+            .await;
         assert!(result.is_err());
     }
 
@@ -1350,7 +1456,10 @@ mod tests {
             input_selector: None,
             parallel: false,
             parallelism: None,
-            sub_graph: SubGraphDefinition { nodes: vec![], edges: vec![] },
+            sub_graph: SubGraphDefinition {
+                nodes: vec![],
+                edges: vec![],
+            },
             output_variable: "out".into(),
             max_iterations: None,
             error_handle_mode: IterationErrorMode::Terminated,
@@ -1368,7 +1477,10 @@ mod tests {
             input_selector: Some(serde_json::json!(42)), // not an array of strings
             parallel: false,
             parallelism: None,
-            sub_graph: SubGraphDefinition { nodes: vec![], edges: vec![] },
+            sub_graph: SubGraphDefinition {
+                nodes: vec![],
+                edges: vec![],
+            },
             output_variable: "out".into(),
             max_iterations: None,
             error_handle_mode: IterationErrorMode::Terminated,
@@ -1382,7 +1494,10 @@ mod tests {
 
     #[test]
     fn test_default_iteration_error_mode() {
-        assert!(matches!(default_iteration_error_mode(), IterationErrorMode::Terminated));
+        assert!(matches!(
+            default_iteration_error_mode(),
+            IterationErrorMode::Terminated
+        ));
     }
 
     #[tokio::test]
@@ -1406,7 +1521,9 @@ mod tests {
         });
         let executor = ListOperatorNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("sort_mixed", &config, &pool, &context).await;
+        let result = executor
+            .execute("sort_mixed", &config, &pool, &context)
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1425,7 +1542,10 @@ mod tests {
         });
         let executor = ListOperatorNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("slice_def", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("slice_def", &config, &pool, &context)
+            .await
+            .unwrap();
         let out = result.outputs.ready().get("out").unwrap();
         assert_eq!(out, &serde_json::json!([1, 2, 3]));
     }
@@ -1445,7 +1565,10 @@ mod tests {
         });
         let executor = ListOperatorNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("slice_far", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("slice_far", &config, &pool, &context)
+            .await
+            .unwrap();
         let out = result.outputs.ready().get("out").unwrap();
         assert_eq!(out, &serde_json::json!([]));
     }
@@ -1492,16 +1615,18 @@ mod tests {
             &Selector::new("input", "items"),
             Segment::from_value(&serde_json::json!([1, 2, 3])),
         );
-        
+
         let config = serde_json::json!({
             "input_selector": "input.items",
             "error_handle_mode": "continue_on_error",
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "results"
         });
-        
+
         // With Continue mode, even if sub-graph has issues, iteration should succeed
-        let result = executor.execute("iter_continue", &config, &pool, &context).await;
+        let result = executor
+            .execute("iter_continue", &config, &pool, &context)
+            .await;
         // Ensure iteration succeeds in Continue mode
         assert!(result.is_ok());
     }
@@ -1510,13 +1635,15 @@ mod tests {
     async fn test_loop_missing_condition() {
         let executor = LoopNodeExecutor::new();
         let context = RuntimeContext::default();
-        
+
         let config = serde_json::json!({
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "result"
         });
-        
-        let result = executor.execute("loop_no_cond", &config, &make_pool(), &context).await;
+
+        let result = executor
+            .execute("loop_no_cond", &config, &make_pool(), &context)
+            .await;
         // Should fail without condition
         assert!(result.is_err());
     }
@@ -1525,7 +1652,7 @@ mod tests {
     async fn test_list_operator_map() {
         let executor = ListOperatorNodeExecutor::new();
         let context = RuntimeContext::default();
-        
+
         let config = serde_json::json!({
             "operation": "map",
             "input_selector": "input.items",
@@ -1544,8 +1671,10 @@ mod tests {
             },
             "output_variable": "mapped"
         });
-        
-        let result = executor.execute("list_map", &config, &make_pool(), &context).await;
+
+        let result = executor
+            .execute("list_map", &config, &make_pool(), &context)
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1553,7 +1682,7 @@ mod tests {
     async fn test_list_operator_reduce() {
         let executor = ListOperatorNodeExecutor::new();
         let context = RuntimeContext::default();
-        
+
         let config = serde_json::json!({
             "operation": "reduce",
             "input_selector": "input.items",
@@ -1573,8 +1702,10 @@ mod tests {
             },
             "output_variable": "reduced"
         });
-        
-        let result = executor.execute("list_reduce", &config, &make_pool(), &context).await;
+
+        let result = executor
+            .execute("list_reduce", &config, &make_pool(), &context)
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1586,7 +1717,7 @@ mod tests {
             "input_selector": "input.items",
             "output_variable": "out"
         });
-        
+
         let result: Result<ListOperatorNodeConfig, _> = serde_json::from_value(config);
         assert!(result.is_err());
     }
@@ -1595,7 +1726,7 @@ mod tests {
     async fn test_iteration_parallel_execution() {
         let executor = IterationNodeExecutor::new();
         let context = RuntimeContext::default();
-        
+
         let config = serde_json::json!({
             "input_selector": "input.items",
             "parallel": true,
@@ -1613,8 +1744,10 @@ mod tests {
             },
             "output_variable": "results"
         });
-        
-        let result = executor.execute("iter_parallel", &config, &make_pool(), &context).await;
+
+        let result = executor
+            .execute("iter_parallel", &config, &make_pool(), &context)
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1630,7 +1763,7 @@ mod tests {
     async fn test_loop_condition_evaluation_error() {
         let executor = LoopNodeExecutor::new();
         let context = RuntimeContext::default();
-        
+
         let config = serde_json::json!({
             "condition": {
                 "variable_selector": "nonexistent.var",
@@ -1641,8 +1774,10 @@ mod tests {
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "result"
         });
-        
-        let result = executor.execute("loop_cond_err", &config, &make_pool(), &context).await;
+
+        let result = executor
+            .execute("loop_cond_err", &config, &make_pool(), &context)
+            .await;
         assert!(result.is_ok()); // Should handle condition evaluation errors gracefully
     }
 
@@ -1655,14 +1790,17 @@ mod tests {
             &Selector::new("input", "items"),
             Segment::from_value(&serde_json::json!([[[1, 2]], [[3]], 4])),
         );
-        
+
         let config = serde_json::json!({
             "operation": "flatten",
             "input_selector": "input.items",
             "output_variable": "flat"
         });
-        
-        let result = executor.execute("flatten_nested", &config, &pool, &context).await.unwrap();
+
+        let result = executor
+            .execute("flatten_nested", &config, &pool, &context)
+            .await
+            .unwrap();
         let flat = result.outputs.ready().get("flat").unwrap();
         // Flatten only goes one level deep
         assert!(flat.as_array().is_some());
@@ -1681,14 +1819,17 @@ mod tests {
                 {"id": 1, "name": "a"}
             ])),
         );
-        
+
         let config = serde_json::json!({
             "operation": "unique",
             "input_selector": "input.items",
             "output_variable": "uniq"
         });
-        
-        let result = executor.execute("uniq_obj", &config, &pool, &context).await.unwrap();
+
+        let result = executor
+            .execute("uniq_obj", &config, &pool, &context)
+            .await
+            .unwrap();
         let uniq = result.outputs.ready().get("uniq").unwrap();
         assert_eq!(uniq.as_array().unwrap().len(), 2);
     }

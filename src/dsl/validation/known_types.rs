@@ -7,33 +7,35 @@ pub const RESERVED_NAMESPACES: &[&str] = &["sys", "env", "conversation", "loop"]
 pub const BRANCH_NODE_TYPES: &[&str] = &["if-else", "question-classifier"];
 
 #[cfg(all(feature = "builtin-docextract-node", feature = "builtin-agent-node"))]
-pub const STUB_NODE_TYPES: &[&str] = &[
-    "knowledge-retrieval",
-    "question-classifier",
-    "parameter-extractor",
-];
+pub const STUB_NODE_TYPES: &[&str] = &["knowledge-retrieval", "parameter-extractor"];
 
-#[cfg(all(not(feature = "builtin-docextract-node"), feature = "builtin-agent-node"))]
+#[cfg(all(
+    not(feature = "builtin-docextract-node"),
+    feature = "builtin-agent-node"
+))]
 pub const STUB_NODE_TYPES: &[&str] = &[
     "knowledge-retrieval",
-    "question-classifier",
     "parameter-extractor",
     "document-extractor",
 ];
 
-#[cfg(all(feature = "builtin-docextract-node", not(feature = "builtin-agent-node")))]
+#[cfg(all(
+    feature = "builtin-docextract-node",
+    not(feature = "builtin-agent-node")
+))]
 pub const STUB_NODE_TYPES: &[&str] = &[
     "knowledge-retrieval",
-    "question-classifier",
     "parameter-extractor",
     "tool",
     "agent",
 ];
 
-#[cfg(all(not(feature = "builtin-docextract-node"), not(feature = "builtin-agent-node")))]
+#[cfg(all(
+    not(feature = "builtin-docextract-node"),
+    not(feature = "builtin-agent-node")
+))]
 pub const STUB_NODE_TYPES: &[&str] = &[
     "knowledge-retrieval",
-    "question-classifier",
     "parameter-extractor",
     "tool",
     "document-extractor",
@@ -48,7 +50,10 @@ pub fn is_known_node_type(node_type: &str) -> bool {
 }
 
 pub fn is_stub_node_type(node_type: &str) -> bool {
-    STUB_NODE_TYPES.iter().any(|t| *t == node_type)
+    if node_type == "question-classifier" {
+        return !cfg!(feature = "builtin-llm-node");
+    }
+    STUB_NODE_TYPES.contains(&node_type)
 }
 
 #[cfg(test)]
@@ -74,7 +79,6 @@ mod tests {
     #[test]
     fn test_stub_node_types() {
         assert!(STUB_NODE_TYPES.contains(&"knowledge-retrieval"));
-        assert!(STUB_NODE_TYPES.contains(&"question-classifier"));
         assert!(STUB_NODE_TYPES.contains(&"parameter-extractor"));
 
         #[cfg(not(feature = "builtin-agent-node"))]
@@ -118,6 +122,9 @@ mod tests {
     fn test_is_stub_node_type_true() {
         assert!(is_stub_node_type("knowledge-retrieval"));
 
+        #[cfg(not(feature = "builtin-llm-node"))]
+        assert!(is_stub_node_type("question-classifier"));
+
         #[cfg(not(feature = "builtin-agent-node"))]
         assert!(is_stub_node_type("tool"));
 
@@ -131,5 +138,8 @@ mod tests {
         assert!(!is_stub_node_type("end"));
         assert!(!is_stub_node_type("code"));
         assert!(!is_stub_node_type("plugin.something"));
+
+        #[cfg(feature = "builtin-llm-node")]
+        assert!(!is_stub_node_type("question-classifier"));
     }
 }

@@ -29,8 +29,8 @@ impl RmcpClient {
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Self, McpError> {
-        use rmcp::ServiceExt;
         use rmcp::transport::TokioChildProcess;
+        use rmcp::ServiceExt;
 
         let mut process = tokio::process::Command::new(command);
         process.args(args);
@@ -38,10 +38,10 @@ impl RmcpClient {
 
         let transport = TokioChildProcess::new(&mut process)
             .map_err(|e| McpError::ConnectionError(e.to_string()))?;
-        let inner = ()
-            .serve(transport)
-            .await
-            .map_err(|e| McpError::ConnectionError(e.to_string()))?;
+        let inner =
+            ().serve(transport)
+                .await
+                .map_err(|e| McpError::ConnectionError(e.to_string()))?;
         Ok(Self {
             inner: tokio::sync::Mutex::new(inner),
         })
@@ -51,8 +51,8 @@ impl RmcpClient {
         url: &str,
         headers: &HashMap<String, String>,
     ) -> Result<Self, McpError> {
-        use rmcp::ServiceExt;
         use rmcp::transport::SseTransport;
+        use rmcp::ServiceExt;
 
         let mut header_map = reqwest::header::HeaderMap::new();
         for (key, value) in headers {
@@ -70,10 +70,10 @@ impl RmcpClient {
         let transport = SseTransport::start_with_client(url, http_client)
             .await
             .map_err(|e| McpError::ConnectionError(e.to_string()))?;
-        let inner = ()
-            .serve(transport)
-            .await
-            .map_err(|e| McpError::ConnectionError(e.to_string()))?;
+        let inner =
+            ().serve(transport)
+                .await
+                .map_err(|e| McpError::ConnectionError(e.to_string()))?;
         Ok(Self {
             inner: tokio::sync::Mutex::new(inner),
         })
@@ -104,10 +104,7 @@ impl McpClient for RmcpClient {
     async fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, McpError> {
         use rmcp::model::CallToolRequestParam;
 
-        let args = arguments
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let args = arguments.as_object().cloned().unwrap_or_default();
 
         let response = self
             .inner

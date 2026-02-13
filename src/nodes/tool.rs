@@ -5,33 +5,30 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-#[cfg(feature = "security")]
-use parking_lot::RwLock as ParkingRwLock;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, Selector, VariablePool};
 use crate::dsl::schema::{
-    McpTransport,
-    McpServerConfig,
-    NodeOutputs,
-    NodeRunResult,
-    ToolNodeData,
+    McpServerConfig, McpTransport, NodeOutputs, NodeRunResult, ToolNodeData,
     WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
-use crate::llm::executor::render_arguments;
 #[cfg(feature = "security")]
 use crate::llm::executor::audit_security_event;
+use crate::llm::executor::render_arguments;
 use crate::mcp::pool::McpConnectionPool;
 use crate::nodes::executor::NodeExecutor;
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEventType};
 #[cfg(feature = "security")]
 use crate::security::network::validate_url;
+#[cfg(feature = "security")]
+use parking_lot::RwLock as ParkingRwLock;
 
 pub struct ToolNodeExecutor {
     mcp_pool: Arc<RwLock<McpConnectionPool>>,
 }
 
+#[allow(clippy::result_large_err)]
 impl ToolNodeExecutor {
     pub fn new(mcp_pool: Arc<RwLock<McpConnectionPool>>) -> Self {
         Self { mcp_pool }
@@ -41,27 +38,37 @@ impl ToolNodeExecutor {
         &self,
         cfg: &ToolNodeData,
         variable_pool: &VariablePool,
-    ) -> Result<McpServerConfig, NodeError> {
+    ) -> Result<McpServerConfig, Box<NodeError>> {
         if let Some(server) = &cfg.mcp_server {
             return Ok(server.clone());
         }
 
         let Some(server_ref) = cfg.mcp_server_ref.as_ref() else {
-            return Err(NodeError::ConfigError(
+            return Err(Box::new(NodeError::ConfigError(
                 "tool node requires mcp_server or mcp_server_ref".to_string(),
-            ));
+            )));
         };
 
         let mcp_servers = variable_pool
             .get(&Selector::new("sys", "__mcp_servers"))
             .to_value();
         let mcp_servers: HashMap<String, McpServerConfig> = serde_json::from_value(mcp_servers)
-            .map_err(|e| NodeError::ConfigError(format!("invalid workflow mcp_servers: {}", e)))?;
+            .map_err(|e| {
+                Box::new(NodeError::ConfigError(format!(
+                    "invalid workflow mcp_servers: {}",
+                    e
+                )))
+            })?;
 
         mcp_servers
             .get(server_ref)
             .cloned()
-            .ok_or_else(|| NodeError::ConfigError(format!("mcp_server_ref '{}' not found", server_ref)))
+            .ok_or_else(|| {
+                Box::new(NodeError::ConfigError(format!(
+                    "mcp_server_ref '{}' not found",
+                    server_ref
+                )))
+            })
     }
 
     #[cfg(feature = "security")]
@@ -82,8 +89,7 @@ impl ToolNodeExecutor {
             "mcp_tool": tool_name,
             "arguments": arguments,
         });
-        gate
-            .check_before_node(node_id, "mcp-tool-call", &tool_config)
+        gate.check_before_node(node_id, "mcp-tool-call", &tool_config)
             .await?;
 
         audit_security_event(
@@ -112,7 +118,9 @@ impl NodeExecutor for ToolNodeExecutor {
         let cfg: ToolNodeData = serde_json::from_value(config.clone())
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
-        let server_config = self.resolve_server_config(&cfg, variable_pool)?;
+        let server_config = self
+            .resolve_server_config(&cfg, variable_pool)
+            .map_err(|e| *e)?;
 
         #[cfg(feature = "security")]
         if let McpTransport::Http { url, .. } = &server_config.transport {
@@ -143,14 +151,7 @@ impl NodeExecutor for ToolNodeExecutor {
         let arguments = render_arguments(&cfg.arguments, variable_pool, context.strict_template())?;
 
         #[cfg(feature = "security")]
-        self
-            .check_tool_security(
-                context,
-                node_id,
-                &cfg.tool_name,
-                &arguments,
-                variable_pool,
-            )
+        self.check_tool_security(context, node_id, &cfg.tool_name, &arguments, variable_pool)
             .await?;
 
         let result = client
@@ -214,9 +215,12 @@ mod tests {
     async fn test_tool_node_basic() {
         let server = test_server();
         let pool = Arc::new(RwLock::new(McpConnectionPool::new()));
-        pool.write()
-            .await
-            .insert_connection(&server, Arc::new(MockMcpClient { response: "ok".to_string() }));
+        pool.write().await.insert_connection(
+            &server,
+            Arc::new(MockMcpClient {
+                response: "ok".to_string(),
+            }),
+        );
 
         let executor = ToolNodeExecutor::new(pool);
         let config = serde_json::json!({
@@ -227,9 +231,15 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("tool1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("tool1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
-        assert_eq!(result.outputs.ready().get("result"), Some(&Segment::String("ok".to_string())));
+        assert_eq!(
+            result.outputs.ready().get("result"),
+            Some(&Segment::String("ok".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -242,7 +252,9 @@ mod tests {
 
         let variable_pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("tool1", &config, &variable_pool, &context).await;
+        let result = executor
+            .execute("tool1", &config, &variable_pool, &context)
+            .await;
         assert!(result.is_err());
     }
 
@@ -250,9 +262,12 @@ mod tests {
     async fn test_tool_node_template_args() {
         let server = test_server();
         let pool = Arc::new(RwLock::new(McpConnectionPool::new()));
-        pool.write()
-            .await
-            .insert_connection(&server, Arc::new(MockMcpClient { response: "ok".to_string() }));
+        pool.write().await.insert_connection(
+            &server,
+            Arc::new(MockMcpClient {
+                response: "ok".to_string(),
+            }),
+        );
 
         let executor = ToolNodeExecutor::new(pool);
         let config = serde_json::json!({
@@ -262,10 +277,16 @@ mod tests {
         });
 
         let mut variable_pool = VariablePool::new();
-        variable_pool.set(&Selector::new("start", "id"), Segment::String("42".to_string()));
+        variable_pool.set(
+            &Selector::new("start", "id"),
+            Segment::String("42".to_string()),
+        );
 
         let context = RuntimeContext::default();
-        let result = executor.execute("tool1", &config, &variable_pool, &context).await.unwrap();
+        let result = executor
+            .execute("tool1", &config, &variable_pool, &context)
+            .await
+            .unwrap();
 
         assert_eq!(
             result.outputs.ready().get("result"),

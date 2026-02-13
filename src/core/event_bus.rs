@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::dsl::schema::NodeRunResult;
 use crate::core::variable_pool::Selector;
+use crate::dsl::schema::NodeRunResult;
 
 /// Reason for pause
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,11 +226,17 @@ impl GraphEngineEvent {
                 "type": "graph_run_succeeded",
                 "data": { "outputs": outputs }
             }),
-            GraphEngineEvent::GraphRunFailed { error, exceptions_count } => serde_json::json!({
+            GraphEngineEvent::GraphRunFailed {
+                error,
+                exceptions_count,
+            } => serde_json::json!({
                 "type": "graph_run_failed",
                 "data": { "error": error, "exceptions_count": exceptions_count }
             }),
-            GraphEngineEvent::GraphRunPartialSucceeded { exceptions_count, outputs } => serde_json::json!({
+            GraphEngineEvent::GraphRunPartialSucceeded {
+                exceptions_count,
+                outputs,
+            } => serde_json::json!({
                 "type": "graph_run_partial_succeeded",
                 "data": { "exceptions_count": exceptions_count, "outputs": outputs }
             }),
@@ -238,7 +244,10 @@ impl GraphEngineEvent {
                 "type": "graph_run_aborted",
                 "data": { "reason": reason, "outputs": outputs }
             }),
-            GraphEngineEvent::WorkflowSafeStopped { interrupted_nodes, checkpoint_saved } => serde_json::json!({
+            GraphEngineEvent::WorkflowSafeStopped {
+                interrupted_nodes,
+                checkpoint_saved,
+            } => serde_json::json!({
                 "type": "workflow_safe_stopped",
                 "data": { "interrupted_nodes": interrupted_nodes, "checkpoint_saved": checkpoint_saved }
             }),
@@ -310,7 +319,14 @@ impl GraphEngineEvent {
                     "timeout_action": timeout_action,
                 }
             }),
-            GraphEngineEvent::NodeRunStarted { id, node_id, node_type, node_title, predecessor_node_id, parallel_group_id } => serde_json::json!({
+            GraphEngineEvent::NodeRunStarted {
+                id,
+                node_id,
+                node_type,
+                node_title,
+                predecessor_node_id,
+                parallel_group_id,
+            } => serde_json::json!({
                 "type": "node_run_started",
                 "data": {
                     "id": id,
@@ -321,11 +337,22 @@ impl GraphEngineEvent {
                     "parallel_group_id": parallel_group_id,
                 }
             }),
-            GraphEngineEvent::NodeRunSucceeded { id, node_id, node_type, node_run_result } => serde_json::json!({
+            GraphEngineEvent::NodeRunSucceeded {
+                id,
+                node_id,
+                node_type,
+                node_run_result,
+            } => serde_json::json!({
                 "type": "node_run_succeeded",
                 "data": { "id": id, "node_id": node_id, "node_type": node_type, "status": "succeeded", "outputs": node_run_result.outputs.to_value_map() }
             }),
-            GraphEngineEvent::NodeRunFailed { id, node_id, node_type, node_run_result, error } => serde_json::json!({
+            GraphEngineEvent::NodeRunFailed {
+                id,
+                node_id,
+                node_type,
+                node_run_result,
+                error,
+            } => serde_json::json!({
                 "type": "node_run_failed",
                 "data": {
                     "id": id,
@@ -336,7 +363,13 @@ impl GraphEngineEvent {
                     "error_detail": node_run_result.error.as_ref().and_then(|e| e.detail.clone()),
                 }
             }),
-            GraphEngineEvent::NodeRunException { id, node_id, node_type, node_run_result, error } => serde_json::json!({
+            GraphEngineEvent::NodeRunException {
+                id,
+                node_id,
+                node_type,
+                node_run_result,
+                error,
+            } => serde_json::json!({
                 "type": "node_run_exception",
                 "data": {
                     "id": id,
@@ -347,11 +380,25 @@ impl GraphEngineEvent {
                     "error_detail": node_run_result.error.as_ref().and_then(|e| e.detail.clone()),
                 }
             }),
-            GraphEngineEvent::NodeRunStreamChunk { id, node_id, node_type, chunk, selector, is_final } => serde_json::json!({
+            GraphEngineEvent::NodeRunStreamChunk {
+                id,
+                node_id,
+                node_type,
+                chunk,
+                selector,
+                is_final,
+            } => serde_json::json!({
                 "type": "node_run_stream_chunk",
                 "data": { "id": id, "node_id": node_id, "node_type": node_type, "chunk": chunk, "selector": selector, "is_final": is_final }
             }),
-            GraphEngineEvent::NodeRunRetry { id, node_id, node_type, node_title, error, retry_index } => serde_json::json!({
+            GraphEngineEvent::NodeRunRetry {
+                id,
+                node_id,
+                node_type,
+                node_title,
+                error,
+                retry_index,
+            } => serde_json::json!({
                 "type": "node_run_retry",
                 "data": { "id": id, "node_id": node_id, "node_type": node_type, "node_title": node_title, "error": error, "retry_index": retry_index }
             }),
@@ -367,35 +414,71 @@ impl GraphEngineEvent {
                 "type": "error_handler_failed",
                 "data": { "error": error }
             }),
-            GraphEngineEvent::IterationStarted { node_id, node_title, inputs } => serde_json::json!({
+            GraphEngineEvent::IterationStarted {
+                node_id,
+                node_title,
+                inputs,
+            } => serde_json::json!({
                 "type": "iteration_started",
                 "data": { "node_id": node_id, "node_title": node_title, "inputs": inputs }
             }),
-            GraphEngineEvent::IterationNext { node_id, node_title, index } => serde_json::json!({
+            GraphEngineEvent::IterationNext {
+                node_id,
+                node_title,
+                index,
+            } => serde_json::json!({
                 "type": "iteration_next",
                 "data": { "node_id": node_id, "node_title": node_title, "index": index }
             }),
-            GraphEngineEvent::IterationSucceeded { node_id, node_title, outputs, steps } => serde_json::json!({
+            GraphEngineEvent::IterationSucceeded {
+                node_id,
+                node_title,
+                outputs,
+                steps,
+            } => serde_json::json!({
                 "type": "iteration_succeeded",
                 "data": { "node_id": node_id, "node_title": node_title, "outputs": outputs, "steps": steps }
             }),
-            GraphEngineEvent::IterationFailed { node_id, node_title, error, steps } => serde_json::json!({
+            GraphEngineEvent::IterationFailed {
+                node_id,
+                node_title,
+                error,
+                steps,
+            } => serde_json::json!({
                 "type": "iteration_failed",
                 "data": { "node_id": node_id, "node_title": node_title, "error": error, "steps": steps }
             }),
-            GraphEngineEvent::LoopStarted { node_id, node_title, inputs } => serde_json::json!({
+            GraphEngineEvent::LoopStarted {
+                node_id,
+                node_title,
+                inputs,
+            } => serde_json::json!({
                 "type": "loop_started",
                 "data": { "node_id": node_id, "node_title": node_title, "inputs": inputs }
             }),
-            GraphEngineEvent::LoopNext { node_id, node_title, index } => serde_json::json!({
+            GraphEngineEvent::LoopNext {
+                node_id,
+                node_title,
+                index,
+            } => serde_json::json!({
                 "type": "loop_next",
                 "data": { "node_id": node_id, "node_title": node_title, "index": index }
             }),
-            GraphEngineEvent::LoopSucceeded { node_id, node_title, outputs, steps } => serde_json::json!({
+            GraphEngineEvent::LoopSucceeded {
+                node_id,
+                node_title,
+                outputs,
+                steps,
+            } => serde_json::json!({
                 "type": "loop_succeeded",
                 "data": { "node_id": node_id, "node_title": node_title, "outputs": outputs, "steps": steps }
             }),
-            GraphEngineEvent::LoopFailed { node_id, node_title, error, steps } => serde_json::json!({
+            GraphEngineEvent::LoopFailed {
+                node_id,
+                node_title,
+                error,
+                steps,
+            } => serde_json::json!({
                 "type": "loop_failed",
                 "data": { "node_id": node_id, "node_title": node_title, "error": error, "steps": steps }
             }),
@@ -407,7 +490,11 @@ impl GraphEngineEvent {
                 "type": "plugin_unloaded",
                 "data": { "plugin_id": plugin_id }
             }),
-            GraphEngineEvent::PluginEvent { plugin_id, event_type, data } => serde_json::json!({
+            GraphEngineEvent::PluginEvent {
+                plugin_id,
+                event_type,
+                data,
+            } => serde_json::json!({
                 "type": "plugin_event",
                 "data": { "plugin_id": plugin_id, "event_type": event_type, "data": data }
             }),
@@ -415,7 +502,13 @@ impl GraphEngineEvent {
                 "type": "plugin_error",
                 "data": { "plugin_id": plugin_id, "error": error }
             }),
-            GraphEngineEvent::DebugPaused { reason, node_id, node_type, node_title, phase } => serde_json::json!({
+            GraphEngineEvent::DebugPaused {
+                reason,
+                node_id,
+                node_type,
+                node_title,
+                phase,
+            } => serde_json::json!({
                 "type": "debug_paused",
                 "data": {
                     "reason": reason,
@@ -608,7 +701,9 @@ mod tests {
         let e = GraphEngineEvent::ErrorHandlerStarted { error: "e".into() };
         assert_eq!(e.to_json()["type"], "error_handler_started");
 
-        let e = GraphEngineEvent::ErrorHandlerSucceeded { outputs: HashMap::new() };
+        let e = GraphEngineEvent::ErrorHandlerSucceeded {
+            outputs: HashMap::new(),
+        };
         assert_eq!(e.to_json()["type"], "error_handler_succeeded");
 
         let e = GraphEngineEvent::ErrorHandlerFailed { error: "e".into() };
@@ -691,7 +786,9 @@ mod tests {
         };
         assert_eq!(e.to_json()["data"]["name"], "MyPlugin");
 
-        let e = GraphEngineEvent::PluginUnloaded { plugin_id: "p1".into() };
+        let e = GraphEngineEvent::PluginUnloaded {
+            plugin_id: "p1".into(),
+        };
         assert_eq!(e.to_json()["type"], "plugin_unloaded");
 
         let e = GraphEngineEvent::PluginEvent {

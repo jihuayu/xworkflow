@@ -17,9 +17,7 @@ use crate::security::validation::TemplateSafetyConfig;
 
 use xworkflow_types::template::{CompiledTemplateHandle, TemplateEngine, TemplateFunction};
 
-static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{#([^#]+)#\}\}").unwrap()
-});
+static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{#([^#]+)#\}\}").unwrap());
 
 /// Render a template string with `{{#node_id.var_name#}}` variable references.
 /// This is the Dify Answer node template syntax.
@@ -145,8 +143,7 @@ fn builtin_template_engine() -> Result<&'static Arc<dyn TemplateEngine>, String>
     {
         static ENGINE: OnceLock<Arc<dyn TemplateEngine>> = OnceLock::new();
         Ok(ENGINE.get_or_init(|| {
-            Arc::new(crate::template::jinja::JinjaTemplateEngine::new())
-                as Arc<dyn TemplateEngine>
+            Arc::new(crate::template::jinja::JinjaTemplateEngine::new()) as Arc<dyn TemplateEngine>
         }))
     }
     #[cfg(not(feature = "builtin-template-jinja"))]
@@ -206,10 +203,7 @@ pub struct CompiledTemplate {
 }
 
 impl CompiledTemplate {
-    pub fn new(
-        template: &str,
-        functions: Option<&TemplateFunctionMap>,
-    ) -> Result<Self, String> {
+    pub fn new(template: &str, functions: Option<&TemplateFunctionMap>) -> Result<Self, String> {
         Self::new_with_config(template, functions, None)
     }
 
@@ -295,14 +289,8 @@ mod tests {
     #[test]
     fn test_render_template_multiple() {
         let mut pool = VariablePool::new();
-        pool.set(
-            &Selector::new("n1", "a"),
-            Segment::String("X".to_string()),
-        );
-        pool.set(
-            &Selector::new("n2", "b"),
-            Segment::Integer(42),
-        );
+        pool.set(&Selector::new("n1", "a"), Segment::String("X".to_string()));
+        pool.set(&Selector::new("n2", "b"), Segment::Integer(42));
         let result = render_template("{{#n1.a#}} and {{#n2.b#}}", &pool);
         assert_eq!(result, "X and 42");
     }
@@ -329,10 +317,7 @@ mod tests {
     async fn test_render_template_async_stream() {
         let (stream, writer) = crate::core::variable_pool::SegmentStream::channel();
         let mut pool = VariablePool::new();
-        pool.set(
-            &Selector::new("n1", "text"),
-            Segment::Stream(stream),
-        );
+        pool.set(&Selector::new("n1", "text"), Segment::Stream(stream));
 
         tokio::spawn(async move {
             writer.send(Segment::String("hi".into())).await;
@@ -383,10 +368,7 @@ mod tests {
     #[test]
     fn test_render_template_with_config_strict_present() {
         let mut pool = VariablePool::new();
-        pool.set(
-            &Selector::new("n1", "x"),
-            Segment::String("ok".into()),
-        );
+        pool.set(&Selector::new("n1", "x"), Segment::String("ok".into()));
         let result = render_template_with_config("{{#n1.x#}}", &pool, true);
         assert_eq!(result.unwrap(), "ok");
     }
@@ -427,10 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_render_template_async_basic() {
         let mut pool = VariablePool::new();
-        pool.set(
-            &Selector::new("n1", "a"),
-            Segment::String("hello".into()),
-        );
+        pool.set(&Selector::new("n1", "a"), Segment::String("hello".into()));
         let result = render_template_async("{{#n1.a#}} world", &pool).await;
         assert_eq!(result, "hello world");
     }
@@ -476,9 +455,9 @@ mod tests {
     #[test]
     fn test_render_template_float_value() {
         let mut pool = VariablePool::new();
-        pool.set(&Selector::new("n1", "pi"), Segment::Float(3.14));
+        pool.set(&Selector::new("n1", "pi"), Segment::Float(2.5));
         let result = render_template("Pi: {{#n1.pi#}}", &pool);
-        assert!(result.starts_with("Pi: 3.14"));
+        assert!(result.starts_with("Pi: 2.5"));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+# Question classifier invalid-id fallback expected output
+
+status = "completed"
+
+[outputs]
+category_id = "default"
+class_name = "default"

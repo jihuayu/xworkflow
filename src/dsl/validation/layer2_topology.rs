@@ -20,8 +20,14 @@ pub fn validate(schema: &WorkflowSchema) -> (Vec<Diagnostic>, TopologyInfo) {
     }
 
     for edge in &schema.edges {
-        out_edges.entry(edge.source.clone()).or_default().push(edge.target.clone());
-        in_edges.entry(edge.target.clone()).or_default().push(edge.source.clone());
+        out_edges
+            .entry(edge.source.clone())
+            .or_default()
+            .push(edge.target.clone());
+        in_edges
+            .entry(edge.target.clone())
+            .or_default()
+            .push(edge.source.clone());
     }
 
     if let Some(start_node) = schema.nodes.iter().find(|n| n.data.node_type == "start") {
@@ -49,10 +55,9 @@ pub fn validate(schema: &WorkflowSchema) -> (Vec<Diagnostic>, TopologyInfo) {
             }
         }
 
-        let has_end = schema
-            .nodes
-            .iter()
-            .any(|n| (n.data.node_type == "end" || n.data.node_type == "answer") && reachable.contains(&n.id));
+        let has_end = schema.nodes.iter().any(|n| {
+            (n.data.node_type == "end" || n.data.node_type == "answer") && reachable.contains(&n.id)
+        });
         if !has_end {
             diags.push(error(
                 "E103",
@@ -63,7 +68,10 @@ pub fn validate(schema: &WorkflowSchema) -> (Vec<Diagnostic>, TopologyInfo) {
 
         for node in &schema.nodes {
             if (node.data.node_type == "end" || node.data.node_type == "answer")
-                && out_edges.get(&node.id).map(|v| !v.is_empty()).unwrap_or(false)
+                && out_edges
+                    .get(&node.id)
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false)
             {
                 diags.push(warn(
                     "W101",
