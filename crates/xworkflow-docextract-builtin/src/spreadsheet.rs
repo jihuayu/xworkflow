@@ -68,7 +68,7 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
         .and_then(|v| v.as_i64());
 
     let mut blocks: Vec<String> = Vec::new();
-    let mut sheet_count = 0u32;
+    let sheet_count: u32;
 
     match ext.as_str() {
         "xlsx" => {

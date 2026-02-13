@@ -32,6 +32,47 @@ pub enum GraphEngineEvent {
         reason: Option<String>,
         outputs: HashMap<String, Value>,
     },
+    WorkflowSafeStopped {
+        interrupted_nodes: Vec<String>,
+        checkpoint_saved: bool,
+    },
+    CheckpointSaved {
+        node_id: String,
+    },
+    CheckpointResumed {
+        node_id: String,
+    },
+    WorkflowPaused {
+        node_id: String,
+        prompt: String,
+    },
+    WorkflowResumed {
+        node_id: String,
+    },
+    ResumeWarning {
+        diagnostic: String,
+    },
+    HumanInputRequested {
+        node_id: String,
+        node_type: String,
+        node_title: String,
+        resume_token: String,
+        resume_mode: String,
+        form_schema: Value,
+        prompt_text: Option<String>,
+        timeout_at: Option<i64>,
+    },
+    HumanInputReceived {
+        node_id: String,
+        resume_token: String,
+        decision: Option<String>,
+        form_data: HashMap<String, Value>,
+    },
+    HumanInputTimeout {
+        node_id: String,
+        resume_token: String,
+        timeout_action: String,
+    },
 
     // === Node-level events ===
     NodeRunStarted {
@@ -196,6 +237,78 @@ impl GraphEngineEvent {
             GraphEngineEvent::GraphRunAborted { reason, outputs } => serde_json::json!({
                 "type": "graph_run_aborted",
                 "data": { "reason": reason, "outputs": outputs }
+            }),
+            GraphEngineEvent::WorkflowSafeStopped { interrupted_nodes, checkpoint_saved } => serde_json::json!({
+                "type": "workflow_safe_stopped",
+                "data": { "interrupted_nodes": interrupted_nodes, "checkpoint_saved": checkpoint_saved }
+            }),
+            GraphEngineEvent::CheckpointSaved { node_id } => serde_json::json!({
+                "type": "checkpoint_saved",
+                "data": { "node_id": node_id }
+            }),
+            GraphEngineEvent::CheckpointResumed { node_id } => serde_json::json!({
+                "type": "checkpoint_resumed",
+                "data": { "node_id": node_id }
+            }),
+            GraphEngineEvent::WorkflowPaused { node_id, prompt } => serde_json::json!({
+                "type": "workflow_paused",
+                "data": { "node_id": node_id, "prompt": prompt }
+            }),
+            GraphEngineEvent::WorkflowResumed { node_id } => serde_json::json!({
+                "type": "workflow_resumed",
+                "data": { "node_id": node_id }
+            }),
+            GraphEngineEvent::ResumeWarning { diagnostic } => serde_json::json!({
+                "type": "resume_warning",
+                "data": { "diagnostic": diagnostic }
+            }),
+            GraphEngineEvent::HumanInputRequested {
+                node_id,
+                node_type,
+                node_title,
+                resume_token,
+                resume_mode,
+                form_schema,
+                prompt_text,
+                timeout_at,
+            } => serde_json::json!({
+                "type": "human_input_requested",
+                "data": {
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "node_title": node_title,
+                    "resume_token": resume_token,
+                    "resume_mode": resume_mode,
+                    "form_schema": form_schema,
+                    "prompt_text": prompt_text,
+                    "timeout_at": timeout_at,
+                }
+            }),
+            GraphEngineEvent::HumanInputReceived {
+                node_id,
+                resume_token,
+                decision,
+                form_data,
+            } => serde_json::json!({
+                "type": "human_input_received",
+                "data": {
+                    "node_id": node_id,
+                    "resume_token": resume_token,
+                    "decision": decision,
+                    "form_data": form_data,
+                }
+            }),
+            GraphEngineEvent::HumanInputTimeout {
+                node_id,
+                resume_token,
+                timeout_action,
+            } => serde_json::json!({
+                "type": "human_input_timeout",
+                "data": {
+                    "node_id": node_id,
+                    "resume_token": resume_token,
+                    "timeout_action": timeout_action,
+                }
             }),
             GraphEngineEvent::NodeRunStarted { id, node_id, node_type, node_title, predecessor_node_id, parallel_group_id } => serde_json::json!({
                 "type": "node_run_started",

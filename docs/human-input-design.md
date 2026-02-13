@@ -542,10 +542,10 @@ Approval 模式下，节点有两个出边（通过 `sourceHandle` 区分）：
 | 文件 | 变更类型 | 内容 |
 |------|---------|------|
 | `src/dsl/schema.rs` | **新增类型** | HumanInputNodeData, FormFieldDefinition, FormFieldType, FieldValidation, FieldOption, HumanInputResumeMode, HumanInputTimeoutAction, NotificationConfig |
-| `src/core/dispatcher.rs` | **核心变更** | Command 扩展 ResumeHumanInput, 新增 cmd_rx 字段, handle_node_paused 方法, run() 循环 Paused 分支 |
+| `src/core/dispatcher.rs` | **核心变更** | Command 扩展 ResumeHumanInput, 新增 `command_rx` 协议处理, human-input 专用等待/恢复/超时分支 |
 | `src/core/event_bus.rs` | **扩展枚举** | HumanInputRequested / HumanInputReceived / HumanInputTimeout 事件 |
-| `src/nodes/control_flow.rs` | **新增** | HumanInputNodeExecutor 实现 |
-| `src/nodes/executor.rs` | **替换注册** | StubExecutor → HumanInputNodeExecutor |
+| `src/nodes/human_input.rs` | **新增** | HumanInputExecutor 实现（resume_token、form_schema、timeout 元数据） |
+| `src/nodes/executor.rs` | **替换注册** | StubExecutor → HumanInputExecutor |
 | `src/scheduler.rs` | **扩展** | ExecutionStatus::WaitingForInput, WorkflowHandle 增加 cmd_tx + resume_human_input() |
 | `src/dsl/validation/layer1_structure.rs` | **新增规则** | human-input 配置验证 |
 | `src/dsl/validation/layer3_semantic.rs` | **新增规则** | 变量引用和出边验证 |
@@ -564,7 +564,7 @@ Approval 模式下，节点有两个出边（通过 `sourceHandle` 区分）：
 
 ### Phase 2: 节点实现
 6. `src/dsl/schema.rs` 添加所有新类型定义
-7. 实现 `HumanInputNodeExecutor`（放在 `control_flow.rs`）
+7. 实现 `HumanInputExecutor`（放在 `nodes/human_input.rs`）
 8. 实现 `handle_node_paused` 方法（Dispatcher 核心等待逻辑）
 9. 实现 `validate_form_input` 验证函数
 

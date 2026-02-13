@@ -146,7 +146,7 @@ impl NodeExecutorRegistry {
             );
         }
         registry.register("agent", Box::new(StubExecutor("agent")));
-        registry.register("human-input", Box::new(StubExecutor("human-input")));
+        registry.register("human-input", Box::new(super::human_input::HumanInputExecutor));
         registry
     }
 
@@ -199,6 +199,11 @@ impl NodeExecutorRegistry {
             }
         }
         cell.get().map(|e| e.as_ref())
+    }
+
+    /// List all currently registered node type names.
+    pub fn list_registered_types(&self) -> Vec<String> {
+        self.executors.keys().cloned().collect()
     }
 }
 

@@ -91,6 +91,21 @@ pub use crate::core::{
 	RealIdGenerator,
 	FakeTimeProvider,
 	FakeIdGenerator,
+	SafeStopSignal,
+};
+#[cfg(feature = "checkpoint")]
+pub use crate::core::{
+	ChangeSeverity,
+	Checkpoint,
+	CheckpointError,
+	CheckpointStore,
+	ContextFingerprint,
+	EnvironmentChange,
+	FileCheckpointStore,
+	MemoryCheckpointStore,
+	ResumeDiagnostic,
+	ResumePolicy,
+	SerializableEdgeState,
 };
 pub use crate::dsl::{
 	parse_dsl,

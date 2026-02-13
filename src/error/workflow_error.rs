@@ -42,11 +42,24 @@ pub enum WorkflowError {
     CycleDetected,
     #[error("Workflow aborted: {0}")]
     Aborted(String),
+    #[error("Workflow safe-stopped")]
+    SafeStopped {
+        last_completed_node: Option<String>,
+        interrupted_nodes: Vec<String>,
+        checkpoint_saved: bool,
+    },
     #[error("Node execution error: node={node_id}, error={error}")]
     NodeExecutionError {
         node_id: String,
         error: String,
         error_detail: Option<serde_json::Value>,
+    },
+    #[cfg(feature = "checkpoint")]
+    #[error("Resume rejected for workflow '{workflow_id}':\n{diagnostic}")]
+    ResumeRejected {
+        workflow_id: String,
+        diagnostic: String,
+        changes: Vec<crate::core::checkpoint::EnvironmentChange>,
     },
     #[error("Validation failed")]
     ValidationFailed(ValidationReport),

@@ -13,7 +13,6 @@ pub const STUB_NODE_TYPES: &[&str] = &[
     "parameter-extractor",
     "tool",
     "agent",
-    "human-input",
 ];
 
 #[cfg(not(feature = "builtin-docextract-node"))]
@@ -24,7 +23,6 @@ pub const STUB_NODE_TYPES: &[&str] = &[
     "tool",
     "document-extractor",
     "agent",
-    "human-input",
 ];
 
 pub fn is_known_node_type(node_type: &str) -> bool {
@@ -67,7 +65,6 @@ mod tests {
         #[cfg(not(feature = "builtin-docextract-node"))]
         assert!(STUB_NODE_TYPES.contains(&"document-extractor"));
         assert!(STUB_NODE_TYPES.contains(&"agent"));
-        assert!(STUB_NODE_TYPES.contains(&"human-input"));
         assert!(!STUB_NODE_TYPES.contains(&"start"));
     }
 

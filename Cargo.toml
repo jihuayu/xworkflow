@@ -57,6 +57,7 @@ infer = "0.16"
 
 # JavaScript sandbox engine and WASM runtime moved to plugin crates
 rand = "0.8"
+tokio-util = { version = "0.7" }
 
 # Shared types
 xworkflow-types = { path = "crates/xworkflow-types" }
@@ -107,6 +108,7 @@ builtin-code-node = ["builtin-sandbox-js"]
 builtin-docextract-node = ["dep:xworkflow-docextract-builtin"]
 builtin-subgraph-nodes = []
 builtin-llm-node = []
+checkpoint = []
 
 [workspace]
 resolver = "2"

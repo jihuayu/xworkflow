@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::core::variable_pool::{SegmentType, Selector};
 use crate::dsl::schema::{
     AnswerNodeData, CodeNodeData, EndNodeData, HttpRequestNodeData, IfElseNodeData,
-    StartNodeData, TemplateTransformNodeData, VariableAggregatorNodeData,
+    HumanInputNodeData, HumanInputResumeMode, StartNodeData, TemplateTransformNodeData, VariableAggregatorNodeData,
     VariableAssignerNodeData, WorkflowSchema,
 };
 use crate::nodes::subgraph_nodes::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
@@ -351,10 +351,46 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
 
     // Branch edge validation
     for node in &schema.nodes {
-        let is_branch = BRANCH_NODE_TYPES.iter().any(|t| *t == node.data.node_type);
+        let is_human_input_approval = if node.data.node_type == "human-input" {
+            serde_json::from_value::<HumanInputNodeData>(
+                Value::Object(node.data.extra.clone().into_iter().collect()),
+            )
+            .map(|cfg| cfg.resume_mode == HumanInputResumeMode::Approval)
+            .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let is_branch = BRANCH_NODE_TYPES.iter().any(|t| *t == node.data.node_type) || is_human_input_approval;
         let edges = edges_by_source.get(&node.id).cloned().unwrap_or_default();
         if is_branch {
-            if let Ok(data) = serde_json::from_value::<IfElseNodeData>(Value::Object(
+            if is_human_input_approval {
+                let mut has_approve = false;
+                let mut has_reject = false;
+                for edge in &edges {
+                    let handle = edge.source_handle.as_deref().unwrap_or("source");
+                    match handle {
+                        "approve" => has_approve = true,
+                        "reject" => has_reject = true,
+                        _ => {
+                            diags.push(error(
+                                "E304",
+                                "approval human-input edge has unknown source_handle".to_string(),
+                                Some(node.id.clone()),
+                                Some("edges".to_string()),
+                            ));
+                        }
+                    }
+                }
+                if !has_approve || !has_reject {
+                    diags.push(error(
+                        "E301",
+                        "approval human-input missing approve/reject edge".to_string(),
+                        Some(node.id.clone()),
+                        None,
+                    ));
+                }
+            } else if let Ok(data) = serde_json::from_value::<IfElseNodeData>(Value::Object(
                 node.data.extra.clone().into_iter().collect(),
             )) {
                 let case_ids: HashSet<String> = data.cases.iter().map(|c| c.case_id.clone()).collect();
@@ -549,6 +585,33 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                             &selector,
                             &node_id,
                             "condition.variable_selector",
+                            &node_ids,
+                            topo,
+                            &mut diags,
+                        );
+                    }
+                }
+            }
+            "human-input" => {
+                if let Ok(data) = serde_json::from_value::<HumanInputNodeData>(config_value.clone()) {
+                    for (idx, field) in data.form_fields.iter().enumerate() {
+                        if let Some(selector) = field.default_value_selector.as_ref() {
+                            validate_selector(
+                                selector,
+                                &node_id,
+                                &format!("form_fields[{}].default_value_selector", idx),
+                                &node_ids,
+                                topo,
+                                &mut diags,
+                            );
+                        }
+                    }
+
+                    for (idx, mapping) in data.prompt_variables.iter().enumerate() {
+                        validate_selector(
+                            &mapping.value_selector,
+                            &node_id,
+                            &format!("prompt_variables[{}].value_selector", idx),
                             &node_ids,
                             topo,
                             &mut diags,

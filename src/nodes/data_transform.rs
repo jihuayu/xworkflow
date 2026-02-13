@@ -842,12 +842,12 @@ fn is_template_anomaly_error(message: &str) -> bool {
         || msg.contains("timeout")
 }
 
-#[cfg(feature = "builtin-sandbox-js")]
+#[cfg(all(test, feature = "builtin-sandbox-js"))]
 fn escape_js_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
-#[cfg(feature = "builtin-sandbox-js")]
+#[cfg(all(test, feature = "builtin-sandbox-js"))]
 fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
     if result_str == "__undefined__" {
         return Ok(None);

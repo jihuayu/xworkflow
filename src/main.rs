@@ -105,5 +105,19 @@ edges:
       ExecutionStatus::Running => {
         println!("\n=== Workflow still running ===");
       }
+      ExecutionStatus::Paused { node_id, prompt, .. } => {
+        println!("\n=== Workflow paused at {} ===", node_id);
+        println!("{}", prompt);
+      }
+      ExecutionStatus::WaitingForInput { node_id, resume_token, prompt_text, .. } => {
+        println!("\n=== Workflow waiting for human input at {} ===", node_id);
+        println!("resume_token={}", resume_token);
+        if let Some(prompt) = prompt_text {
+          println!("{}", prompt);
+        }
+      }
+      ExecutionStatus::SafeStopped { checkpoint_saved, .. } => {
+        println!("\n=== Workflow safe-stopped (checkpoint_saved={}) ===", checkpoint_saved);
+      }
     }
 }

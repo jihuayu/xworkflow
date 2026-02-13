@@ -6,6 +6,9 @@ use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::compiler::compiled_workflow::CompiledWorkflow;
 use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
+#[cfg(feature = "checkpoint")]
+use crate::core::checkpoint::{CheckpointStore, ResumePolicy};
+use crate::core::SafeStopSignal;
 use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_group::RuntimeGroup;
@@ -42,6 +45,13 @@ pub struct CompiledWorkflowRunnerBuilder {
     llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
     debug_config: Option<DebugConfig>,
     collect_events: bool,
+    #[cfg(feature = "checkpoint")]
+    checkpoint_store: Option<Arc<dyn CheckpointStore>>,
+    #[cfg(feature = "checkpoint")]
+    workflow_id: Option<String>,
+    safe_stop_signal: Option<SafeStopSignal>,
+    #[cfg(feature = "checkpoint")]
+    resume_policy: ResumePolicy,
 }
 
 impl CompiledWorkflowRunnerBuilder {
@@ -59,6 +69,13 @@ impl CompiledWorkflowRunnerBuilder {
             llm_provider_registry: None,
             debug_config: None,
             collect_events: true,
+            #[cfg(feature = "checkpoint")]
+            checkpoint_store: None,
+            #[cfg(feature = "checkpoint")]
+            workflow_id: None,
+            safe_stop_signal: None,
+            #[cfg(feature = "checkpoint")]
+            resume_policy: ResumePolicy::Normal,
         }
     }
 
@@ -170,6 +187,29 @@ impl CompiledWorkflowRunnerBuilder {
         self
     }
 
+    #[cfg(feature = "checkpoint")]
+    pub fn checkpoint_store(mut self, store: Arc<dyn CheckpointStore>) -> Self {
+        self.checkpoint_store = Some(store);
+        self
+    }
+
+    #[cfg(feature = "checkpoint")]
+    pub fn workflow_id(mut self, id: String) -> Self {
+        self.workflow_id = Some(id);
+        self
+    }
+
+    pub fn safe_stop_signal(mut self, signal: SafeStopSignal) -> Self {
+        self.safe_stop_signal = Some(signal);
+        self
+    }
+
+    #[cfg(feature = "checkpoint")]
+    pub fn resume_policy(mut self, policy: ResumePolicy) -> Self {
+        self.resume_policy = policy;
+        self
+    }
+
     pub fn validate(&self) -> ValidationReport {
         let schema: &WorkflowSchema = self.compiled.schema.as_ref();
         crate::dsl::validate_schema(schema)
@@ -272,6 +312,25 @@ impl CompiledWorkflowRunnerBuilder {
         let plugin_registry_for_shutdown = plugin_registry.clone();
 
         let context = Arc::new(builder.context.with_event_tx(tx.clone()));
+        let (command_tx, command_rx) = mpsc::channel(64);
+
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_store = builder.checkpoint_store.clone();
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_workflow_id = builder
+            .workflow_id
+            .clone()
+            .or_else(|| workflow_id.clone())
+            .or_else(|| Some(context.execution_id.clone()));
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_execution_id = Some(context.execution_id.clone());
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_resume_policy = builder.resume_policy;
+        let safe_stop_signal = builder.safe_stop_signal.clone();
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_schema_hash = crate::core::checkpoint::hash_json(schema.as_ref());
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_engine_config_hash = crate::core::checkpoint::hash_json(&config);
 
         let (status_tx, status_rx) = watch::channel(crate::scheduler::ExecutionStatus::Running);
         let events = if builder.collect_events {
@@ -311,11 +370,35 @@ impl CompiledWorkflowRunnerBuilder {
                 #[cfg(feature = "plugin-system")]
                 plugin_registry,
             );
+            dispatcher.set_control_channels(status_exec.clone(), command_rx);
+            dispatcher.set_safe_stop_signal(safe_stop_signal);
+            #[cfg(feature = "checkpoint")]
+            dispatcher.set_checkpoint_options(
+                checkpoint_store,
+                checkpoint_workflow_id,
+                checkpoint_execution_id,
+                checkpoint_resume_policy,
+                checkpoint_schema_hash,
+                checkpoint_engine_config_hash,
+            );
             match dispatcher.run().await {
                 Ok(outputs) => {
                     let _ = status_exec.send(crate::scheduler::ExecutionStatus::Completed(outputs));
                 }
                 Err(e) => {
+                    if let WorkflowError::SafeStopped {
+                        last_completed_node,
+                        interrupted_nodes,
+                        checkpoint_saved,
+                    } = &e {
+                        let _ = status_exec.send(crate::scheduler::ExecutionStatus::SafeStopped {
+                            last_completed_node: last_completed_node.clone(),
+                            interrupted_nodes: interrupted_nodes.clone(),
+                            checkpoint_saved: *checkpoint_saved,
+                        });
+                        return;
+                    }
+
                     if let Some(error_handler) = &schema_for_err.error_handler {
                         let partial_outputs = dispatcher.partial_outputs();
                         let pool_snapshot = dispatcher.snapshot_pool().await;
@@ -408,6 +491,7 @@ impl CompiledWorkflowRunnerBuilder {
             status_rx,
             events,
             event_active,
+            command_tx,
         ))
     }
 
@@ -524,6 +608,25 @@ impl CompiledWorkflowRunnerBuilder {
         let plugin_registry_for_shutdown = plugin_registry.clone();
 
         let context = Arc::new(builder.context.with_event_tx(tx.clone()));
+        let (command_tx, command_rx) = mpsc::channel(64);
+
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_store = builder.checkpoint_store.clone();
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_workflow_id = builder
+            .workflow_id
+            .clone()
+            .or_else(|| workflow_id.clone())
+            .or_else(|| Some(context.execution_id.clone()));
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_execution_id = Some(context.execution_id.clone());
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_resume_policy = builder.resume_policy;
+        let safe_stop_signal = builder.safe_stop_signal.clone();
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_schema_hash = crate::core::checkpoint::hash_json(schema.as_ref());
+        #[cfg(feature = "checkpoint")]
+        let checkpoint_engine_config_hash = crate::core::checkpoint::hash_json(&config);
 
         let (status_tx, status_rx) = watch::channel(crate::scheduler::ExecutionStatus::Running);
         let events = if builder.collect_events {
@@ -568,11 +671,35 @@ impl CompiledWorkflowRunnerBuilder {
                 gate,
                 hook,
             );
+            dispatcher.set_control_channels(status_exec.clone(), command_rx);
+            dispatcher.set_safe_stop_signal(safe_stop_signal);
+            #[cfg(feature = "checkpoint")]
+            dispatcher.set_checkpoint_options(
+                checkpoint_store,
+                checkpoint_workflow_id,
+                checkpoint_execution_id,
+                checkpoint_resume_policy,
+                checkpoint_schema_hash,
+                checkpoint_engine_config_hash,
+            );
             match dispatcher.run().await {
                 Ok(outputs) => {
                     let _ = status_exec.send(crate::scheduler::ExecutionStatus::Completed(outputs));
                 }
                 Err(e) => {
+                    if let WorkflowError::SafeStopped {
+                        last_completed_node,
+                        interrupted_nodes,
+                        checkpoint_saved,
+                    } = &e {
+                        let _ = status_exec.send(crate::scheduler::ExecutionStatus::SafeStopped {
+                            last_completed_node: last_completed_node.clone(),
+                            interrupted_nodes: interrupted_nodes.clone(),
+                            checkpoint_saved: *checkpoint_saved,
+                        });
+                        return;
+                    }
+
                     if let Some(error_handler) = &schema_for_err.error_handler {
                         let partial_outputs = dispatcher.partial_outputs();
                         let pool_snapshot = dispatcher.snapshot_pool().await;
@@ -665,6 +792,7 @@ impl CompiledWorkflowRunnerBuilder {
             status_rx,
             events,
             event_active,
+            command_tx,
         );
         let debug_handle = DebugHandle::new(cmd_tx, debug_evt_rx);
 

@@ -101,6 +101,16 @@ impl Selector {
     pub(crate) fn pool_key(&self) -> CompactString {
         VariablePool::make_key(&self.node_id, &self.variable_name)
     }
+
+    pub fn from_pool_key(pool_key: &str) -> Option<Self> {
+        let (node_id, variable_name) = pool_key
+            .split_once(':')
+            .or_else(|| pool_key.split_once('.'))?;
+        if node_id.is_empty() || variable_name.is_empty() {
+            return None;
+        }
+        Some(Self::new(node_id, variable_name))
+    }
 }
 
 impl Serialize for Selector {
@@ -1543,6 +1553,33 @@ impl Default for VariablePool {
     }
 }
 
+pub fn snapshot_for_checkpoint(pool: &VariablePool) -> HashMap<String, Value> {
+    pool
+        .snapshot()
+        .into_iter()
+        .filter_map(|(key, segment)| match segment {
+            Segment::Stream(stream) => {
+                if stream.status() == StreamStatus::Completed {
+                    Some((key, stream.snapshot_segment().to_value()))
+                } else {
+                    None
+                }
+            }
+            other => Some((key, other.to_value())),
+        })
+        .collect()
+}
+
+pub fn restore_from_checkpoint(variables: &HashMap<String, Value>) -> VariablePool {
+    let mut pool = VariablePool::new();
+    for (key, value) in variables {
+        if let Some(selector) = Selector::from_pool_key(key) {
+            pool.set(&selector, Segment::from_value(value));
+        }
+    }
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1597,6 +1634,41 @@ mod tests {
 
         let back = Segment::from_value(&val);
         assert!(matches!(back, Segment::Integer(42)));
+    }
+
+    #[test]
+    fn test_selector_from_pool_key() {
+        let selector = Selector::from_pool_key("node1:output").unwrap();
+        assert_eq!(selector.node_id(), "node1");
+        assert_eq!(selector.variable_name(), "output");
+        assert!(Selector::from_pool_key("invalid").is_none());
+    }
+
+    #[test]
+    fn test_snapshot_restore_checkpoint_helpers() {
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "a"), Segment::Integer(10));
+        pool.set(&Selector::new("n1", "b"), Segment::String("x".into()));
+
+        let snap = snapshot_for_checkpoint(&pool);
+        assert_eq!(snap.get("n1:a"), Some(&serde_json::json!(10)));
+        assert_eq!(snap.get("n1:b"), Some(&serde_json::json!("x")));
+
+        let restored = restore_from_checkpoint(&snap);
+        assert_eq!(restored.get(&Selector::new("n1", "a")), Segment::Integer(10));
+        assert_eq!(restored.get(&Selector::new("n1", "b")), Segment::String("x".into()));
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_for_checkpoint_skips_running_stream() {
+        let (stream, writer) = SegmentStream::channel();
+        writer.send(Segment::String("chunk".into())).await;
+
+        let mut pool = VariablePool::new();
+        pool.set(&Selector::new("n1", "stream"), Segment::Stream(stream));
+
+        let snap = snapshot_for_checkpoint(&pool);
+        assert!(!snap.contains_key("n1:stream"));
     }
 
     #[test]

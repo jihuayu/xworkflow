@@ -11,23 +11,41 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::task::{AbortHandle, JoinSet};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use parking_lot::RwLock;
 
+#[cfg(feature = "checkpoint")]
+use crate::core::checkpoint::{
+  diff_fingerprints,
+  hash_json,
+  Checkpoint,
+  CheckpointStore,
+  ConsumedResources,
+  ContextFingerprint,
+  ResumePolicy,
+};
+use crate::core::safe_stop::SafeStopSignal;
 use crate::core::debug::{DebugAction, DebugGate, DebugHook, NoopGate, NoopHook};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::plugin_gate::PluginGate;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::security_gate::SecurityGate;
-use crate::core::variable_pool::{Segment, VariablePool};
+#[cfg(feature = "checkpoint")]
+use crate::core::variable_pool::{restore_from_checkpoint, snapshot_for_checkpoint};
+use crate::core::variable_pool::{Segment, Selector, VariablePool};
 use crate::dsl::schema::{
   BackoffStrategy, ErrorStrategyConfig, ErrorStrategyType, GatherNodeData, JoinMode,
   NodeRunResult, RetryConfig, TimeoutStrategy, WorkflowNodeExecutionStatus, WriteMode,
+  FormFieldDefinition, FormFieldType, FieldValidation,
+  HumanInputDecision, HumanInputResumeMode, HumanInputTimeoutAction,
+  EdgeHandle,
 };
 use crate::error::{ErrorCode, ErrorContext, NodeError, WorkflowError, WorkflowResult};
 use crate::compiler::CompiledNodeConfigMap;
 use crate::graph::types::{EdgeTraversalState, Graph};
 use crate::nodes::executor::NodeExecutorRegistry;
+use crate::nodes::human_input::{HumanInputPauseRequest, HUMAN_INPUT_REQUEST_KEY};
+use crate::scheduler::ExecutionStatus;
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::PluginRegistry;
 
@@ -68,6 +86,47 @@ pub enum Command {
     Abort { reason: Option<String> },
     Pause,
     UpdateVariables { variables: HashMap<String, Value> },
+  ResumeWithInput { input: HashMap<String, Value> },
+  ResumeHumanInput {
+    node_id: String,
+    resume_token: String,
+    decision: Option<HumanInputDecision>,
+    form_data: HashMap<String, Value>,
+  },
+  SafeStop,
+}
+
+#[derive(Debug, Clone)]
+struct ResumeInputCommand {
+  node_id: Option<String>,
+  resume_token: Option<String>,
+  decision: Option<HumanInputDecision>,
+  form_data: HashMap<String, Value>,
+}
+
+impl ResumeInputCommand {
+  fn legacy(form_data: HashMap<String, Value>) -> Self {
+    Self {
+      node_id: None,
+      resume_token: None,
+      decision: None,
+      form_data,
+    }
+  }
+
+  fn human_input(
+    node_id: String,
+    resume_token: String,
+    decision: Option<HumanInputDecision>,
+    form_data: HashMap<String, Value>,
+  ) -> Self {
+    Self {
+      node_id: Some(node_id),
+      resume_token: Some(resume_token),
+      decision,
+      form_data,
+    }
+  }
 }
 
 /// Configuration for the workflow engine
@@ -140,6 +199,24 @@ pub struct WorkflowDispatcher<G: DebugGate = NoopGate, H: DebugHook = NoopHook> 
     security_gate: Arc<dyn SecurityGate>,
     debug_gate: G,
     debug_hook: H,
+    status_tx: Option<watch::Sender<ExecutionStatus>>,
+    command_rx: Option<mpsc::Receiver<Command>>,
+    pending_resume_input: Option<ResumeInputCommand>,
+    safe_stop_requested: bool,
+    last_completed_node: Option<String>,
+    #[cfg(feature = "checkpoint")]
+    checkpoint_store: Option<Arc<dyn CheckpointStore>>,
+    #[cfg(feature = "checkpoint")]
+    workflow_id: Option<String>,
+    #[cfg(feature = "checkpoint")]
+    execution_id: Option<String>,
+    #[cfg(feature = "checkpoint")]
+    resume_policy: ResumePolicy,
+    safe_stop_signal: Option<SafeStopSignal>,
+    #[cfg(feature = "checkpoint")]
+    schema_hash: Option<String>,
+    #[cfg(feature = "checkpoint")]
+    engine_config_hash: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +292,24 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             security_gate,
       debug_gate: NoopGate,
       debug_hook: NoopHook,
+          status_tx: None,
+          command_rx: None,
+          pending_resume_input: None,
+          safe_stop_requested: false,
+          last_completed_node: None,
+          #[cfg(feature = "checkpoint")]
+          checkpoint_store: None,
+          #[cfg(feature = "checkpoint")]
+          workflow_id: None,
+          #[cfg(feature = "checkpoint")]
+          execution_id: None,
+          #[cfg(feature = "checkpoint")]
+          resume_policy: ResumePolicy::Normal,
+          safe_stop_signal: None,
+          #[cfg(feature = "checkpoint")]
+          schema_hash: None,
+          #[cfg(feature = "checkpoint")]
+          engine_config_hash: None,
         }
     }
 
@@ -263,6 +358,24 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             security_gate,
       debug_gate: NoopGate,
       debug_hook: NoopHook,
+          status_tx: None,
+          command_rx: None,
+          pending_resume_input: None,
+          safe_stop_requested: false,
+          last_completed_node: None,
+          #[cfg(feature = "checkpoint")]
+          checkpoint_store: None,
+          #[cfg(feature = "checkpoint")]
+          workflow_id: None,
+          #[cfg(feature = "checkpoint")]
+          execution_id: None,
+          #[cfg(feature = "checkpoint")]
+          resume_policy: ResumePolicy::Normal,
+          safe_stop_signal: None,
+          #[cfg(feature = "checkpoint")]
+          schema_hash: None,
+          #[cfg(feature = "checkpoint")]
+          engine_config_hash: None,
         }
     }
 
@@ -312,6 +425,24 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             security_gate,
       debug_gate: NoopGate,
       debug_hook: NoopHook,
+          status_tx: None,
+          command_rx: None,
+          pending_resume_input: None,
+          safe_stop_requested: false,
+          last_completed_node: None,
+          #[cfg(feature = "checkpoint")]
+          checkpoint_store: None,
+          #[cfg(feature = "checkpoint")]
+          workflow_id: None,
+          #[cfg(feature = "checkpoint")]
+          execution_id: None,
+          #[cfg(feature = "checkpoint")]
+          resume_policy: ResumePolicy::Normal,
+          safe_stop_signal: None,
+          #[cfg(feature = "checkpoint")]
+          schema_hash: None,
+          #[cfg(feature = "checkpoint")]
+          engine_config_hash: None,
         }
     }
   }
@@ -374,6 +505,24 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       security_gate,
       debug_gate,
       debug_hook,
+      status_tx: None,
+      command_rx: None,
+      pending_resume_input: None,
+      safe_stop_requested: false,
+      last_completed_node: None,
+      #[cfg(feature = "checkpoint")]
+      checkpoint_store: None,
+      #[cfg(feature = "checkpoint")]
+      workflow_id: None,
+      #[cfg(feature = "checkpoint")]
+      execution_id: None,
+      #[cfg(feature = "checkpoint")]
+      resume_policy: ResumePolicy::Normal,
+      safe_stop_signal: None,
+      #[cfg(feature = "checkpoint")]
+      schema_hash: None,
+      #[cfg(feature = "checkpoint")]
+      engine_config_hash: None,
     }
   }
 
@@ -425,7 +574,56 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       security_gate,
       debug_gate,
       debug_hook,
+      status_tx: None,
+      command_rx: None,
+      pending_resume_input: None,
+      safe_stop_requested: false,
+      last_completed_node: None,
+      #[cfg(feature = "checkpoint")]
+      checkpoint_store: None,
+      #[cfg(feature = "checkpoint")]
+      workflow_id: None,
+      #[cfg(feature = "checkpoint")]
+      execution_id: None,
+      #[cfg(feature = "checkpoint")]
+      resume_policy: ResumePolicy::Normal,
+      safe_stop_signal: None,
+      #[cfg(feature = "checkpoint")]
+      schema_hash: None,
+      #[cfg(feature = "checkpoint")]
+      engine_config_hash: None,
     }
+  }
+
+  pub fn set_control_channels(
+    &mut self,
+    status_tx: watch::Sender<ExecutionStatus>,
+    command_rx: mpsc::Receiver<Command>,
+  ) {
+    self.status_tx = Some(status_tx);
+    self.command_rx = Some(command_rx);
+  }
+
+  pub fn set_safe_stop_signal(&mut self, safe_stop_signal: Option<SafeStopSignal>) {
+    self.safe_stop_signal = safe_stop_signal;
+  }
+
+  #[cfg(feature = "checkpoint")]
+  pub fn set_checkpoint_options(
+    &mut self,
+    store: Option<Arc<dyn CheckpointStore>>,
+    workflow_id: Option<String>,
+    execution_id: Option<String>,
+    resume_policy: ResumePolicy,
+    schema_hash: String,
+    engine_config_hash: String,
+  ) {
+    self.checkpoint_store = store;
+    self.workflow_id = workflow_id;
+    self.execution_id = execution_id;
+    self.resume_policy = resume_policy;
+    self.schema_hash = Some(schema_hash);
+    self.engine_config_hash = Some(engine_config_hash);
   }
 
   pub fn partial_outputs(&self) -> HashMap<String, Value> {
@@ -482,12 +680,89 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
     info: &NodeInfo,
     result: NodeRunResult,
     queue: &mut Vec<String>,
+    ready_predecessor: &HashMap<String, String>,
+    step_count: i32,
+    start_time: i64,
   ) -> WorkflowResult<Vec<String>> {
+    #[cfg(not(feature = "checkpoint"))]
+    let _ = (&ready_predecessor, step_count, start_time);
+
+    let mut result = result;
+
     self
       .emit_after_node_hooks(node_id, &info.node_type, &info.node_title, &result)
       .await?;
 
     self.record_llm_usage(&result).await;
+
+    if result.status == WorkflowNodeExecutionStatus::Paused {
+      #[cfg(feature = "checkpoint")]
+      self
+        .save_checkpoint(node_id, queue, ready_predecessor, step_count, start_time)
+        .await?;
+
+      if info.node_type == "human-input" {
+        self
+          .handle_human_input_paused(node_id, info, &mut result)
+          .await?;
+      } else {
+        let prompt = result
+          .metadata
+          .get("prompt")
+          .and_then(|value| value.as_str())
+          .unwrap_or_default()
+          .to_string();
+        let node_title = result
+          .metadata
+          .get("node_title")
+          .and_then(|value| value.as_str())
+          .unwrap_or_else(|| info.node_title.as_str())
+          .to_string();
+
+        if self.event_emitter.is_active() {
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::WorkflowPaused {
+              node_id: node_id.to_string(),
+              prompt: prompt.clone(),
+            })
+            .await;
+        }
+
+        if let Some(status_tx) = &self.status_tx {
+          status_tx.send_replace(ExecutionStatus::Paused {
+            node_id: node_id.to_string(),
+            node_title,
+            prompt,
+          });
+        }
+
+        let input = self.wait_for_resume().await?;
+        {
+          let mut pool = self.variable_pool.write();
+          for (key, value) in input.form_data {
+            let selector = Selector::new(node_id.to_string(), key);
+            pool.set(&selector, Segment::from_value(&value));
+          }
+        }
+        self.mark_pool_dirty();
+
+        if self.event_emitter.is_active() {
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::WorkflowResumed {
+              node_id: node_id.to_string(),
+            })
+            .await;
+        }
+
+        if let Some(status_tx) = &self.status_tx {
+          status_tx.send_replace(ExecutionStatus::Running);
+        }
+
+        result.status = WorkflowNodeExecutionStatus::Succeeded;
+      }
+    }
 
     // Store outputs in variable pool
     let (mut outputs_for_write, stream_outputs) = result.outputs.clone().into_parts();
@@ -1005,6 +1280,1106 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
     self.security_gate.effective_limits(&self.config)
   }
 
+  fn apply_command_update_variables(&mut self, variables: HashMap<String, Value>) {
+    let mut pool = self.variable_pool.write();
+    for (key, value) in variables {
+      if let Some(selector) = Selector::from_pool_key(&key) {
+        pool.set(&selector, Segment::from_value(&value));
+      }
+    }
+    drop(pool);
+    self.mark_pool_dirty();
+  }
+
+  async fn poll_commands(&mut self) -> WorkflowResult<()> {
+    if self.command_rx.is_none() {
+      return Ok(());
+    }
+
+    loop {
+      let command = {
+        let rx = self.command_rx.as_mut().expect("checked above");
+        rx.try_recv()
+      };
+
+      match command {
+        Ok(Command::Abort { reason }) => {
+          if self.event_emitter.is_active() {
+            self
+              .event_emitter
+              .emit(GraphEngineEvent::GraphRunAborted {
+                reason: reason.clone(),
+                outputs: self.final_outputs.clone(),
+              })
+              .await;
+          }
+          return Err(WorkflowError::Aborted(
+            reason.unwrap_or_else(|| "aborted by command".to_string()),
+          ));
+        }
+        Ok(Command::Pause) => {}
+        Ok(Command::UpdateVariables { variables }) => {
+          self.apply_command_update_variables(variables);
+        }
+        Ok(Command::ResumeWithInput { input }) => {
+          self.pending_resume_input = Some(ResumeInputCommand::legacy(input));
+        }
+        Ok(Command::ResumeHumanInput {
+          node_id,
+          resume_token,
+          decision,
+          form_data,
+        }) => {
+          self.pending_resume_input = Some(ResumeInputCommand::human_input(
+            node_id,
+            resume_token,
+            decision,
+            form_data,
+          ));
+        }
+        Ok(Command::SafeStop) => {
+          self.safe_stop_requested = true;
+        }
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+      }
+    }
+
+    Ok(())
+  }
+
+  fn make_safe_stopped_error(&self) -> WorkflowError {
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_saved = self.checkpoint_store.is_some();
+    #[cfg(not(feature = "checkpoint"))]
+    let checkpoint_saved = false;
+
+    WorkflowError::SafeStopped {
+      last_completed_node: self.last_completed_node.clone(),
+      interrupted_nodes: Vec::new(),
+      checkpoint_saved,
+    }
+  }
+
+  async fn wait_for_resume(&mut self) -> WorkflowResult<ResumeInputCommand> {
+    if let Some(input) = self.pending_resume_input.take() {
+      return Ok(input);
+    }
+
+    loop {
+      let Some(rx) = self.command_rx.as_mut() else {
+        return Err(WorkflowError::InternalError(
+          "human-input paused but command channel is unavailable".to_string(),
+        ));
+      };
+
+      let Some(command) = rx.recv().await else {
+        return Err(WorkflowError::InternalError(
+          "workflow command channel closed while waiting for resume".to_string(),
+        ));
+      };
+
+      match command {
+        Command::ResumeWithInput { input } => return Ok(ResumeInputCommand::legacy(input)),
+        Command::ResumeHumanInput {
+          node_id,
+          resume_token,
+          decision,
+          form_data,
+        } => {
+          return Ok(ResumeInputCommand::human_input(
+            node_id,
+            resume_token,
+            decision,
+            form_data,
+          ));
+        }
+        Command::UpdateVariables { variables } => self.apply_command_update_variables(variables),
+        Command::Abort { reason } => {
+          return Err(WorkflowError::Aborted(
+            reason.unwrap_or_else(|| "aborted while waiting for human input".to_string()),
+          ));
+        }
+        Command::SafeStop => {
+          self.safe_stop_requested = true;
+          return Err(self.make_safe_stopped_error());
+        }
+        Command::Pause => {}
+      }
+    }
+  }
+
+  fn human_input_resume_mode_name(mode: &HumanInputResumeMode) -> &'static str {
+    match mode {
+      HumanInputResumeMode::Form => "form",
+      HumanInputResumeMode::Approval => "approval",
+      HumanInputResumeMode::Webhook => "webhook",
+    }
+  }
+
+  fn human_input_timeout_action_name(action: &HumanInputTimeoutAction) -> &'static str {
+    match action {
+      HumanInputTimeoutAction::Fail => "fail",
+      HumanInputTimeoutAction::DefaultValue => "default_value",
+      HumanInputTimeoutAction::AutoApprove => "auto_approve",
+      HumanInputTimeoutAction::AutoReject => "auto_reject",
+    }
+  }
+
+  fn human_input_decision_name(decision: &HumanInputDecision) -> &'static str {
+    match decision {
+      HumanInputDecision::Approve => "approve",
+      HumanInputDecision::Reject => "reject",
+    }
+  }
+
+  fn matches_human_input_request(
+    request: &HumanInputPauseRequest,
+    cmd: &ResumeInputCommand,
+  ) -> bool {
+    let Some(node_id) = cmd.node_id.as_deref() else {
+      return true;
+    };
+    if node_id != request.node_id {
+      return false;
+    }
+
+    let Some(token) = cmd.resume_token.as_deref() else {
+      return false;
+    };
+    token == request.resume_token
+  }
+
+  fn validate_form_input(
+    mode: &HumanInputResumeMode,
+    fields: &[FormFieldDefinition],
+    cmd: &ResumeInputCommand,
+  ) -> Result<(), String> {
+    if *mode == HumanInputResumeMode::Approval && cmd.decision.is_none() {
+      return Err("approval mode requires decision (approve/reject)".to_string());
+    }
+
+    for field in fields {
+      let value = cmd
+        .form_data
+        .get(&field.variable)
+        .or(field.default_value.as_ref());
+
+      if field.required {
+        if value.is_none() || value.is_some_and(|v| v.is_null()) {
+          return Err(format!("required field is missing: {}", field.variable));
+        }
+      }
+
+      if let Some(v) = value {
+        Self::validate_field_type(field, v)?;
+        Self::validate_field_options(field, v)?;
+        Self::validate_field_rules(field, v)?;
+      }
+    }
+
+    Ok(())
+  }
+
+  fn validate_field_type(field: &FormFieldDefinition, value: &Value) -> Result<(), String> {
+    let valid = match field.field_type {
+      FormFieldType::Text
+      | FormFieldType::Textarea
+      | FormFieldType::Date
+      | FormFieldType::Email
+      | FormFieldType::Radio
+      | FormFieldType::Dropdown => value.is_string(),
+      FormFieldType::Number => value.is_number(),
+      FormFieldType::Checkbox => value.is_boolean(),
+      FormFieldType::MultiSelect => value
+        .as_array()
+        .map(|arr| arr.iter().all(|item| item.is_string()))
+        .unwrap_or(false),
+      FormFieldType::Json | FormFieldType::File => value.is_object(),
+      FormFieldType::Hidden => true,
+    };
+
+    if valid {
+      Ok(())
+    } else {
+      Err(format!("invalid type for field: {}", field.variable))
+    }
+  }
+
+  fn validate_field_options(field: &FormFieldDefinition, value: &Value) -> Result<(), String> {
+    let Some(options) = field.options.as_ref() else {
+      return Ok(());
+    };
+
+    let allow: HashSet<&str> = options.iter().map(|opt| opt.value.as_str()).collect();
+
+    match field.field_type {
+      FormFieldType::Radio | FormFieldType::Dropdown => {
+        if let Some(v) = value.as_str() {
+          if !allow.contains(v) {
+            return Err(format!("field '{}' has value outside options", field.variable));
+          }
+        }
+      }
+      FormFieldType::MultiSelect => {
+        if let Some(arr) = value.as_array() {
+          for item in arr {
+            if let Some(v) = item.as_str() {
+              if !allow.contains(v) {
+                return Err(format!("field '{}' has value outside options", field.variable));
+              }
+            }
+          }
+        }
+      }
+      _ => {}
+    }
+
+    Ok(())
+  }
+
+  fn validate_field_rules(field: &FormFieldDefinition, value: &Value) -> Result<(), String> {
+    let Some(FieldValidation {
+      min_length,
+      max_length,
+      min_value,
+      max_value,
+      pattern,
+      error_message,
+    }) = field.validation.as_ref() else {
+      return Ok(());
+    };
+
+    let message = |fallback: &str| {
+      error_message
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string())
+    };
+
+    if let Some(s) = value.as_str() {
+      if let Some(min) = min_length {
+        if s.chars().count() < *min as usize {
+          return Err(message(&format!("field '{}' is shorter than min_length", field.variable)));
+        }
+      }
+      if let Some(max) = max_length {
+        if s.chars().count() > *max as usize {
+          return Err(message(&format!("field '{}' is longer than max_length", field.variable)));
+        }
+      }
+      if let Some(pat) = pattern {
+        let re = regex::Regex::new(pat).map_err(|e| format!("invalid regex in field '{}': {}", field.variable, e))?;
+        if !re.is_match(s) {
+          return Err(message(&format!("field '{}' does not match pattern", field.variable)));
+        }
+      }
+    }
+
+    if let Some(num) = value.as_f64() {
+      if let Some(min) = min_value {
+        if num < *min {
+          return Err(message(&format!("field '{}' is below min_value", field.variable)));
+        }
+      }
+      if let Some(max) = max_value {
+        if num > *max {
+          return Err(message(&format!("field '{}' is above max_value", field.variable)));
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  async fn wait_for_human_input_resume(
+    &mut self,
+    request: &HumanInputPauseRequest,
+  ) -> WorkflowResult<Option<ResumeInputCommand>> {
+    if let Some(cmd) = self.pending_resume_input.take() {
+      if Self::matches_human_input_request(request, &cmd) {
+        return Ok(Some(cmd));
+      }
+    }
+
+    loop {
+      if let Some(timeout_at) = request.timeout_at {
+        let now = self.context.time_provider.now_timestamp();
+        if now >= timeout_at {
+          return Ok(None);
+        }
+
+        let remain_secs = (timeout_at - now) as u64;
+        let Some(rx) = self.command_rx.as_mut() else {
+          return Err(WorkflowError::InternalError(
+            "human-input paused but command channel is unavailable".to_string(),
+          ));
+        };
+
+        let incoming = tokio::time::timeout(
+          tokio::time::Duration::from_secs(remain_secs),
+          rx.recv(),
+        )
+        .await;
+
+        let command = match incoming {
+          Ok(Some(cmd)) => cmd,
+          Ok(None) => {
+            return Err(WorkflowError::InternalError(
+              "workflow command channel closed while waiting for resume".to_string(),
+            ));
+          }
+          Err(_) => return Ok(None),
+        };
+
+        match command {
+          Command::ResumeWithInput { input } => return Ok(Some(ResumeInputCommand::legacy(input))),
+          Command::ResumeHumanInput {
+            node_id,
+            resume_token,
+            decision,
+            form_data,
+          } => {
+            let cmd = ResumeInputCommand::human_input(node_id, resume_token, decision, form_data);
+            if Self::matches_human_input_request(request, &cmd) {
+              return Ok(Some(cmd));
+            }
+          }
+          Command::UpdateVariables { variables } => self.apply_command_update_variables(variables),
+          Command::Abort { reason } => {
+            return Err(WorkflowError::Aborted(
+              reason.unwrap_or_else(|| "aborted while waiting for human input".to_string()),
+            ));
+          }
+          Command::SafeStop => {
+            self.safe_stop_requested = true;
+            return Err(self.make_safe_stopped_error());
+          }
+          Command::Pause => {}
+        }
+      } else {
+        let cmd = self.wait_for_resume().await?;
+        if Self::matches_human_input_request(request, &cmd) {
+          return Ok(Some(cmd));
+        }
+      }
+    }
+  }
+
+  fn build_human_input_outputs(
+    request: &HumanInputPauseRequest,
+    cmd: ResumeInputCommand,
+  ) -> Result<(HashMap<String, Segment>, EdgeHandle, Option<HumanInputDecision>, HashMap<String, Value>), WorkflowError> {
+    let mut form_data = HashMap::new();
+    Self::validate_form_input(&request.resume_mode, &request.form_fields, &cmd)
+      .map_err(NodeError::InputValidationError)?;
+
+    for field in &request.form_fields {
+      let value = cmd
+        .form_data
+        .get(&field.variable)
+        .cloned()
+        .or_else(|| field.default_value.clone());
+      if let Some(v) = value {
+        form_data.insert(field.variable.clone(), v);
+      }
+    }
+
+    for (key, val) in cmd.form_data {
+      form_data.entry(key).or_insert(val);
+    }
+
+    let decision = cmd.decision;
+
+    let edge = match (&request.resume_mode, &decision) {
+      (HumanInputResumeMode::Approval, Some(HumanInputDecision::Approve)) => EdgeHandle::Branch("approve".to_string()),
+      (HumanInputResumeMode::Approval, Some(HumanInputDecision::Reject)) => EdgeHandle::Branch("reject".to_string()),
+      _ => EdgeHandle::Default,
+    };
+
+    if let Some(dec) = decision.as_ref() {
+      form_data.insert("__decision".to_string(), Value::String(Self::human_input_decision_name(dec).to_string()));
+    }
+
+    let mut outputs = HashMap::new();
+    for (key, value) in &form_data {
+      outputs.insert(key.clone(), Segment::from_value(value));
+    }
+
+    Ok((outputs, edge, decision, form_data))
+  }
+
+  async fn handle_human_input_paused(
+    &mut self,
+    node_id: &str,
+    info: &NodeInfo,
+    result: &mut NodeRunResult,
+  ) -> WorkflowResult<()> {
+    let request_value = result
+      .metadata
+      .get(HUMAN_INPUT_REQUEST_KEY)
+      .ok_or_else(|| WorkflowError::InternalError("human-input request metadata missing".to_string()))?
+      .clone();
+    let request: HumanInputPauseRequest = serde_json::from_value(request_value)
+      .map_err(|e| WorkflowError::InternalError(format!("invalid human-input metadata: {}", e)))?;
+
+    let prompt = request.prompt_text.clone().unwrap_or_default();
+
+    if self.event_emitter.is_active() {
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::HumanInputRequested {
+          node_id: request.node_id.clone(),
+          node_type: info.node_type.clone(),
+          node_title: request.node_title.clone(),
+          resume_token: request.resume_token.clone(),
+          resume_mode: Self::human_input_resume_mode_name(&request.resume_mode).to_string(),
+          form_schema: serde_json::to_value(&request.form_fields).unwrap_or(Value::Null),
+          prompt_text: request.prompt_text.clone(),
+          timeout_at: request.timeout_at,
+        })
+        .await;
+
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::WorkflowPaused {
+          node_id: node_id.to_string(),
+          prompt: prompt.clone(),
+        })
+        .await;
+    }
+
+    if let Some(status_tx) = &self.status_tx {
+      status_tx.send_replace(ExecutionStatus::WaitingForInput {
+        node_id: request.node_id.clone(),
+        resume_token: request.resume_token.clone(),
+        resume_mode: Self::human_input_resume_mode_name(&request.resume_mode).to_string(),
+        form_schema: serde_json::to_value(&request.form_fields).unwrap_or(Value::Null),
+        prompt_text: request.prompt_text.clone(),
+        timeout_at: request.timeout_at,
+      });
+    }
+
+    let (outputs, edge_handle, decision, form_data) = loop {
+      let cmd = self.wait_for_human_input_resume(&request).await?;
+      match cmd {
+        Some(cmd) => match Self::build_human_input_outputs(&request, cmd) {
+          Ok(payload) => break payload,
+          Err(err) => {
+            if self.event_emitter.is_active() {
+              self
+                .event_emitter
+                .emit(GraphEngineEvent::ResumeWarning {
+                  diagnostic: err.to_string(),
+                })
+                .await;
+            }
+            continue;
+          }
+        },
+        None => {
+          if self.event_emitter.is_active() {
+            self
+              .event_emitter
+              .emit(GraphEngineEvent::HumanInputTimeout {
+                node_id: request.node_id.clone(),
+                resume_token: request.resume_token.clone(),
+                timeout_action: Self::human_input_timeout_action_name(&request.timeout_action).to_string(),
+              })
+              .await;
+          }
+
+          match request.timeout_action {
+            HumanInputTimeoutAction::Fail => return Err(NodeError::Timeout.into()),
+            HumanInputTimeoutAction::DefaultValue => {
+              let mut defaults = HashMap::new();
+              if let Some(v) = request.timeout_default_values.as_ref() {
+                defaults.extend(v.clone());
+              }
+              let mut out = HashMap::new();
+              for (k, v) in &defaults {
+                out.insert(k.clone(), Segment::from_value(v));
+              }
+              break (out, EdgeHandle::Default, None, defaults);
+            }
+            HumanInputTimeoutAction::AutoApprove => {
+              let mut map = HashMap::new();
+              map.insert("__decision".to_string(), Value::String("approve".to_string()));
+              let mut out = HashMap::new();
+              out.insert("__decision".to_string(), Segment::String("approve".to_string()));
+              break (out, EdgeHandle::Branch("approve".to_string()), Some(HumanInputDecision::Approve), map);
+            }
+            HumanInputTimeoutAction::AutoReject => {
+              let mut map = HashMap::new();
+              map.insert("__decision".to_string(), Value::String("reject".to_string()));
+              let mut out = HashMap::new();
+              out.insert("__decision".to_string(), Segment::String("reject".to_string()));
+              break (out, EdgeHandle::Branch("reject".to_string()), Some(HumanInputDecision::Reject), map);
+            }
+          }
+        }
+      };
+    };
+
+    result.outputs = crate::dsl::schema::NodeOutputs::Sync(outputs);
+    result.edge_source_handle = edge_handle;
+    result.status = WorkflowNodeExecutionStatus::Succeeded;
+
+    if self.event_emitter.is_active() {
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::HumanInputReceived {
+          node_id: request.node_id,
+          resume_token: request.resume_token,
+          decision: decision.map(|d| Self::human_input_decision_name(&d).to_string()),
+          form_data,
+        })
+        .await;
+
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::WorkflowResumed {
+          node_id: node_id.to_string(),
+        })
+        .await;
+    }
+
+    if let Some(status_tx) = &self.status_tx {
+      status_tx.send_replace(ExecutionStatus::Running);
+    }
+
+    Ok(())
+  }
+
+  #[cfg(feature = "checkpoint")]
+  fn should_checkpoint_after(&self, node_type: &str, node_config: &Value) -> bool {
+    if self.checkpoint_store.is_none() {
+      return false;
+    }
+
+    match node_type {
+      "agent" => true,
+      "human-input" => false,
+      _ => node_config
+        .get("checkpoint")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false),
+    }
+  }
+
+  #[cfg(feature = "checkpoint")]
+  fn should_checkpoint_before(&self, node_type: &str) -> bool {
+    if self.checkpoint_store.is_none() {
+      return false;
+    }
+    node_type == "human-input"
+  }
+
+  fn is_safe_stop_triggered(&self) -> bool {
+    self.safe_stop_requested
+      || self
+        .safe_stop_signal
+        .as_ref()
+        .map(|signal| signal.is_triggered())
+        .unwrap_or(false)
+  }
+
+  async fn handle_safe_stop_joined_outcome(
+    &mut self,
+    outcome: NodeExecOutcome,
+    ready: &mut Vec<String>,
+    ready_predecessor: &mut HashMap<String, String>,
+    running: &mut HashMap<String, AbortHandle>,
+    step_count: i32,
+    start_time: i64,
+    interrupted_nodes: &mut Vec<String>,
+  ) -> WorkflowResult<()> {
+    running.remove(&outcome.node_id);
+
+    match outcome.result {
+      Ok(result) => {
+        if result.status == WorkflowNodeExecutionStatus::Paused {
+          interrupted_nodes.push(outcome.node_id.clone());
+          ready.push(outcome.node_id.clone());
+          return Ok(());
+        }
+
+        let run_result = self
+          .enforce_output_limits(&outcome.node_id, &outcome.info.node_type, result)
+          .await;
+
+        if let Ok(result) = run_result {
+          if matches!(result.status, WorkflowNodeExecutionStatus::Exception) {
+            self.exceptions_count += 1;
+          }
+
+          let ready_len_before = ready.len();
+          let cancelled_sources = self
+            .handle_node_success(
+              &outcome.exec_id,
+              &outcome.node_id,
+              &outcome.info,
+              result,
+              ready,
+              ready_predecessor,
+              step_count,
+              start_time,
+            )
+            .await?;
+
+          for downstream_node_id in ready.iter().skip(ready_len_before) {
+            ready_predecessor.insert(downstream_node_id.clone(), outcome.node_id.clone());
+          }
+
+          if !cancelled_sources.is_empty() {
+            {
+              let mut graph = self.graph.write();
+              for source in &cancelled_sources {
+                graph.set_node_state(source, EdgeTraversalState::Cancelled);
+              }
+            }
+
+            for source in cancelled_sources {
+              if let Some(handle) = running.remove(&source) {
+                handle.abort();
+              }
+            }
+          }
+
+          self.last_completed_node = Some(outcome.node_id.clone());
+        }
+      }
+      Err(_) => {
+        interrupted_nodes.push(outcome.node_id.clone());
+        ready.push(outcome.node_id.clone());
+      }
+    }
+
+    Ok(())
+  }
+
+  async fn execute_safe_stop(
+    &mut self,
+    ready: &mut Vec<String>,
+    ready_predecessor: &mut HashMap<String, String>,
+    running: &mut HashMap<String, AbortHandle>,
+    join_set: &mut JoinSet<NodeExecOutcome>,
+    step_count: i32,
+    start_time: i64,
+  ) -> WorkflowResult<HashMap<String, Value>> {
+    #[cfg(feature = "checkpoint")]
+    let force_stop_deadline = if self.checkpoint_store.is_some() {
+      let timeout_secs = self
+        .safe_stop_signal
+        .as_ref()
+        .map(|signal| signal.timeout_secs())
+        .unwrap_or(30);
+      Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs))
+    } else {
+      None
+    };
+    #[cfg(not(feature = "checkpoint"))]
+    let force_stop_deadline: Option<tokio::time::Instant> = None;
+
+    let mut interrupted_nodes = Vec::new();
+    #[cfg(feature = "checkpoint")]
+    let mut checkpoint_saved = false;
+    #[cfg(not(feature = "checkpoint"))]
+    let checkpoint_saved = false;
+
+    if !join_set.is_empty() {
+      loop {
+        if running.is_empty() {
+          break;
+        }
+
+        if let Some(deadline) = force_stop_deadline {
+          tokio::select! {
+            joined = join_set.join_next() => {
+              let Some(joined) = joined else {
+                break;
+              };
+
+              let Ok(outcome) = joined else {
+                continue;
+              };
+
+              self
+                .handle_safe_stop_joined_outcome(
+                  outcome,
+                  ready,
+                  ready_predecessor,
+                  running,
+                  step_count,
+                  start_time,
+                  &mut interrupted_nodes,
+                )
+                .await?;
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+              for (node_id, abort_handle) in running.drain() {
+                abort_handle.abort();
+                interrupted_nodes.push(node_id.clone());
+                ready.push(node_id);
+              }
+              join_set.abort_all();
+              while join_set.join_next().await.is_some() {}
+              break;
+            }
+          }
+        } else {
+          let Some(joined) = join_set.join_next().await else {
+            break;
+          };
+
+          let Ok(outcome) = joined else {
+            continue;
+          };
+
+          self
+            .handle_safe_stop_joined_outcome(
+              outcome,
+              ready,
+              ready_predecessor,
+              running,
+              step_count,
+              start_time,
+              &mut interrupted_nodes,
+            )
+            .await?;
+        }
+      }
+    }
+
+    #[cfg(feature = "checkpoint")]
+    if self.checkpoint_store.is_some() {
+      checkpoint_saved = self
+        .save_checkpoint(
+          self
+            .last_completed_node
+            .as_deref()
+            .unwrap_or("safe_stop"),
+          ready,
+          ready_predecessor,
+          step_count,
+          start_time,
+        )
+        .await
+        .is_ok();
+    }
+
+    if self.event_emitter.is_active() {
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::WorkflowSafeStopped {
+          interrupted_nodes: interrupted_nodes.clone(),
+          checkpoint_saved,
+        })
+        .await;
+    }
+
+    Err(WorkflowError::SafeStopped {
+      last_completed_node: self.last_completed_node.clone(),
+      interrupted_nodes,
+      checkpoint_saved,
+    })
+  }
+
+  #[cfg(feature = "checkpoint")]
+  async fn save_checkpoint(
+    &self,
+    completed_node_id: &str,
+    ready: &[String],
+    ready_predecessor: &HashMap<String, String>,
+    step_count: i32,
+    start_time: i64,
+  ) -> WorkflowResult<()> {
+    let (Some(store), Some(workflow_id)) = (&self.checkpoint_store, &self.workflow_id) else {
+      return Ok(());
+    };
+
+    #[cfg(feature = "security")]
+    let consumed_resources = if let (Some(governor), Some(group)) = (
+      self.context.resource_governor(),
+      self.context.resource_group(),
+    ) {
+      let usage = governor.get_usage(&group.group_id).await;
+      Some(ConsumedResources {
+        total_prompt_tokens: usage.llm_tokens_today as i64,
+        total_completion_tokens: 0,
+        total_llm_cost: 0.0,
+        total_tool_calls: 0,
+      })
+    } else {
+      None
+    };
+
+    #[cfg(not(feature = "security"))]
+    let consumed_resources = None;
+
+    let graph_summary = {
+      let graph = self.graph.read();
+      format!(
+        "{}:{}:{}",
+        graph.root_node_id(),
+        graph.topology.nodes.len(),
+        graph.topology.edges.len()
+      )
+    };
+    let schema_hash = self
+      .schema_hash
+      .clone()
+      .unwrap_or_else(|| hash_json(&graph_summary));
+    let engine_config_hash = self
+      .engine_config_hash
+      .clone()
+      .unwrap_or_else(|| hash_json(&self.config));
+
+    let (node_states, edge_states, variables) = {
+      let pool = self.variable_pool.read();
+      let graph = self.graph.read();
+      (
+        graph
+          .node_states
+          .iter()
+          .map(|(key, state)| (key.clone(), (*state).into()))
+          .collect::<HashMap<String, crate::core::checkpoint::SerializableEdgeState>>(),
+        graph
+          .edge_states
+          .iter()
+          .map(|(key, state)| (key.clone(), (*state).into()))
+          .collect::<HashMap<String, crate::core::checkpoint::SerializableEdgeState>>(),
+        snapshot_for_checkpoint(&pool),
+      )
+    };
+
+    #[cfg(feature = "security")]
+    let context_fingerprint = Some(ContextFingerprint::capture(
+      self.context.as_ref(),
+      schema_hash,
+      engine_config_hash,
+    ));
+
+    #[cfg(not(feature = "security"))]
+    let context_fingerprint = Some(ContextFingerprint::capture(
+      self
+        .context
+        .llm_provider_registry()
+        .list()
+        .into_iter()
+        .map(|provider| provider.id)
+        .collect(),
+      self.context.node_executor_registry().list_registered_types(),
+      schema_hash,
+      engine_config_hash,
+    ));
+
+    let checkpoint = Checkpoint {
+      workflow_id: workflow_id.clone(),
+      execution_id: self
+        .execution_id
+        .clone()
+        .unwrap_or_else(|| self.context.execution_id.clone()),
+      created_at: self.context.time_provider.now_millis(),
+
+      completed_node_id: completed_node_id.to_string(),
+      node_states,
+      edge_states,
+      ready_queue: ready.to_vec(),
+      ready_predecessor: ready_predecessor.clone(),
+
+      variables,
+
+      step_count,
+      exceptions_count: self.exceptions_count,
+      final_outputs: self.final_outputs.clone(),
+      elapsed_secs: self.context.time_provider.elapsed_secs(start_time),
+
+      consumed_resources,
+      context_fingerprint,
+    };
+
+    store
+      .save(workflow_id, &checkpoint)
+      .await
+      .map_err(|error| WorkflowError::InternalError(format!("Checkpoint save failed: {}", error)))?;
+
+    if self.event_emitter.is_active() {
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::CheckpointSaved {
+          node_id: completed_node_id.to_string(),
+        })
+        .await;
+    }
+
+    Ok(())
+  }
+
+  #[cfg(feature = "checkpoint")]
+  async fn try_resume_from_checkpoint(
+    &mut self,
+  ) -> WorkflowResult<Option<(Vec<String>, HashMap<String, String>, i32, i64)>> {
+    let (Some(store), Some(workflow_id)) = (&self.checkpoint_store, &self.workflow_id) else {
+      return Ok(None);
+    };
+
+    let Some(checkpoint) = store
+      .load(workflow_id)
+      .await
+      .map_err(|error| WorkflowError::InternalError(format!("Checkpoint load failed: {}", error)))?
+    else {
+      return Ok(None);
+    };
+
+    let schema_hash = self.schema_hash.clone().unwrap_or_else(|| {
+      let graph = self.graph.read();
+      let summary = format!(
+        "{}:{}:{}",
+        graph.root_node_id(),
+        graph.topology.nodes.len(),
+        graph.topology.edges.len()
+      );
+      hash_json(&summary)
+    });
+    let engine_config_hash = self
+      .engine_config_hash
+      .clone()
+      .unwrap_or_else(|| hash_json(&self.config));
+
+    #[cfg(feature = "security")]
+    let current_fingerprint = ContextFingerprint::capture(
+      self.context.as_ref(),
+      schema_hash,
+      engine_config_hash,
+    );
+
+    #[cfg(not(feature = "security"))]
+    let current_fingerprint = ContextFingerprint::capture(
+      self
+        .context
+        .llm_provider_registry()
+        .list()
+        .into_iter()
+        .map(|provider| provider.id)
+        .collect(),
+      self.context.node_executor_registry().list_registered_types(),
+      schema_hash,
+      engine_config_hash,
+    );
+
+    match self.resume_policy {
+      ResumePolicy::Normal => {
+        if let Some(saved_fingerprint) = &checkpoint.context_fingerprint {
+          let diagnostic = diff_fingerprints(saved_fingerprint, &current_fingerprint);
+          if diagnostic.has_danger() {
+            return Err(WorkflowError::ResumeRejected {
+              workflow_id: workflow_id.clone(),
+              diagnostic: diagnostic.report(),
+              changes: diagnostic.changes,
+            });
+          }
+
+          if diagnostic.has_warnings() && self.event_emitter.is_active() {
+            self
+              .event_emitter
+              .emit(GraphEngineEvent::ResumeWarning {
+                diagnostic: diagnostic.report(),
+              })
+              .await;
+          }
+        } else if self.event_emitter.is_active() {
+          self
+            .event_emitter
+            .emit(GraphEngineEvent::ResumeWarning {
+              diagnostic:
+                "Checkpoint has no context fingerprint (legacy format). Safety check skipped.".to_string(),
+            })
+            .await;
+        }
+      }
+      ResumePolicy::Force => {
+        if let Some(saved_fingerprint) = &checkpoint.context_fingerprint {
+          let diagnostic = diff_fingerprints(saved_fingerprint, &current_fingerprint);
+          if diagnostic.has_warnings() && self.event_emitter.is_active() {
+            self
+              .event_emitter
+              .emit(GraphEngineEvent::ResumeWarning {
+                diagnostic: diagnostic.report(),
+              })
+              .await;
+          }
+        }
+      }
+    }
+
+    {
+      let graph = self.graph.read();
+      for node_id in checkpoint.node_states.keys() {
+        if graph.get_node(node_id).is_none() {
+          return Err(WorkflowError::InternalError(format!(
+            "Checkpoint corrupted: node '{}' no longer exists in graph",
+            node_id
+          )));
+        }
+      }
+      for edge_id in checkpoint.edge_states.keys() {
+        if graph.get_edge(edge_id).is_none() {
+          return Err(WorkflowError::InternalError(format!(
+            "Checkpoint corrupted: edge '{}' no longer exists in graph",
+            edge_id
+          )));
+        }
+      }
+    }
+
+    {
+      let mut graph = self.graph.write();
+      for (node_id, state) in &checkpoint.node_states {
+        graph.set_node_state(node_id, (*state).into());
+      }
+      for (edge_id, state) in &checkpoint.edge_states {
+        graph.set_edge_state(edge_id, (*state).into());
+      }
+    }
+
+    {
+      let mut pool = self.variable_pool.write();
+      *pool = restore_from_checkpoint(&checkpoint.variables);
+    }
+    self.mark_pool_dirty();
+
+    self.exceptions_count = checkpoint.exceptions_count;
+    self.final_outputs = checkpoint.final_outputs.clone();
+    self.last_completed_node = Some(checkpoint.completed_node_id.clone());
+
+    let adjusted_start = self.context.time_provider.now_timestamp() - checkpoint.elapsed_secs as i64;
+
+    if self.event_emitter.is_active() {
+      self
+        .event_emitter
+        .emit(GraphEngineEvent::CheckpointResumed {
+          node_id: checkpoint.completed_node_id.clone(),
+        })
+        .await;
+    }
+
+    Ok(Some((
+      checkpoint.ready_queue,
+      checkpoint.ready_predecessor,
+      checkpoint.step_count,
+      adjusted_start,
+    )))
+  }
+
+  #[cfg(feature = "checkpoint")]
+  async fn delete_checkpoint(&self) {
+    let (Some(store), Some(workflow_id)) = (&self.checkpoint_store, &self.workflow_id) else {
+      return;
+    };
+    let _ = store.delete(workflow_id).await;
+  }
+
   async fn check_security_before_node(
     &self,
     node_id: &str,
@@ -1125,6 +2500,13 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
       return Ok(());
     }
 
+    #[cfg(feature = "checkpoint")]
+    if self.should_checkpoint_before(&info.node_type) {
+      self
+        .save_checkpoint(&node_id, ready, ready_predecessor, *step_count, start_time)
+        .await?;
+    }
+
     let mut pool_snapshot_for_exec: Option<VariablePool> = None;
     if self.debug_gate.should_pause_before(&node_id) {
       let pool_snapshot = self.variable_pool.read().clone();
@@ -1192,7 +2574,16 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
         }
         let ready_len_before = ready.len();
         let cancelled_sources = self
-          .handle_node_success(&exec_id, &node_id, &info, result, ready)
+          .handle_node_success(
+            &exec_id,
+            &node_id,
+            &info,
+            result,
+            ready,
+            ready_predecessor,
+            *step_count,
+            start_time,
+          )
           .await?;
         for downstream_node_id in ready.iter().skip(ready_len_before) {
           ready_predecessor.insert(downstream_node_id.clone(), node_id.clone());
@@ -1203,6 +2594,15 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
             g.set_node_state(&source, EdgeTraversalState::Cancelled);
           }
         }
+
+        #[cfg(feature = "checkpoint")]
+        if self.should_checkpoint_after(&info.node_type, &info.node_config) {
+          self
+            .save_checkpoint(&node_id, ready, ready_predecessor, *step_count, start_time)
+            .await?;
+        }
+
+        self.last_completed_node = Some(node_id.clone());
       }
       Err(e) => {
         let err = self.handle_node_failure(exec_id, node_id, &info, e).await;
@@ -1269,19 +2669,44 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
     self.event_emitter.emit(GraphEngineEvent::GraphRunStarted).await;
     self.emit_before_workflow_hooks().await?;
 
-    let root_id = {
-      let g = self.graph.read();
-      g.root_node_id().to_string()
+    let (mut ready, mut ready_predecessor, mut step_count, start_time) = {
+      #[cfg(feature = "checkpoint")]
+      {
+        if let Some(resumed) = self.try_resume_from_checkpoint().await? {
+          resumed
+        } else {
+          let root_id = {
+            let g = self.graph.read();
+            g.root_node_id().to_string()
+          };
+          (
+            vec![root_id],
+            HashMap::new(),
+            0,
+            self.context.time_provider.now_timestamp(),
+          )
+        }
+      }
+
+      #[cfg(not(feature = "checkpoint"))]
+      {
+        let root_id = {
+          let g = self.graph.read();
+          g.root_node_id().to_string()
+        };
+        (
+          vec![root_id],
+          HashMap::new(),
+          0,
+          self.context.time_provider.now_timestamp(),
+        )
+      }
     };
 
-    let mut ready: Vec<String> = vec![root_id];
-    let mut ready_predecessor: HashMap<String, String> = HashMap::new();
     let mut join_set: JoinSet<NodeExecOutcome> = JoinSet::new();
     let mut running: HashMap<String, AbortHandle> = HashMap::new();
     let mut gather_wait_started: HashMap<String, i64> = HashMap::new();
 
-    let mut step_count: i32 = 0;
-    let start_time = self.context.time_provider.now_timestamp();
     let (max_steps, max_exec_time) = self.effective_limits();
     let max_concurrency = if !self.config.parallel_enabled {
       1
@@ -1290,6 +2715,21 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
     };
 
     loop {
+      self.poll_commands().await?;
+
+      if self.is_safe_stop_triggered() {
+        return self
+          .execute_safe_stop(
+            &mut ready,
+            &mut ready_predecessor,
+            &mut running,
+            &mut join_set,
+            step_count,
+            start_time,
+          )
+          .await;
+      }
+
       let timeout_actions = self.collect_timed_out_gathers(&mut gather_wait_started);
       if !timeout_actions.is_empty() {
         for action in timeout_actions {
@@ -1411,6 +2851,13 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
           continue;
         }
 
+        #[cfg(feature = "checkpoint")]
+        if self.should_checkpoint_before(&info.node_type) {
+          self
+            .save_checkpoint(&node_id, &ready, &ready_predecessor, step_count, start_time)
+            .await?;
+        }
+
         let predecessor_node_id = ready_predecessor.remove(&node_id);
         let exec_id = self
           .begin_node_execution(
@@ -1504,6 +2951,9 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
               &outcome.info,
               result,
               &mut ready,
+              &ready_predecessor,
+              step_count,
+              start_time,
             )
             .await?;
           for downstream_node_id in ready.iter().skip(ready_len_before) {
@@ -1524,6 +2974,15 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
               }
             }
           }
+
+          #[cfg(feature = "checkpoint")]
+          if self.should_checkpoint_after(&outcome.info.node_type, &outcome.info.node_config) {
+            self
+              .save_checkpoint(&outcome.node_id, &ready, &ready_predecessor, step_count, start_time)
+              .await?;
+          }
+
+          self.last_completed_node = Some(outcome.node_id.clone());
         }
         Err(e) => {
           join_set.abort_all();
@@ -1559,6 +3018,9 @@ impl WorkflowDispatcher<NoopGate, NoopHook> {
           .await;
       }
     }
+
+    #[cfg(feature = "checkpoint")]
+    self.delete_checkpoint().await;
 
     self.emit_after_workflow_hooks().await?;
 
@@ -2279,6 +3741,82 @@ edges:
 
       let _ = dispatcher.run().await.unwrap();
       assert_eq!(probe.max_seen(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_safe_stop_without_checkpoint_waits_running_nodes() {
+      let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data: { type: start, title: Start }
+  - id: a
+    data: { type: probe-sleep, title: A }
+  - id: b
+    data: { type: probe-sleep, title: B }
+  - id: end
+    data: { type: end, title: End, outputs: [] }
+edges:
+  - source: start
+    target: a
+  - source: start
+    target: b
+  - source: a
+    target: end
+  - source: b
+    target: end
+"#;
+      let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+      let graph = build_graph(&schema).unwrap();
+
+      let pool = VariablePool::new();
+      let mut registry = NodeExecutorRegistry::new();
+      let probe = ParallelProbe::new();
+      registry.register(
+        "probe-sleep",
+        Box::new(ProbeSleepExecutor {
+          probe: probe.clone(),
+        }),
+      );
+      let (emitter, _rx) = make_emitter();
+
+      let config = EngineConfig {
+        parallel_enabled: true,
+        max_concurrency: 0,
+        ..Default::default()
+      };
+      let context = Arc::new(RuntimeContext::default());
+      let mut dispatcher = WorkflowDispatcher::new(
+        graph,
+        pool,
+        registry,
+        emitter,
+        config,
+        context,
+        #[cfg(feature = "plugin-system")]
+        None,
+      );
+
+      let (status_tx, _status_rx) = watch::channel(ExecutionStatus::Running);
+      let (command_tx, command_rx) = mpsc::channel(8);
+      dispatcher.set_control_channels(status_tx, command_rx);
+
+      let run_task = tokio::spawn(async move { dispatcher.run().await });
+      tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+      command_tx.send(Command::SafeStop).await.unwrap();
+
+      let result = run_task.await.unwrap();
+      match result {
+        Err(WorkflowError::SafeStopped {
+          interrupted_nodes,
+          checkpoint_saved,
+          ..
+        }) => {
+          assert!(interrupted_nodes.is_empty());
+          assert!(!checkpoint_saved);
+        }
+        other => panic!("expected SafeStopped, got {:?}", other),
+      }
     }
 
     #[test]

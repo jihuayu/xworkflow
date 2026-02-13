@@ -18,13 +18,16 @@ pub(crate) use plugin_gate::{new_scheduler_plugin_gate, SchedulerPluginGate};
 pub(crate) use security_gate::{new_scheduler_security_gate, SchedulerSecurityGate};
 
 use crate::core::debug::{DebugConfig, DebugHandle, InteractiveDebugGate, InteractiveDebugHook, StepMode};
-use crate::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
+#[cfg(feature = "checkpoint")]
+use crate::core::checkpoint::{CheckpointStore, ResumePolicy};
+use crate::core::SafeStopSignal;
+use crate::core::dispatcher::{Command, EngineConfig, EventEmitter, WorkflowDispatcher};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_group::RuntimeGroup;
 use crate::core::workflow_context::WorkflowContext;
 use crate::core::sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 use crate::core::variable_pool::{FileSegment, Segment, SegmentType, VariablePool};
-use crate::dsl::schema::{ErrorHandlingMode, StartVariable, WorkflowSchema};
+use crate::dsl::schema::{ErrorHandlingMode, HumanInputDecision, StartVariable, WorkflowSchema};
 use crate::dsl::validation::{validate_schema, ValidationReport};
 use crate::error::WorkflowError;
 use crate::graph::build_graph;
@@ -43,6 +46,24 @@ pub enum ExecutionStatus {
     original_error: String,
     recovered_outputs: HashMap<String, Value>,
   },
+  WaitingForInput {
+    node_id: String,
+    resume_token: String,
+    resume_mode: String,
+    form_schema: Value,
+    prompt_text: Option<String>,
+    timeout_at: Option<i64>,
+  },
+  Paused {
+    node_id: String,
+    node_title: String,
+    prompt: String,
+  },
+  SafeStopped {
+    last_completed_node: Option<String>,
+    interrupted_nodes: Vec<String>,
+    checkpoint_saved: bool,
+  },
 }
 
 /// Handle to a running or completed workflow.
@@ -53,6 +74,7 @@ pub struct WorkflowHandle {
     status_rx: watch::Receiver<ExecutionStatus>,
   events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
   event_active: Arc<AtomicBool>,
+  command_tx: mpsc::Sender<Command>,
 }
 
 impl WorkflowHandle {
@@ -60,11 +82,13 @@ impl WorkflowHandle {
       status_rx: watch::Receiver<ExecutionStatus>,
       events: Option<Arc<Mutex<Vec<GraphEngineEvent>>>>,
       event_active: Arc<AtomicBool>,
+      command_tx: mpsc::Sender<Command>,
     ) -> Self {
       Self {
         status_rx,
         events,
         event_active,
+        command_tx,
       }
     }
 
@@ -95,6 +119,48 @@ impl WorkflowHandle {
           _ => return status,
         }
       }
+    }
+
+    pub async fn wait_or_paused(&self) -> ExecutionStatus {
+      self.wait().await
+    }
+
+    pub async fn resume_with_input(
+      &self,
+      input: HashMap<String, Value>,
+    ) -> Result<(), WorkflowError> {
+      self
+        .command_tx
+        .send(Command::ResumeWithInput { input })
+        .await
+        .map_err(|_| WorkflowError::InternalError("Workflow already terminated".to_string()))
+    }
+
+    pub async fn resume_human_input(
+      &self,
+      node_id: &str,
+      resume_token: &str,
+      decision: Option<HumanInputDecision>,
+      form_data: HashMap<String, Value>,
+    ) -> Result<(), WorkflowError> {
+      self
+        .command_tx
+        .send(Command::ResumeHumanInput {
+          node_id: node_id.to_string(),
+          resume_token: resume_token.to_string(),
+          decision,
+          form_data,
+        })
+        .await
+        .map_err(|_| WorkflowError::InternalError("Workflow already terminated".to_string()))
+    }
+
+    pub async fn safe_stop(&self) -> Result<(), WorkflowError> {
+      self
+        .command_tx
+        .send(Command::SafeStop)
+        .await
+        .map_err(|_| WorkflowError::InternalError("Workflow already terminated".to_string()))
     }
 
     /// Whether event collection is still active.
@@ -138,6 +204,13 @@ impl WorkflowRunner {
       llm_provider_registry: None,
       debug_config: None,
       collect_events: true,
+      #[cfg(feature = "checkpoint")]
+      checkpoint_store: None,
+      #[cfg(feature = "checkpoint")]
+      workflow_id: None,
+      safe_stop_signal: None,
+      #[cfg(feature = "checkpoint")]
+      resume_policy: ResumePolicy::Normal,
     }
   }
 
@@ -295,6 +368,13 @@ pub struct WorkflowRunnerBuilder {
   llm_provider_registry: Option<Arc<LlmProviderRegistry>>,
   debug_config: Option<DebugConfig>,
   collect_events: bool,
+  #[cfg(feature = "checkpoint")]
+  checkpoint_store: Option<Arc<dyn CheckpointStore>>,
+  #[cfg(feature = "checkpoint")]
+  workflow_id: Option<String>,
+  safe_stop_signal: Option<SafeStopSignal>,
+  #[cfg(feature = "checkpoint")]
+  resume_policy: ResumePolicy,
 }
 
 impl WorkflowRunnerBuilder {
@@ -417,6 +497,29 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  #[cfg(feature = "checkpoint")]
+  pub fn checkpoint_store(mut self, store: Arc<dyn CheckpointStore>) -> Self {
+    self.checkpoint_store = Some(store);
+    self
+  }
+
+  #[cfg(feature = "checkpoint")]
+  pub fn workflow_id(mut self, id: String) -> Self {
+    self.workflow_id = Some(id);
+    self
+  }
+
+  pub fn safe_stop_signal(mut self, signal: SafeStopSignal) -> Self {
+    self.safe_stop_signal = Some(signal);
+    self
+  }
+
+  #[cfg(feature = "checkpoint")]
+  pub fn resume_policy(mut self, policy: ResumePolicy) -> Self {
+    self.resume_policy = policy;
+    self
+  }
+
   /// Validate the workflow schema without running it.
   pub fn validate(&self) -> ValidationReport {
     validate_schema(&self.schema)
@@ -525,6 +628,25 @@ impl WorkflowRunnerBuilder {
     let plugin_registry_for_shutdown = plugin_registry.clone();
 
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
+    let (command_tx, command_rx) = mpsc::channel(64);
+
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_store = builder.checkpoint_store.clone();
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_workflow_id = builder
+      .workflow_id
+      .clone()
+      .or_else(|| workflow_id.clone())
+      .or_else(|| Some(context.execution_id.clone()));
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_execution_id = Some(context.execution_id.clone());
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_resume_policy = builder.resume_policy;
+    let safe_stop_signal = builder.safe_stop_signal.clone();
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_schema_hash = crate::core::checkpoint::hash_json(&builder.schema);
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_engine_config_hash = crate::core::checkpoint::hash_json(&config);
 
     let (status_tx, status_rx) = watch::channel(ExecutionStatus::Running);
     let events = if builder.collect_events {
@@ -563,11 +685,35 @@ impl WorkflowRunnerBuilder {
         #[cfg(feature = "plugin-system")]
         plugin_registry,
       );
+      dispatcher.set_control_channels(status_exec.clone(), command_rx);
+      dispatcher.set_safe_stop_signal(safe_stop_signal);
+      #[cfg(feature = "checkpoint")]
+      dispatcher.set_checkpoint_options(
+        checkpoint_store,
+        checkpoint_workflow_id,
+        checkpoint_execution_id,
+        checkpoint_resume_policy,
+        checkpoint_schema_hash,
+        checkpoint_engine_config_hash,
+      );
       match dispatcher.run().await {
         Ok(outputs) => {
           let _ = status_exec.send(ExecutionStatus::Completed(outputs));
         }
         Err(e) => {
+          if let WorkflowError::SafeStopped {
+            last_completed_node,
+            interrupted_nodes,
+            checkpoint_saved,
+          } = &e {
+            let _ = status_exec.send(ExecutionStatus::SafeStopped {
+              last_completed_node: last_completed_node.clone(),
+              interrupted_nodes: interrupted_nodes.clone(),
+              checkpoint_saved: *checkpoint_saved,
+            });
+            return;
+          }
+
           if let Some(error_handler) = &schema.error_handler {
             let partial_outputs = dispatcher.partial_outputs();
             let pool_snapshot = dispatcher.snapshot_pool().await;
@@ -647,7 +793,12 @@ impl WorkflowRunnerBuilder {
       }
     });
 
-    Ok(WorkflowHandle { status_rx, events, event_active })
+    Ok(WorkflowHandle {
+      status_rx,
+      events,
+      event_active,
+      command_tx,
+    })
   }
 
   #[allow(unused_mut)]
@@ -761,6 +912,25 @@ impl WorkflowRunnerBuilder {
     let plugin_registry_for_shutdown = plugin_registry.clone();
 
     let context = Arc::new(builder.context.with_event_tx(tx.clone()));
+    let (command_tx, command_rx) = mpsc::channel(64);
+
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_store = builder.checkpoint_store.clone();
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_workflow_id = builder
+      .workflow_id
+      .clone()
+      .or_else(|| workflow_id.clone())
+      .or_else(|| Some(context.execution_id.clone()));
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_execution_id = Some(context.execution_id.clone());
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_resume_policy = builder.resume_policy;
+    let safe_stop_signal = builder.safe_stop_signal.clone();
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_schema_hash = crate::core::checkpoint::hash_json(&builder.schema);
+    #[cfg(feature = "checkpoint")]
+    let checkpoint_engine_config_hash = crate::core::checkpoint::hash_json(&config);
 
     let (status_tx, status_rx) = watch::channel(ExecutionStatus::Running);
     let events = if builder.collect_events {
@@ -803,11 +973,35 @@ impl WorkflowRunnerBuilder {
         gate,
         hook,
       );
+      dispatcher.set_control_channels(status_exec.clone(), command_rx);
+      dispatcher.set_safe_stop_signal(safe_stop_signal);
+      #[cfg(feature = "checkpoint")]
+      dispatcher.set_checkpoint_options(
+        checkpoint_store,
+        checkpoint_workflow_id,
+        checkpoint_execution_id,
+        checkpoint_resume_policy,
+        checkpoint_schema_hash,
+        checkpoint_engine_config_hash,
+      );
       match dispatcher.run().await {
         Ok(outputs) => {
           let _ = status_exec.send(ExecutionStatus::Completed(outputs));
         }
         Err(e) => {
+          if let WorkflowError::SafeStopped {
+            last_completed_node,
+            interrupted_nodes,
+            checkpoint_saved,
+          } = &e {
+            let _ = status_exec.send(ExecutionStatus::SafeStopped {
+              last_completed_node: last_completed_node.clone(),
+              interrupted_nodes: interrupted_nodes.clone(),
+              checkpoint_saved: *checkpoint_saved,
+            });
+            return;
+          }
+
           if let Some(error_handler) = &schema.error_handler {
             let partial_outputs = dispatcher.partial_outputs();
             let pool_snapshot = dispatcher.snapshot_pool().await;
@@ -887,7 +1081,12 @@ impl WorkflowRunnerBuilder {
       }
     });
 
-    let workflow_handle = WorkflowHandle { status_rx, events, event_active };
+    let workflow_handle = WorkflowHandle {
+      status_rx,
+      events,
+      event_active,
+      command_tx,
+    };
     let debug_handle = DebugHandle::new(cmd_tx, debug_evt_rx);
 
     Ok((workflow_handle, debug_handle))
@@ -2048,5 +2247,204 @@ edges:
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let events = handle.events().await;
         assert!(!events.is_empty());
+    }
+
+    async fn wait_until_terminal(handle: &WorkflowHandle) -> ExecutionStatus {
+        for _ in 0..80 {
+            let status = handle.status().await;
+            match status {
+                ExecutionStatus::Completed(_)
+                | ExecutionStatus::Failed(_)
+                | ExecutionStatus::FailedWithRecovery { .. }
+                | ExecutionStatus::SafeStopped { .. } => return status,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
+        handle.status().await
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_human_input_form_resume() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: human
+    data:
+      type: human-input
+      title: Human
+      resume_mode: form
+      prompt_text: "Please input city"
+      form_fields:
+        - variable: city
+          label: City
+          field_type: text
+          required: true
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: city
+          value_selector: ["human", "city"]
+edges:
+  - source: start
+    target: human
+  - source: human
+    target: end
+"#;
+
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema).run().await.unwrap();
+        let paused = handle.wait_or_paused().await;
+
+        let (node_id, resume_token) = match paused {
+            ExecutionStatus::WaitingForInput { node_id, resume_token, .. } => (node_id, resume_token),
+            other => panic!("Expected WaitingForInput, got {:?}", other),
+        };
+
+        let mut form_data = HashMap::new();
+        form_data.insert("city".to_string(), Value::String("Shanghai".to_string()));
+        handle
+            .resume_human_input(&node_id, &resume_token, None, form_data)
+            .await
+            .unwrap();
+
+        let status = wait_until_terminal(&handle).await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("city"), Some(&Value::String("Shanghai".to_string())));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_human_input_approval_branch() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: human
+    data:
+      type: human-input
+      title: Approval
+      resume_mode: approval
+      prompt_text: "Approve this request?"
+      form_fields:
+        - variable: comment
+          label: Comment
+          field_type: textarea
+          required: false
+  - id: approved_end
+    data:
+      type: end
+      title: Approved
+      outputs:
+        - variable: decision
+          value_selector: ["human", "__decision"]
+  - id: rejected_end
+    data:
+      type: end
+      title: Rejected
+      outputs:
+        - variable: decision
+          value_selector: ["human", "__decision"]
+edges:
+  - source: start
+    target: human
+  - source: human
+    target: approved_end
+    sourceHandle: approve
+  - source: human
+    target: rejected_end
+    sourceHandle: reject
+"#;
+
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema).run().await.unwrap();
+        let paused = handle.wait_or_paused().await;
+
+        let (node_id, resume_token) = match paused {
+            ExecutionStatus::WaitingForInput { node_id, resume_token, .. } => (node_id, resume_token),
+            other => panic!("Expected WaitingForInput, got {:?}", other),
+        };
+
+        let mut form_data = HashMap::new();
+        form_data.insert("comment".to_string(), Value::String("LGTM".to_string()));
+        handle
+            .resume_human_input(
+                &node_id,
+                &resume_token,
+                Some(HumanInputDecision::Approve),
+                form_data,
+            )
+            .await
+            .unwrap();
+
+        let status = wait_until_terminal(&handle).await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("decision"), Some(&Value::String("approve".to_string())));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_human_input_timeout_default_value() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: human
+    data:
+      type: human-input
+      title: Human
+      resume_mode: form
+      timeout_secs: 1
+      timeout_action: default_value
+      timeout_default_values:
+        city: "Beijing"
+      form_fields:
+        - variable: city
+          label: City
+          field_type: text
+          required: true
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs:
+        - variable: city
+          value_selector: ["human", "city"]
+edges:
+  - source: start
+    target: human
+  - source: human
+    target: end
+"#;
+
+        let schema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let handle = WorkflowRunner::builder(schema).run().await.unwrap();
+        let paused = handle.wait_or_paused().await;
+        assert!(matches!(paused, ExecutionStatus::WaitingForInput { .. }));
+
+        let status = wait_until_terminal(&handle).await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("city"), Some(&Value::String("Beijing".to_string())));
+            }
+            other => panic!("Expected Completed, got {:?}", other),
+        }
     }
 }

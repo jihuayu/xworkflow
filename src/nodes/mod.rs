@@ -14,6 +14,7 @@ pub mod control_flow;
 pub mod data_transform;
 pub mod document_extract;
 pub mod gather;
+pub mod human_input;
 pub mod subgraph;
 pub mod subgraph_nodes;
 pub mod utils;

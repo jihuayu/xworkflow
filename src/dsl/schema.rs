@@ -225,6 +225,142 @@ impl std::fmt::Display for NodeType {
 }
 
 // ================================
+// Human Input Node Config
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct HumanInputNodeData {
+    #[serde(default = "default_human_input_resume_mode")]
+    pub resume_mode: HumanInputResumeMode,
+    #[serde(default)]
+    pub form_fields: Vec<FormFieldDefinition>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default = "default_human_input_timeout_action")]
+    pub timeout_action: HumanInputTimeoutAction,
+    #[serde(default)]
+    pub timeout_default_values: Option<HashMap<String, Value>>,
+    #[serde(default)]
+    pub notification: Option<NotificationConfig>,
+    #[serde(default, alias = "prompt")]
+    pub prompt_text: Option<String>,
+    #[serde(default)]
+    pub prompt_variables: Vec<VariableMapping>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputResumeMode {
+    Form,
+    Approval,
+    Webhook,
+}
+
+fn default_human_input_resume_mode() -> HumanInputResumeMode {
+    HumanInputResumeMode::Form
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputTimeoutAction {
+    Fail,
+    DefaultValue,
+    AutoApprove,
+    AutoReject,
+}
+
+fn default_human_input_timeout_action() -> HumanInputTimeoutAction {
+    HumanInputTimeoutAction::Fail
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputDecision {
+    Approve,
+    Reject,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FormFieldDefinition {
+    pub variable: String,
+    #[serde(default)]
+    pub label: String,
+    pub field_type: FormFieldType,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub default_value: Option<Value>,
+    #[serde(default)]
+    pub default_value_selector: Option<VariableSelector>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub validation: Option<FieldValidation>,
+    #[serde(default)]
+    pub options: Option<Vec<FieldOption>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FormFieldType {
+    Text,
+    Textarea,
+    Number,
+    Checkbox,
+    Radio,
+    Dropdown,
+    MultiSelect,
+    Date,
+    Email,
+    Json,
+    File,
+    Hidden,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FieldValidation {
+    #[serde(default)]
+    pub min_length: Option<i32>,
+    #[serde(default)]
+    pub max_length: Option<i32>,
+    #[serde(default)]
+    pub min_value: Option<f64>,
+    #[serde(default)]
+    pub max_value: Option<f64>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FieldOption {
+    pub value: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct NotificationConfig {
+    #[serde(rename = "type")]
+    pub notification_type: NotificationType,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub params: HashMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationType {
+    Webhook,
+    Event,
+    None,
+}
+
+// ================================
 // Node Execution Type
 // ================================
 

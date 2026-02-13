@@ -23,8 +23,11 @@ pub mod workflow_context;
 pub mod runtime_context;
 pub mod sub_graph_runner;
 pub mod debug;
+pub mod safe_stop;
 pub mod security_gate;
 pub mod plugin_gate;
+#[cfg(feature = "checkpoint")]
+pub mod checkpoint;
 
 pub use variable_pool::{
 	FileSegment,
@@ -71,4 +74,19 @@ pub use debug::{
 	InteractiveDebugHook,
 	PauseLocation,
 	PauseReason as DebugPauseReason,
+};
+pub use safe_stop::SafeStopSignal;
+#[cfg(feature = "checkpoint")]
+pub use checkpoint::{
+	ChangeSeverity,
+	Checkpoint,
+	CheckpointError,
+	CheckpointStore,
+	ContextFingerprint,
+	EnvironmentChange,
+	FileCheckpointStore,
+	MemoryCheckpointStore,
+	ResumeDiagnostic,
+	ResumePolicy,
+	SerializableEdgeState,
 };
