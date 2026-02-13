@@ -1495,7 +1495,7 @@ mod tests {
         
         let config = serde_json::json!({
             "input_selector": "input.items",
-            "error_handle_mode": "continue",
+            "error_handle_mode": "continue_on_error",
             "sub_graph": {"nodes": [], "edges": []},
             "output_variable": "results"
         });
