@@ -298,7 +298,8 @@ impl Graph {
         let in_edges = self
             .topology
             .in_edges
-            .get(gather_node_id).cloned()
+            .get(gather_node_id)
+            .cloned()
             .unwrap_or_default();
 
         let mut cancelled_sources = Vec::new();
@@ -337,7 +338,8 @@ impl Graph {
         let out_edges = self
             .topology
             .out_edges
-            .get(node_id).cloned()
+            .get(node_id)
+            .cloned()
             .unwrap_or_default();
 
         if out_edges.is_empty() {
@@ -375,7 +377,8 @@ impl Graph {
         let parent_nodes = self
             .topology
             .in_edges
-            .get(node_id).cloned()
+            .get(node_id)
+            .cloned()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|eid| {

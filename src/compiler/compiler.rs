@@ -6,10 +6,10 @@ use std::time::Instant;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::compiler::helpers::{collect_conversation_variable_types, collect_start_variable_types};
 use crate::dsl::{parse_dsl, validate_schema, DslFormat, WorkflowSchema};
 use crate::error::WorkflowError;
 use crate::graph::{build_graph, Graph};
-use crate::scheduler::{collect_conversation_variable_types, collect_start_variable_types};
 
 use super::compiled_workflow::{
     CompiledConfig, CompiledNodeConfig, CompiledNodeConfigMap, CompiledWorkflow,
@@ -45,7 +45,6 @@ impl WorkflowCompiler {
 
         let start_var_types = collect_start_variable_types(&schema);
         let conversation_var_types = collect_conversation_variable_types(&schema);
-        let start_node_id = graph.root_node_id().to_string();
 
         let node_configs = Self::compile_node_configs(&graph);
 
@@ -56,7 +55,6 @@ impl WorkflowCompiler {
             graph_template,
             start_var_types: Arc::new(start_var_types),
             conversation_var_types: Arc::new(conversation_var_types),
-            start_node_id: Arc::from(start_node_id),
             validation_report: Arc::new(report),
             node_configs: Arc::new(node_configs),
         })
@@ -173,7 +171,7 @@ impl WorkflowCompiler {
 #[cfg(all(test, feature = "builtin-core-nodes"))]
 mod tests {
     use super::*;
-    use crate::scheduler::ExecutionStatus;
+    use crate::domain::execution::ExecutionStatus;
     use serde_json::Value;
     use std::collections::HashMap;
 

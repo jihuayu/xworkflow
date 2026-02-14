@@ -86,20 +86,20 @@ impl NodeExecutorRegistry {
         {
             registry.register(
                 "template-transform",
-                Box::new(super::data_transform::TemplateTransformExecutor::new()),
+                Box::new(super::transform::TemplateTransformExecutor::new()),
             );
             registry.register(
                 "variable-aggregator",
-                Box::new(super::data_transform::VariableAggregatorExecutor),
+                Box::new(super::transform::VariableAggregatorExecutor),
             );
             registry.register("gather", Box::new(super::gather::GatherExecutor));
             registry.register(
                 "variable-assigner",
-                Box::new(super::data_transform::LegacyVariableAggregatorExecutor),
+                Box::new(super::transform::LegacyVariableAggregatorExecutor),
             );
             registry.register(
                 "assigner",
-                Box::new(super::data_transform::VariableAssignerExecutor),
+                Box::new(super::transform::VariableAssignerExecutor),
             );
         }
 
@@ -107,7 +107,7 @@ impl NodeExecutorRegistry {
         {
             registry.register(
                 "http-request",
-                Box::new(super::data_transform::HttpRequestExecutor),
+                Box::new(super::transform::HttpRequestExecutor),
             );
         }
 
@@ -115,7 +115,7 @@ impl NodeExecutorRegistry {
         {
             registry.register_lazy(
                 "code",
-                Box::new(|| Box::new(super::data_transform::CodeNodeExecutor::new())),
+                Box::new(|| Box::new(super::transform::CodeNodeExecutor::new())),
             );
         }
 
@@ -123,16 +123,13 @@ impl NodeExecutorRegistry {
         {
             registry.register(
                 "list-operator",
-                Box::new(super::subgraph_nodes::ListOperatorNodeExecutor::new()),
+                Box::new(super::flow::ListOperatorNodeExecutor::new()),
             );
             registry.register(
                 "iteration",
-                Box::new(super::subgraph_nodes::IterationNodeExecutor::new()),
+                Box::new(super::flow::IterationNodeExecutor::new()),
             );
-            registry.register(
-                "loop",
-                Box::new(super::subgraph_nodes::LoopNodeExecutor::new()),
-            );
+            registry.register("loop", Box::new(super::flow::LoopNodeExecutor::new()));
         }
 
         // Stub executors for types that need external services
@@ -202,9 +199,7 @@ impl NodeExecutorRegistry {
         node_type: &str,
         factory: Box<dyn Fn() -> Box<dyn NodeExecutor> + Send + Sync>,
     ) {
-        self.executors
-            .entry(node_type.to_string())
-            .or_default();
+        self.executors.entry(node_type.to_string()).or_default();
         self.factories.lock().insert(node_type.to_string(), factory);
     }
 

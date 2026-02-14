@@ -1,8 +1,3 @@
-#![expect(
-    clippy::result_large_err,
-    reason = "Classifier executor methods follow shared NodeError API contract"
-)]
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 

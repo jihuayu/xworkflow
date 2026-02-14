@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner};
+use xworkflow::{ExecutionStatus, WorkflowHandle, WorkflowRunner};
 
 #[tokio::main]
 async fn main() {

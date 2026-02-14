@@ -272,8 +272,8 @@ impl WorkflowCache {
 #[cfg(all(test, feature = "workflow-cache", feature = "builtin-core-nodes"))]
 mod tests {
     use super::*;
+    use crate::domain::execution::ExecutionStatus;
     use crate::dsl::DslFormat;
-    use crate::scheduler::ExecutionStatus;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;

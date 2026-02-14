@@ -1,0 +1,9 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[profile.dev]
+split-debuginfo = "packed"
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,8 +1,3 @@
-#![expect(
-    clippy::result_large_err,
-    reason = "Document extractor integrates with NodeExecutor and keeps NodeError as stable error boundary"
-)]
-
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::Value;

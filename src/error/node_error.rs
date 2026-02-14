@@ -330,5 +330,4 @@ mod tests {
         assert!(matches!(node_err, NodeError::SerializationError(_)));
         assert!(node_err.to_string().contains("Serialization error"));
     }
-
 }

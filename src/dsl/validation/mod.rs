@@ -172,7 +172,7 @@ fn validate_schema_internal(
 
 #[cfg(feature = "security")]
 fn max_subgraph_depth(schema: &WorkflowSchema) -> usize {
-    use crate::nodes::subgraph::SubGraphDefinition;
+    use crate::domain::model::SubGraphDefinition;
     use serde_json::Value;
 
     fn depth_from_value(value: &Value, current: usize) -> usize {
@@ -227,8 +227,11 @@ fn validate_selector_limits(
     schema: &WorkflowSchema,
     selector_cfg: &SelectorValidation,
 ) -> Vec<types::Diagnostic> {
-    use crate::nodes::utils::selector_from_value;
     use serde_json::Value;
+
+    fn selector_from_value(value: &serde_json::Value) -> Option<crate::domain::model::Selector> {
+        crate::domain::model::Selector::parse_value(value)
+    }
 
     let mut diags = Vec::new();
     let allow_all = selector_cfg.allowed_prefixes.contains("*");
@@ -288,14 +291,14 @@ fn validate_selector_limits(
 
 #[cfg(feature = "security")]
 fn apply_selector_limits(
-    selector: &crate::core::variable_pool::Selector,
+    selector: &crate::domain::model::Selector,
     node_id: &str,
     field_path: &str,
     cfg: &SelectorValidation,
     allow_all: bool,
     diags: &mut Vec<types::Diagnostic>,
 ) {
-    let depth = if selector.node_id() == crate::core::variable_pool::SCOPE_NODE_ID {
+    let depth = if selector.node_id() == crate::domain::model::SCOPE_NODE_ID {
         1
     } else {
         2
@@ -312,7 +315,7 @@ fn apply_selector_limits(
         });
     }
 
-    let length = if selector.node_id() == crate::core::variable_pool::SCOPE_NODE_ID {
+    let length = if selector.node_id() == crate::domain::model::SCOPE_NODE_ID {
         selector.variable_name().len()
     } else {
         selector.node_id().len() + 1 + selector.variable_name().len()
@@ -329,7 +332,7 @@ fn apply_selector_limits(
     }
 
     if !cfg.allowed_prefixes.is_empty() && !allow_all {
-        let root = if selector.node_id() == crate::core::variable_pool::SCOPE_NODE_ID {
+        let root = if selector.node_id() == crate::domain::model::SCOPE_NODE_ID {
             selector.variable_name()
         } else {
             selector.node_id()

@@ -1,8 +1,3 @@
-#![expect(
-    clippy::result_large_err,
-    reason = "LLM executor helpers intentionally expose NodeError for unified node-executor error handling"
-)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

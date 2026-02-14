@@ -1,8 +1,3 @@
-#![expect(
-    clippy::result_large_err,
-    reason = "HTTP client helpers return NodeError to align with node execution API contracts"
-)]
-
 use std::time::Duration;
 
 #[cfg(feature = "security")]

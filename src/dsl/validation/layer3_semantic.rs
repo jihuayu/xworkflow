@@ -3,15 +3,19 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use serde_json::Value;
 
-use crate::core::variable_pool::{SegmentType, Selector};
+use crate::domain::model::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
+use crate::domain::model::{SegmentType, Selector};
 use crate::dsl::schema::{
     AnswerNodeData, CodeNodeData, EndNodeData, HttpRequestNodeData, HumanInputNodeData,
     HumanInputResumeMode, IfElseNodeData, QuestionClassifierNodeData, StartNodeData,
     TemplateTransformNodeData, VariableAggregatorNodeData, VariableAssignerNodeData,
     WorkflowSchema,
 };
-use crate::nodes::subgraph_nodes::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
-use crate::nodes::utils::selector_from_value;
+
+/// Parse a variable selector from a JSON value.
+fn selector_from_value(value: &Value) -> Option<Selector> {
+    Selector::parse_value(value)
+}
 #[cfg(feature = "builtin-template-jinja")]
 use crate::template::CompiledTemplate;
 

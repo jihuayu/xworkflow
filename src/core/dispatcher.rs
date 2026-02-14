@@ -34,6 +34,7 @@ use crate::core::security_gate::SecurityGate;
 #[cfg(feature = "checkpoint")]
 use crate::core::variable_pool::{restore_from_checkpoint, snapshot_for_checkpoint};
 use crate::core::variable_pool::{Segment, Selector, VariablePool};
+use crate::domain::execution::ExecutionStatus;
 use crate::dsl::schema::{
     BackoffStrategy, EdgeHandle, ErrorStrategyConfig, ErrorStrategyType, FieldValidation,
     FormFieldDefinition, FormFieldType, GatherNodeData, HumanInputDecision, HumanInputResumeMode,
@@ -46,7 +47,6 @@ use crate::nodes::executor::NodeExecutorRegistry;
 use crate::nodes::human_input::{HumanInputPauseRequest, HUMAN_INPUT_REQUEST_KEY};
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::PluginRegistry;
-use crate::scheduler::ExecutionStatus;
 
 type HumanInputOutputs = (
     HashMap<String, Segment>,
@@ -1472,10 +1472,9 @@ impl<G: DebugGate, H: DebugHook> WorkflowDispatcher<G, H> {
                 .get(&field.variable)
                 .or(field.default_value.as_ref());
 
-            if field.required
-                && (value.is_none() || value.is_some_and(|v| v.is_null())) {
-                    return Err(format!("required field is missing: {}", field.variable));
-                }
+            if field.required && (value.is_none() || value.is_some_and(|v| v.is_null())) {
+                return Err(format!("required field is missing: {}", field.variable));
+            }
 
             if let Some(v) = value {
                 Self::validate_field_type(field, v)?;

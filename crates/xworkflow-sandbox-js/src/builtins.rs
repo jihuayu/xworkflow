@@ -198,7 +198,8 @@ fn datetime_timestamp(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) ->
 }
 
 fn datetime_format(_this: &JsValue, args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
-    let fmt = args.first()
+    let fmt = args
+        .first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_else(|| "%Y-%m-%d %H:%M:%S".to_string());

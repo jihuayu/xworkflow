@@ -1,8 +1,3 @@
-#![expect(
-    clippy::result_large_err,
-    reason = "Agent executor APIs must return NodeError to satisfy NodeExecutor trait and shared callers"
-)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

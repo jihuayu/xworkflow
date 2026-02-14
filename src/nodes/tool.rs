@@ -60,15 +60,12 @@ impl ToolNodeExecutor {
                 )))
             })?;
 
-        mcp_servers
-            .get(server_ref)
-            .cloned()
-            .ok_or_else(|| {
-                Box::new(NodeError::ConfigError(format!(
-                    "mcp_server_ref '{}' not found",
-                    server_ref
-                )))
-            })
+        mcp_servers.get(server_ref).cloned().ok_or_else(|| {
+            Box::new(NodeError::ConfigError(format!(
+                "mcp_server_ref '{}' not found",
+                server_ref
+            )))
+        })
     }
 
     #[cfg(feature = "security")]

@@ -116,7 +116,8 @@ WorkflowRunner::builder(schema) → parse DSL → validate (3 layers) → build 
 
 ### Key Modules
 
-- **`scheduler.rs`** — Public API entry point. `WorkflowRunner` builder, `WorkflowHandle` for async results.
+- **`api/runner.rs`** — Public API entry point. `WorkflowRunner` builder for executing a parsed workflow schema.
+- **`api/handle.rs`** — Public handle type (`WorkflowHandle`) re-exported from `application`.
 - **`core/dispatcher.rs`** — DAG execution engine. Resolves edges, executes nodes, handles errors/retries.
 - **`core/variable_pool.rs`** — Variable system using copy-on-write (`im::HashMap`). Supports streaming segments for LLM output.
 - **`core/runtime_context.rs`** — Injectable context with `TimeProvider` and `IdGenerator` traits for testability.

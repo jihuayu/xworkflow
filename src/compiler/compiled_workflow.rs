@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::core::variable_pool::SegmentType;
+use crate::domain::model::{
+    IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig, SegmentType,
+};
 use crate::dsl::schema::{
     AnswerNodeData, CodeNodeData, DocumentExtractorNodeData, EndNodeData, HttpRequestNodeData,
     IfElseNodeData, LlmNodeData, QuestionClassifierNodeData, StartNodeData,
@@ -13,7 +15,6 @@ use crate::dsl::schema::{
 };
 use crate::dsl::validation::ValidationReport;
 use crate::graph::GraphTopology;
-use crate::nodes::subgraph_nodes::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
 
 use super::runner::CompiledWorkflowRunnerBuilder;
 
@@ -83,7 +84,6 @@ pub struct CompiledWorkflow {
     pub(crate) graph_template: Arc<GraphTopology>,
     pub(crate) start_var_types: Arc<HashMap<String, SegmentType>>,
     pub(crate) conversation_var_types: Arc<HashMap<String, SegmentType>>,
-    pub(crate) start_node_id: Arc<str>,
     pub(crate) validation_report: Arc<ValidationReport>,
     pub(crate) node_configs: Arc<CompiledNodeConfigMap>,
 }
@@ -183,7 +183,6 @@ edges:
             graph_template: graph.topology.clone(),
             start_var_types: Arc::new(HashMap::new()),
             conversation_var_types: Arc::new(HashMap::new()),
-            start_node_id: Arc::from("start"),
             validation_report: Arc::new(crate::dsl::validation::ValidationReport {
                 is_valid: true,
                 diagnostics: vec![],
@@ -227,7 +226,6 @@ edges:
             graph_template: graph.topology.clone(),
             start_var_types: Arc::new(HashMap::new()),
             conversation_var_types: Arc::new(HashMap::new()),
-            start_node_id: Arc::from("start"),
             validation_report: Arc::new(crate::dsl::validation::ValidationReport {
                 is_valid: true,
                 diagnostics: vec![],
@@ -237,9 +235,5 @@ edges:
 
         let cloned = compiled.clone();
         assert_eq!(cloned.content_hash(), compiled.content_hash());
-        assert_eq!(
-            cloned.start_node_id.as_ref(),
-            compiled.start_node_id.as_ref()
-        );
     }
 }

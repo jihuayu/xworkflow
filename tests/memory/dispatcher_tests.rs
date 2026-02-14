@@ -170,15 +170,15 @@ async fn test_dispatcher_cleanup_on_timeout() {
     let graph = build_graph(&schema).expect("build graph");
     let registry = Arc::new(NodeExecutorRegistry::new());
     let context = Arc::new(RuntimeContext {
-      time_provider: Arc::new(FastForwardTimeProvider),
-      ..RuntimeContext::default()
+        time_provider: Arc::new(FastForwardTimeProvider),
+        ..RuntimeContext::default()
     });
     let pool = VariablePool::new();
     let emitter = make_emitter();
 
     let config = EngineConfig {
-      max_execution_time_secs: 0,
-      ..EngineConfig::default()
+        max_execution_time_secs: 0,
+        ..EngineConfig::default()
     };
 
     let mut dispatcher = WorkflowDispatcher::new_with_registry(

@@ -3,11 +3,6 @@
 //! The [`SecurityGate`] is checked by the dispatcher before and after each node
 //! to enforce resource limits, output size caps, and LLM usage accounting.
 
-#![expect(
-    clippy::result_large_err,
-    reason = "Security gate trait signatures use NodeError for compatibility with executor stack"
-)]
-
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;

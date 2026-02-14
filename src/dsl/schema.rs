@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::core::variable_pool::{Segment, SegmentStream, Selector};
+use crate::domain::execution::{Segment, SegmentStream};
+use crate::domain::model::Selector;
+
+pub use crate::domain::model::{ComparisonOperator, IterationErrorMode};
 
 // ================================
 // Variable Selector
@@ -200,11 +203,10 @@ pub enum ErrorHandlingMode {
     Notify,
 }
 
-
 /// Global error handler configuration with an embedded recovery sub-graph.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ErrorHandlerConfig {
-    pub sub_graph: crate::nodes::subgraph::SubGraphDefinition,
+    pub sub_graph: crate::domain::model::SubGraphDefinition,
     #[serde(default)]
     pub mode: ErrorHandlingMode,
 }
@@ -504,52 +506,6 @@ pub struct Condition {
     pub value: Value,
 }
 
-/// Comparison operators supported by IfElse conditions.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ComparisonOperator {
-    // String/Array
-    Contains,
-    #[serde(alias = "not_contains")]
-    NotContains,
-    #[serde(alias = "start_with")]
-    StartWith,
-    #[serde(alias = "end_with")]
-    EndWith,
-    Is,
-    #[serde(alias = "is_not")]
-    IsNot,
-    Empty,
-    #[serde(alias = "not_empty")]
-    NotEmpty,
-    In,
-    #[serde(alias = "not_in")]
-    NotIn,
-    #[serde(alias = "all_of")]
-    AllOf,
-    // Numeric
-    #[serde(alias = "=")]
-    Equal,
-    #[serde(alias = "≠")]
-    NotEqual,
-    #[serde(alias = ">", alias = "greater_than")]
-    GreaterThan,
-    #[serde(alias = "<", alias = "less_than")]
-    LessThan,
-    #[serde(
-        alias = "≥",
-        alias = "greater_than_or_equal",
-        alias = "greater_or_equal"
-    )]
-    GreaterOrEqual,
-    #[serde(alias = "≤", alias = "less_than_or_equal", alias = "less_or_equal")]
-    LessOrEqual,
-    // Null
-    Null,
-    #[serde(alias = "not_null")]
-    NotNull,
-}
-
 /// Logical operator for combining conditions within a case.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
@@ -735,9 +691,10 @@ pub enum JoinMode {
     #[default]
     All,
     Any,
-    NOfM { n: usize },
+    NOfM {
+        n: usize,
+    },
 }
-
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -747,7 +704,6 @@ pub enum TimeoutStrategy {
     ProceedWithAvailable,
     Fail,
 }
-
 
 fn default_cancel_remaining() -> bool {
     true
@@ -809,15 +765,6 @@ pub struct IterationNodeData {
     pub parallel_nums: Option<u32>,
     #[serde(default = "default_iteration_error_mode")]
     pub error_handle_mode: IterationErrorMode,
-}
-
-/// Error handling mode for iteration failures.
-#[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum IterationErrorMode {
-    Terminated,
-    RemoveAbnormal,
-    ContinueOnError,
 }
 
 fn default_iteration_error_mode() -> IterationErrorMode {
@@ -1001,8 +948,7 @@ impl Default for NodeRunResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum EdgeHandle {
     /// Non-branch nodes: all edges are taken
     #[default]
@@ -1010,7 +956,6 @@ pub enum EdgeHandle {
     /// Branch nodes: select specific edge handle
     Branch(String),
 }
-
 
 /// Node output container, supporting both synchronous and streaming outputs.
 #[derive(Debug, Clone)]
@@ -1167,7 +1112,7 @@ mod tests {
 
     #[test]
     fn test_node_outputs_stream() {
-        let (stream, _writer) = crate::core::variable_pool::SegmentStream::channel();
+        let (stream, _writer) = crate::domain::execution::SegmentStream::channel();
         let mut ready = HashMap::new();
         ready.insert("r".into(), Segment::Boolean(true));
         let mut streams = HashMap::new();

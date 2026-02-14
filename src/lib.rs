@@ -66,11 +66,18 @@ pub mod nodes;
 #[cfg(feature = "plugin-system")]
 pub mod plugin_system;
 pub mod sandbox;
-pub mod scheduler;
 #[cfg(feature = "security")]
 pub mod security;
 pub mod template;
 
+// New architecture layers (see docs/architecture-reorganization-design.md)
+pub mod api;
+pub mod application;
+pub mod domain;
+pub mod engine;
+pub mod infrastructure;
+
+pub use crate::api::{WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};
 #[cfg(feature = "workflow-cache")]
 pub use crate::compiler::{
     CacheKey, CacheStats, GroupCacheStats, WorkflowCache, WorkflowCacheConfig,
@@ -92,6 +99,7 @@ pub use crate::core::{
     RuntimeContext, RuntimeGroup, RuntimeGroupBuilder, SafeStopSignal, SandboxPool, Segment,
     SegmentType, SubGraphRunner, TimeProvider, VariablePool, WorkflowContext, WorkflowDispatcher,
 };
+pub use crate::domain::execution::ExecutionStatus;
 pub use crate::dsl::{
     parse_dsl, validate_dsl, validate_schema, Diagnostic, DiagnosticLevel, DslFormat,
     ValidationReport, WorkflowSchema,
@@ -103,9 +111,6 @@ pub use crate::nodes::NodeExecutorRegistry;
 pub use crate::plugin_system::{
     Plugin, PluginCategory, PluginContext, PluginError, PluginLoadSource, PluginLoader,
     PluginMetadata, PluginPhase, PluginRegistry, PluginSource, PluginSystemConfig,
-};
-pub use crate::scheduler::{
-    ExecutionStatus, WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder,
 };
 #[cfg(feature = "security")]
 pub use crate::security::*;

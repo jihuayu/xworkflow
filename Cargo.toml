@@ -3,6 +3,7 @@ name = "xworkflow"
 version = "0.1.0"
 edition = "2021"
 autobenches = false
+license = "Apache-2.0"
 
 [lib]
 name = "xworkflow"

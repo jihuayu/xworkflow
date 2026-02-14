@@ -5,10 +5,10 @@ use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 use xworkflow::nodes::control_flow::{
     AnswerNodeExecutor, EndNodeExecutor, IfElseNodeExecutor, StartNodeExecutor,
 };
-use xworkflow::nodes::data_transform::{
+use xworkflow::nodes::executor::NodeExecutor;
+use xworkflow::nodes::transform::{
     CodeNodeExecutor, TemplateTransformExecutor, VariableAggregatorExecutor,
 };
-use xworkflow::nodes::executor::NodeExecutor;
 
 mod helpers;
 use helpers::bench_runtime;

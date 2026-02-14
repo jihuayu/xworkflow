@@ -1,3 +1,12 @@
+//! Startup-phase security gate — schema validation and runtime configuration.
+//!
+//! The [`SchedulerSecurityGate`] trait and its implementations handle schema
+//! validation with security policies, variable pool configuration, engine
+//! config adjustment, and workflow lifecycle auditing.
+//!
+//! This was originally located in `scheduler/security_gate.rs` and has been moved
+//! to the application bootstrap layer to separate startup concerns from runtime.
+
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -8,6 +17,10 @@ use crate::dsl::schema::WorkflowSchema;
 use crate::dsl::validation::{validate_schema, ValidationReport};
 use crate::error::WorkflowError;
 
+/// Startup-phase security gate trait.
+///
+/// Implementations handle schema validation with security policies, variable
+/// pool configuration, engine config adjustments, and workflow lifecycle auditing.
 #[async_trait]
 pub trait SchedulerSecurityGate: Send + Sync {
     fn validate_schema(
@@ -368,7 +381,6 @@ mod tests {
         let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"S"}},{"id":"a","data":{"type":"code","title":"A","code":"x","language":"javascript"}},{"id":"end","data":{"type":"end","title":"E","outputs":[]}}],"edges":[{"source":"start","target":"a"},{"source":"a","target":"end"}]}"#;
         let schema: WorkflowSchema = serde_json::from_str(json).unwrap();
         let report = gate.validate_schema(&schema, &context);
-        // max_nodes=2 but we have 3 nodes -> should fail
         assert!(
             report.diagnostics.iter().any(|d| d.code == "E020"),
             "got: {:?}",
@@ -402,6 +414,5 @@ mod tests {
         context.set_security_policy(policy);
         let mut pool = VariablePool::new();
         gate.configure_variable_pool(&context, &mut pool);
-        // Pool should now have selector validation configured
     }
 }

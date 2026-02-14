@@ -12,8 +12,7 @@ use super::BuiltinSandboxConfig;
 use super::WasmSandboxConfig;
 
 /// Sandbox manager configuration
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SandboxManagerConfig {
     /// Built-in sandbox configuration
     #[cfg(feature = "builtin-sandbox-js")]
@@ -22,7 +21,6 @@ pub struct SandboxManagerConfig {
     #[cfg(feature = "builtin-sandbox-wasm")]
     pub wasm_config: WasmSandboxConfig,
 }
-
 
 /// Sandbox manager - manages multiple sandbox implementations
 pub struct SandboxManager {

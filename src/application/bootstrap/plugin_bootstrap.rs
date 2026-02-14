@@ -1,3 +1,12 @@
+//! Startup-phase plugin gate — plugin initialization and DSL validation extension.
+//!
+//! The [`SchedulerPluginGate`] trait and its implementations orchestrate plugin
+//! loading, DSL validation hooks, node executor registration, and LLM provider
+//! injection during the workflow builder phase (before execution starts).
+//!
+//! This was originally located in `scheduler/plugin_gate.rs` and has been moved
+//! to the application bootstrap layer to separate startup concerns from runtime.
+
 use async_trait::async_trait;
 
 #[cfg(feature = "plugin-system")]
@@ -10,6 +19,10 @@ use crate::error::WorkflowError;
 use crate::llm::LlmProviderRegistry;
 use crate::nodes::executor::NodeExecutorRegistry;
 
+/// Startup-phase plugin gate trait.
+///
+/// Implementations handle plugin initialization, DSL validation extension,
+/// node executor registration, and LLM provider injection.
 #[async_trait]
 pub trait SchedulerPluginGate: Send {
     async fn init_and_extend_validation(
@@ -448,7 +461,6 @@ mod tests {
     #[cfg(feature = "plugin-system")]
     #[test]
     fn test_real_plugin_gate_creation() {
-        // Test that RealSchedulerPluginGate can be created successfully
         let _gate = new_scheduler_plugin_gate();
     }
 
@@ -457,7 +469,6 @@ mod tests {
     fn test_real_plugin_gate_apply_node_executors_empty() {
         let mut gate = new_scheduler_plugin_gate();
         let mut registry = NodeExecutorRegistry::new();
-
         gate.apply_node_executors(&mut registry);
     }
 
@@ -466,7 +477,6 @@ mod tests {
     fn test_real_plugin_gate_apply_llm_providers_empty() {
         let gate = new_scheduler_plugin_gate();
         let mut llm_registry = LlmProviderRegistry::new();
-
         gate.apply_llm_providers(&mut llm_registry);
     }
 
@@ -475,7 +485,6 @@ mod tests {
     fn test_real_plugin_gate_customize_context_empty() {
         let gate = new_scheduler_plugin_gate();
         let mut context = WorkflowContext::default();
-
         gate.customize_context(&mut context);
     }
 

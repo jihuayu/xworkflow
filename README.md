@@ -143,3 +143,7 @@ The [docs/](docs/) directory contains 45+ design documents covering:
 - Security and resource governance
 - Testing frameworks and benchmarks
 - Performance optimization strategies
+
+## License
+
+Apache-2.0 (see `LICENSE`).
