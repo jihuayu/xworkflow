@@ -1,0 +1,8 @@
+# Error: Retry with exponential backoff on failure.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+status = 200

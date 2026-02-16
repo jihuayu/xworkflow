@@ -14,10 +14,10 @@ use crate::sandbox::{CodeLanguage, CodeSandbox};
 use super::context::PluginContext;
 use super::error::PluginError;
 use super::extensions::{DslValidator, TemplateFunction};
-use xworkflow_types::template::TemplateEngine;
 use super::hooks::{HookHandler, HookPoint};
 use super::loader::{PluginLoadSource, PluginLoader};
-use super::traits::{Plugin, PluginCategory, PluginCapabilities, PluginMetadata};
+use super::traits::{Plugin, PluginCapabilities, PluginCategory, PluginMetadata};
+use xworkflow_types::template::TemplateEngine;
 
 /// Current phase of the plugin initialization lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,10 +110,9 @@ impl PluginRegistry {
             let loader = self
                 .loaders
                 .get(&source.loader_type)
-                .ok_or_else(|| PluginError::InvalidConfig(format!(
-                    "Loader not found: {}",
-                    source.loader_type
-                )))?
+                .ok_or_else(|| {
+                    PluginError::InvalidConfig(format!("Loader not found: {}", source.loader_type))
+                })?
                 .clone();
             let plugin = loader.load(&source).await?;
             self.register_plugin(plugin, PluginPhase::Bootstrap).await?;
@@ -137,10 +136,9 @@ impl PluginRegistry {
             let loader = self
                 .loaders
                 .get(&source.loader_type)
-                .ok_or_else(|| PluginError::InvalidConfig(format!(
-                    "Loader not found: {}",
-                    source.loader_type
-                )))?
+                .ok_or_else(|| {
+                    PluginError::InvalidConfig(format!("Loader not found: {}", source.loader_type))
+                })?
                 .clone();
             let plugin = loader.load(&source).await?;
             self.register_plugin(plugin, PluginPhase::Normal).await?;
@@ -163,11 +161,7 @@ impl PluginRegistry {
     }
 
     pub fn hooks(&self, point: &HookPoint) -> Vec<Arc<dyn HookHandler>> {
-        self.inner
-            .hooks
-            .get(point)
-            .cloned()
-            .unwrap_or_default()
+        self.inner.hooks.get(point).cloned().unwrap_or_default()
     }
 
     pub fn plugin_metadata(&self) -> Vec<PluginMetadata> {
@@ -266,5 +260,11 @@ impl PluginRegistry {
         }
 
         Ok(())
+    }
+}
+
+impl Default for PluginRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }

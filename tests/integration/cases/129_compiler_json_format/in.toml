@@ -1,0 +1,4 @@
+# Compiler: Workflow defined in JSON format.
+# File: Input variables supplied to the workflow
+
+value = 21

@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::core::runtime_context::RuntimeContext;
-use crate::core::variable_pool::{Segment, SegmentStream, StreamEvent, StreamStatus, VariablePool};
-use crate::core::variable_pool::Selector;
 use crate::compiler::CompiledNodeConfig;
+use crate::core::runtime_context::RuntimeContext;
+use crate::core::variable_pool::Selector;
+use crate::core::variable_pool::{Segment, SegmentStream, StreamEvent, StreamStatus, VariablePool};
 use crate::dsl::schema::{
     Case, EdgeHandle, NodeOutputs, NodeRunResult, OutputVariable, StartVariable,
     WorkflowNodeExecutionStatus,
@@ -17,9 +17,9 @@ use crate::evaluator::evaluate_cases;
 use crate::nodes::executor::NodeExecutor;
 use crate::nodes::utils::selector_from_value;
 // render_template_async no longer used in this module
-use regex::Regex;
 #[cfg(feature = "security")]
 use crate::security::SecurityLevel;
+use regex::Regex;
 
 // ================================
 // Start Node
@@ -72,7 +72,9 @@ impl NodeExecutor for StartNodeExecutor {
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let CompiledNodeConfig::Start(config) = compiled_config else {
-            return self.execute(node_id, compiled_config.as_value(), variable_pool, _context).await;
+            return self
+                .execute(node_id, compiled_config.as_value(), variable_pool, _context)
+                .await;
         };
 
         let mut outputs = HashMap::new();
@@ -119,7 +121,9 @@ impl NodeExecutor for EndNodeExecutor {
             if let Some(arr) = outputs_val.as_array() {
                 for ov in arr {
                     let variable = ov.get("variable").and_then(|v| v.as_str()).unwrap_or("");
-                    let selector_val = ov.get("value_selector").or_else(|| ov.get("variable_selector"));
+                    let selector_val = ov
+                        .get("value_selector")
+                        .or_else(|| ov.get("variable_selector"));
                     let selector = selector_val.and_then(selector_from_value);
 
                     if !variable.is_empty() {
@@ -130,7 +134,9 @@ impl NodeExecutor for EndNodeExecutor {
                         }
                     }
                 }
-            } else if let Ok(output_vars) = serde_json::from_value::<Vec<OutputVariable>>(outputs_val.clone()) {
+            } else if let Ok(output_vars) =
+                serde_json::from_value::<Vec<OutputVariable>>(outputs_val.clone())
+            {
                 for ov in &output_vars {
                     let val = variable_pool.get_resolved(&ov.value_selector).await;
                     outputs.insert(ov.variable.clone(), val.clone());
@@ -156,7 +162,14 @@ impl NodeExecutor for EndNodeExecutor {
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let CompiledNodeConfig::End(config) = compiled_config else {
-            return self.execute(_node_id, compiled_config.as_value(), variable_pool, _context).await;
+            return self
+                .execute(
+                    _node_id,
+                    compiled_config.as_value(),
+                    variable_pool,
+                    _context,
+                )
+                .await;
         };
 
         let mut outputs = HashMap::new();
@@ -192,10 +205,7 @@ impl NodeExecutor for AnswerNodeExecutor {
         variable_pool: &VariablePool,
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
-        let answer_template = config
-            .get("answer")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let answer_template = config.get("answer").and_then(|v| v.as_str()).unwrap_or("");
 
         let re = Regex::new(r"\{\{#([^#]+)#\}\}").unwrap();
         let mut seen = std::collections::HashSet::new();
@@ -316,7 +326,14 @@ impl NodeExecutor for AnswerNodeExecutor {
         _context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let CompiledNodeConfig::Answer(config) = compiled_config else {
-            return self.execute(_node_id, compiled_config.as_value(), variable_pool, _context).await;
+            return self
+                .execute(
+                    _node_id,
+                    compiled_config.as_value(),
+                    variable_pool,
+                    _context,
+                )
+                .await;
         };
 
         let answer_template = &config.parsed.answer;
@@ -480,7 +497,10 @@ impl NodeExecutor for IfElseNodeExecutor {
 
         let selected_case = selected.unwrap_or_else(|| ELSE_BRANCH_HANDLE.to_string());
         let mut outputs = HashMap::new();
-        outputs.insert("selected_case".to_string(), Segment::String(selected_case.clone()));
+        outputs.insert(
+            "selected_case".to_string(),
+            Segment::String(selected_case.clone()),
+        );
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -498,7 +518,9 @@ impl NodeExecutor for IfElseNodeExecutor {
         context: &RuntimeContext,
     ) -> Result<NodeRunResult, NodeError> {
         let CompiledNodeConfig::IfElse(config) = compiled_config else {
-            return self.execute(_node_id, compiled_config.as_value(), variable_pool, context).await;
+            return self
+                .execute(_node_id, compiled_config.as_value(), variable_pool, context)
+                .await;
         };
 
         let cases = &config.parsed.cases;
@@ -539,7 +561,10 @@ impl NodeExecutor for IfElseNodeExecutor {
 
         let selected_case = selected.unwrap_or_else(|| ELSE_BRANCH_HANDLE.to_string());
         let mut outputs = HashMap::new();
-        outputs.insert("selected_case".to_string(), Segment::String(selected_case.clone()));
+        outputs.insert(
+            "selected_case".to_string(),
+            Segment::String(selected_case.clone()),
+        );
 
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
@@ -573,7 +598,10 @@ mod tests {
 
         let executor = StartNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("start1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("start1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("query"),
             Some(&Segment::String("hello".into()))
@@ -598,7 +626,10 @@ mod tests {
 
         let executor = EndNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("end1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("end1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("result"),
             Some(&Segment::String("result text".into()))
@@ -619,7 +650,10 @@ mod tests {
 
         let executor = AnswerNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("ans1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ans1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("answer"),
             Some(&Segment::String("Hello Alice!".into()))
@@ -646,7 +680,10 @@ mod tests {
 
         let executor = AnswerNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("ans_stream", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("ans_stream", &config, &pool, &context)
+            .await
+            .unwrap();
         let stream = result
             .outputs
             .streams()
@@ -678,7 +715,10 @@ mod tests {
 
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("if1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.edge_source_handle,
             EdgeHandle::Branch("case1".to_string())
@@ -707,7 +747,10 @@ mod tests {
 
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("if1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.edge_source_handle,
             EdgeHandle::Branch("false".to_string())
@@ -747,7 +790,10 @@ mod tests {
 
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
-        let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("if1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.edge_source_handle,
             EdgeHandle::Branch("case2".to_string())

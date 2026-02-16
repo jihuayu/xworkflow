@@ -19,20 +19,39 @@ pub struct SecurityEvent {
 /// Categorisation of a security event.
 #[derive(Debug, Clone, Serialize)]
 pub enum SecurityEventType {
-    SsrfBlocked { url: String, reason: String },
-    SandboxViolation { sandbox_type: String, violation: String },
-    QuotaExceeded { quota_type: String, limit: u64, current: u64 },
-    CredentialAccess { provider: String, success: bool },
-    CodeAnalysisBlocked { violations: Vec<String> },
-    TemplateRenderingAnomaly { template_length: usize },
-    DslValidationFailed { errors: Vec<String> },
-    OutputSizeExceeded { node_id: String, max: usize, actual: usize },
-    #[cfg(feature = "memory")]
-    MemoryAccess {
-        namespace: String,
-        operation: String,
-        node_id: String,
+    SsrfBlocked {
+        url: String,
+        reason: String,
+    },
+    SandboxViolation {
+        sandbox_type: String,
+        violation: String,
+    },
+    QuotaExceeded {
+        quota_type: String,
+        limit: u64,
+        current: u64,
+    },
+    CredentialAccess {
+        provider: String,
         success: bool,
+    },
+    ToolInvocation {
+        tool_name: String,
+    },
+    CodeAnalysisBlocked {
+        violations: Vec<String>,
+    },
+    TemplateRenderingAnomaly {
+        template_length: usize,
+    },
+    DslValidationFailed {
+        errors: Vec<String>,
+    },
+    OutputSizeExceeded {
+        node_id: String,
+        max: usize,
+        actual: usize,
     },
 }
 
@@ -152,6 +171,12 @@ mod tests {
         };
         let json = serde_json::to_value(&cred).unwrap();
         assert!(json.to_string().contains("CredentialAccess"));
+
+        let tool = SecurityEventType::ToolInvocation {
+            tool_name: "search".into(),
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert!(json.to_string().contains("ToolInvocation"));
 
         let code = SecurityEventType::CodeAnalysisBlocked {
             violations: vec!["eval".into()],

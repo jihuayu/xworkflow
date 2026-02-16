@@ -1,41 +1,12 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use serde_json::Value;
 
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::sub_graph_runner::DefaultSubGraphRunner;
 use crate::core::variable_pool::VariablePool;
-
-/// Sub-graph definition
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SubGraphDefinition {
-    pub nodes: Vec<SubGraphNode>,
-    pub edges: Vec<SubGraphEdge>,
-}
-
-/// Sub-graph node
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SubGraphNode {
-    pub id: String,
-    #[serde(rename = "type", default)]
-    pub node_type: Option<String>,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub data: Value,
-}
-
-/// Sub-graph edge
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SubGraphEdge {
-    #[serde(default)]
-    pub id: String,
-    pub source: String,
-    pub target: String,
-    #[serde(default, alias = "sourceHandle", alias = "source_handle")]
-    pub source_handle: Option<String>,
-}
+pub use crate::domain::model::{SubGraphDefinition, SubGraphEdge, SubGraphNode};
 
 /// Sub-graph errors
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +33,12 @@ pub enum SubGraphError {
 /// Sub-graph executor
 pub struct SubGraphExecutor;
 
+impl Default for SubGraphExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubGraphExecutor {
     pub fn new() -> Self {
         Self
@@ -85,7 +62,6 @@ impl SubGraphExecutor {
             .await
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -134,7 +110,10 @@ mod tests {
 
         let executor = SubGraphExecutor::new();
         let context = RuntimeContext::default();
-        let result = executor.execute(&sub_graph, &make_pool(), scope, &context).await.unwrap();
+        let result = executor
+            .execute(&sub_graph, &make_pool(), scope, &context)
+            .await
+            .unwrap();
         assert_eq!(result.get("value"), Some(&json!(42)));
     }
 }

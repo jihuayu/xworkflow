@@ -14,61 +14,44 @@
 //! - [`security_gate`] — Security enforcement gate applied before/after node execution.
 //! - [`plugin_gate`] — Plugin hook gate applied around workflow/node lifecycle.
 
-pub mod event_bus;
-pub mod variable_pool;
-pub mod dispatcher;
-pub mod http_client;
-pub mod runtime_group;
-pub mod workflow_context;
-pub mod runtime_context;
-pub mod sub_graph_runner;
+#[cfg(feature = "checkpoint")]
+pub mod checkpoint;
 pub mod debug;
-pub mod security_gate;
+pub mod dispatcher;
+pub mod event_bus;
+pub mod http_client;
 pub mod plugin_gate;
+pub mod runtime_context;
+pub mod runtime_group;
+pub mod safe_stop;
+pub mod security_gate;
+pub mod sub_graph_runner;
+pub mod variable_pool;
+pub mod workflow_context;
 
-pub use variable_pool::{
-	FileSegment,
-	FileTransferMethod,
-	Segment,
-	SegmentStream,
-	SegmentType,
-	Selector,
-	SCOPE_NODE_ID,
-	StreamEvent,
-	StreamReader,
-	StreamStatus,
-	StreamWriter,
-	VariablePool,
+#[cfg(feature = "checkpoint")]
+pub use checkpoint::{
+    ChangeSeverity, Checkpoint, CheckpointError, CheckpointStore, ContextFingerprint,
+    EnvironmentChange, FileCheckpointStore, MemoryCheckpointStore, ResumeDiagnostic, ResumePolicy,
+    SerializableEdgeState,
 };
-pub use event_bus::{GraphEngineEvent, PauseReason};
-pub use dispatcher::WorkflowDispatcher;
-pub use http_client::{HttpClientProvider, HttpPoolConfig};
-pub use runtime_group::{DefaultSandboxPool, RuntimeGroup, RuntimeGroupBuilder, SandboxPool};
-pub use workflow_context::{
-	FakeIdGenerator,
-	FakeTimeProvider,
-	IdGenerator,
-	RealIdGenerator,
-	RealTimeProvider,
-	TimeProvider,
-	WorkflowContext,
-};
-pub use runtime_context::RuntimeContext;
-pub use sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
 pub use debug::{
-	DebugAction,
-	DebugCommand,
-	DebugConfig,
-	DebugEvent,
-	DebugHandle,
-	DebugHook,
-	DebugGate,
-	DebugState,
-	DebugError,
-	NoopGate,
-	NoopHook,
-	InteractiveDebugGate,
-	InteractiveDebugHook,
-	PauseLocation,
-	PauseReason as DebugPauseReason,
+    DebugAction, DebugCommand, DebugConfig, DebugError, DebugEvent, DebugGate, DebugHandle,
+    DebugHook, DebugState, InteractiveDebugGate, InteractiveDebugHook, NoopGate, NoopHook,
+    PauseLocation, PauseReason as DebugPauseReason,
+};
+pub use dispatcher::WorkflowDispatcher;
+pub use event_bus::{GraphEngineEvent, PauseReason};
+pub use http_client::{HttpClientProvider, HttpPoolConfig};
+pub use runtime_context::RuntimeContext;
+pub use runtime_group::{DefaultSandboxPool, RuntimeGroup, RuntimeGroupBuilder, SandboxPool};
+pub use safe_stop::SafeStopSignal;
+pub use sub_graph_runner::{DefaultSubGraphRunner, SubGraphRunner};
+pub use variable_pool::{
+    FileSegment, FileTransferMethod, Segment, SegmentStream, SegmentType, Selector, StreamEvent,
+    StreamReader, StreamStatus, StreamWriter, VariablePool, SCOPE_NODE_ID,
+};
+pub use workflow_context::{
+    FakeIdGenerator, FakeTimeProvider, IdGenerator, RealIdGenerator, RealTimeProvider,
+    TimeProvider, WorkflowContext,
 };

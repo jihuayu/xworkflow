@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::variable_pool::{Segment, VariablePool};
 use crate::dsl::schema::NodeRunResult;
-use crate::error::{WorkflowResult, WorkflowError};
+use crate::error::{WorkflowError, WorkflowResult};
 
 /// Debug gate checks whether a pause is needed without async overhead.
 pub trait DebugGate: Send + Sync {
@@ -52,7 +52,9 @@ pub trait DebugHook: Send + Sync {
 #[derive(Debug, Clone)]
 pub enum DebugAction {
     Continue,
-    Abort { reason: String },
+    Abort {
+        reason: String,
+    },
     UpdateVariables {
         variables: HashMap<String, Value>,
         then: Box<DebugAction>,
@@ -90,15 +92,35 @@ pub enum DebugCommand {
 /// Event emitted by the debugger to the external controller.
 #[derive(Debug, Clone)]
 pub enum DebugEvent {
-    Paused { reason: PauseReason, location: PauseLocation },
+    Paused {
+        reason: PauseReason,
+        location: PauseLocation,
+    },
     Resumed,
-    BreakpointAdded { node_id: String },
-    BreakpointRemoved { node_id: String },
-    VariableSnapshot { variables: HashMap<String, Segment> },
-    NodeVariableSnapshot { node_id: String, variables: HashMap<String, Segment> },
-    StateReport { state: DebugState, breakpoints: HashSet<String>, step_count: i32 },
-    VariablesUpdated { updated_keys: Vec<String> },
-    Error { message: String },
+    BreakpointAdded {
+        node_id: String,
+    },
+    BreakpointRemoved {
+        node_id: String,
+    },
+    VariableSnapshot {
+        variables: HashMap<String, Segment>,
+    },
+    NodeVariableSnapshot {
+        node_id: String,
+        variables: HashMap<String, Segment>,
+    },
+    StateReport {
+        state: DebugState,
+        breakpoints: HashSet<String>,
+        step_count: i32,
+    },
+    VariablesUpdated {
+        updated_keys: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Current state of the debugger.
@@ -106,8 +128,8 @@ pub enum DebugEvent {
 pub enum DebugState {
     Running,
     Paused {
-        location: PauseLocation,
-        variable_snapshot: Option<HashMap<String, Segment>>,
+        location: Box<PauseLocation>,
+        variable_snapshot: Option<Box<HashMap<String, Segment>>>,
     },
     Finished,
 }
@@ -124,7 +146,7 @@ pub enum PauseLocation {
         node_id: String,
         node_type: String,
         node_title: String,
-        result: NodeRunResult,
+        result: Box<NodeRunResult>,
     },
 }
 
@@ -261,7 +283,8 @@ impl DebugHook for InteractiveDebugHook {
         *self.last_pause.write().await = Some(location.clone());
         *self.step_count.write().await += 1;
 
-        self.emit_paused(reason.clone(), location.clone(), "before").await;
+        self.emit_paused(reason.clone(), location.clone(), "before")
+            .await;
 
         if self.config.read().await.auto_snapshot {
             self.emit_snapshot(variable_pool).await;
@@ -282,7 +305,7 @@ impl DebugHook for InteractiveDebugHook {
             node_id: node_id.to_string(),
             node_type: node_type.to_string(),
             node_title: node_title.to_string(),
-            result: result.clone(),
+            result: Box::new(result.clone()),
         };
         *self.last_pause.write().await = Some(location.clone());
         *self.step_count.write().await += 1;
@@ -304,12 +327,17 @@ impl InteractiveDebugHook {
 
         if let Some(tx) = &self.graph_event_tx {
             let (node_id, node_type, node_title) = match &location {
-                PauseLocation::BeforeNode { node_id, node_type, node_title } => {
-                    (node_id.clone(), node_type.clone(), node_title.clone())
-                }
-                PauseLocation::AfterNode { node_id, node_type, node_title, .. } => {
-                    (node_id.clone(), node_type.clone(), node_title.clone())
-                }
+                PauseLocation::BeforeNode {
+                    node_id,
+                    node_type,
+                    node_title,
+                } => (node_id.clone(), node_type.clone(), node_title.clone()),
+                PauseLocation::AfterNode {
+                    node_id,
+                    node_type,
+                    node_title,
+                    ..
+                } => (node_id.clone(), node_type.clone(), node_title.clone()),
             };
             let reason_str = match reason {
                 PauseReason::Breakpoint => "breakpoint",
@@ -346,7 +374,9 @@ impl InteractiveDebugHook {
             .await;
         if let Some(tx) = &self.graph_event_tx {
             let data = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
-            let _ = tx.send(GraphEngineEvent::DebugVariableSnapshot { data }).await;
+            let _ = tx
+                .send(GraphEngineEvent::DebugVariableSnapshot { data })
+                .await;
         }
     }
 
@@ -374,10 +404,16 @@ impl InteractiveDebugHook {
                     });
                 }
                 Some(DebugCommand::AddBreakpoint { node_id }) => {
-                    self.config.write().await.breakpoints.insert(node_id.clone());
+                    self.config
+                        .write()
+                        .await
+                        .breakpoints
+                        .insert(node_id.clone());
                     let _ = self
                         .event_tx
-                        .send(DebugEvent::BreakpointAdded { node_id: node_id.clone() })
+                        .send(DebugEvent::BreakpointAdded {
+                            node_id: node_id.clone(),
+                        })
                         .await;
                     if let Some(tx) = &self.graph_event_tx {
                         let _ = tx
@@ -392,7 +428,9 @@ impl InteractiveDebugHook {
                     self.config.write().await.breakpoints.remove(&node_id);
                     let _ = self
                         .event_tx
-                        .send(DebugEvent::BreakpointRemoved { node_id: node_id.clone() })
+                        .send(DebugEvent::BreakpointRemoved {
+                            node_id: node_id.clone(),
+                        })
                         .await;
                     if let Some(tx) = &self.graph_event_tx {
                         let _ = tx
@@ -421,7 +459,10 @@ impl InteractiveDebugHook {
                     let vars = variable_pool.get_node_variables(&node_id);
                     let _ = self
                         .event_tx
-                        .send(DebugEvent::NodeVariableSnapshot { node_id, variables: vars })
+                        .send(DebugEvent::NodeVariableSnapshot {
+                            node_id,
+                            variables: vars,
+                        })
                         .await;
                 }
                 Some(DebugCommand::UpdateVariables { variables }) => {
@@ -439,7 +480,10 @@ impl InteractiveDebugHook {
                     let config = self.config.read().await;
                     let last = self.last_pause.read().await.clone();
                     let state = match last {
-                        Some(location) => DebugState::Paused { location, variable_snapshot: None },
+                        Some(location) => DebugState::Paused {
+                            location: Box::new(location),
+                            variable_snapshot: None,
+                        },
                         None => DebugState::Running,
                     };
                     let step_count = *self.step_count.read().await;
@@ -545,7 +589,10 @@ impl DebugHandle {
         }
     }
 
-    pub(crate) fn new(cmd_tx: mpsc::Sender<DebugCommand>, event_rx: mpsc::Receiver<DebugEvent>) -> Self {
+    pub(crate) fn new(
+        cmd_tx: mpsc::Sender<DebugCommand>,
+        event_rx: mpsc::Receiver<DebugEvent>,
+    ) -> Self {
         Self {
             cmd_tx,
             event_rx: Mutex::new(event_rx),
@@ -633,11 +680,15 @@ mod tests {
 
         let pool = VariablePool::new();
         cmd_tx
-            .send(DebugCommand::AddBreakpoint { node_id: "n1".into() })
+            .send(DebugCommand::AddBreakpoint {
+                node_id: "n1".into(),
+            })
             .await
             .unwrap();
         cmd_tx
-            .send(DebugCommand::RemoveBreakpoint { node_id: "n1".into() })
+            .send(DebugCommand::RemoveBreakpoint {
+                node_id: "n1".into(),
+            })
             .await
             .unwrap();
         cmd_tx.send(DebugCommand::Continue).await.unwrap();
@@ -664,7 +715,9 @@ mod tests {
         };
         let pool = VariablePool::new();
         cmd_tx
-            .send(DebugCommand::Abort { reason: Some("user quit".into()) })
+            .send(DebugCommand::Abort {
+                reason: Some("user quit".into()),
+            })
             .await
             .unwrap();
         let action = hook.wait_for_command(&pool).await.unwrap();
@@ -745,7 +798,9 @@ mod tests {
             Segment::Integer(10),
         );
         cmd_tx
-            .send(DebugCommand::InspectNodeVariables { node_id: "n1".into() })
+            .send(DebugCommand::InspectNodeVariables {
+                node_id: "n1".into(),
+            })
             .await
             .unwrap();
         cmd_tx.send(DebugCommand::Continue).await.unwrap();
@@ -782,7 +837,11 @@ mod tests {
         let _ = hook.wait_for_command(&pool).await.unwrap();
         let evt = evt_rx.recv().await.unwrap();
         match evt {
-            DebugEvent::StateReport { state, breakpoints, step_count } => {
+            DebugEvent::StateReport {
+                state,
+                breakpoints,
+                step_count,
+            } => {
                 assert!(matches!(state, DebugState::Running));
                 assert!(breakpoints.contains("bp1"));
                 assert_eq!(step_count, 0);
@@ -857,8 +916,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_interactive_gate_initial_break_on_start() {
-        let mut cfg = DebugConfig::default();
-        cfg.break_on_start = true;
+        let cfg = DebugConfig {
+            break_on_start: true,
+            ..DebugConfig::default()
+        };
         let config = Arc::new(RwLock::new(cfg));
         let mode = Arc::new(RwLock::new(StepMode::Initial));
         let gate = InteractiveDebugGate { config, mode };
@@ -871,9 +932,15 @@ mod tests {
         let hook = NoopHook;
         let pool = VariablePool::new();
         let result = NodeRunResult::default();
-        let action = hook.before_node_execute("n1", "start", "Start", &pool).await.unwrap();
+        let action = hook
+            .before_node_execute("n1", "start", "Start", &pool)
+            .await
+            .unwrap();
         assert!(matches!(action, DebugAction::Continue));
-        let action2 = hook.after_node_execute("n1", "start", "Start", &result, &pool).await.unwrap();
+        let action2 = hook
+            .after_node_execute("n1", "start", "Start", &result, &pool)
+            .await
+            .unwrap();
         assert!(matches!(action2, DebugAction::Continue));
     }
 
@@ -936,7 +1003,8 @@ mod tests {
             node_type: "start".into(),
             node_title: "Start".into(),
         };
-        hook.emit_paused(PauseReason::Breakpoint, location, "before").await;
+        hook.emit_paused(PauseReason::Breakpoint, location, "before")
+            .await;
 
         let evt = evt_rx.recv().await.unwrap();
         assert!(matches!(evt, DebugEvent::Paused { .. }));
@@ -962,7 +1030,7 @@ mod tests {
             node_id: "n1".into(),
             node_type: "code".into(),
             node_title: "Code".into(),
-            result,
+            result: Box::new(result),
         };
         hook.emit_paused(PauseReason::Step, location, "after").await;
 
@@ -1021,7 +1089,10 @@ mod tests {
         let evt = evt_rx.recv().await.unwrap();
         assert!(matches!(evt, DebugEvent::VariableSnapshot { .. }));
         let graph_evt = graph_rx.recv().await.unwrap();
-        assert!(matches!(graph_evt, GraphEngineEvent::DebugVariableSnapshot { .. }));
+        assert!(matches!(
+            graph_evt,
+            GraphEngineEvent::DebugVariableSnapshot { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1041,7 +1112,9 @@ mod tests {
         };
         let pool = VariablePool::new();
         cmd_tx
-            .send(DebugCommand::AddBreakpoint { node_id: "bp1".into() })
+            .send(DebugCommand::AddBreakpoint {
+                node_id: "bp1".into(),
+            })
             .await
             .unwrap();
         cmd_tx.send(DebugCommand::Continue).await.unwrap();
@@ -1079,7 +1152,9 @@ mod tests {
         };
         let pool = VariablePool::new();
         cmd_tx
-            .send(DebugCommand::RemoveBreakpoint { node_id: "bp1".into() })
+            .send(DebugCommand::RemoveBreakpoint {
+                node_id: "bp1".into(),
+            })
             .await
             .unwrap();
         cmd_tx.send(DebugCommand::Continue).await.unwrap();
@@ -1155,7 +1230,9 @@ mod tests {
 
         let evt = evt_rx.recv().await.unwrap();
         match evt {
-            DebugEvent::StateReport { state, step_count, .. } => {
+            DebugEvent::StateReport {
+                state, step_count, ..
+            } => {
                 assert!(matches!(state, DebugState::Paused { .. }));
                 assert_eq!(step_count, 5);
             }

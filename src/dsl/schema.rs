@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::core::variable_pool::{Selector, Segment, SegmentStream};
-#[cfg(feature = "memory")]
-use crate::memory::EnhancedMemoryConfig;
+use crate::domain::execution::{Segment, SegmentStream};
+use crate::domain::model::Selector;
+
+pub use crate::domain::model::{ComparisonOperator, IterationErrorMode};
 
 // ================================
 // Variable Selector
@@ -42,6 +43,33 @@ pub struct WorkflowSchema {
     pub conversation_variables: Vec<ConversationVariable>,
     #[serde(default)]
     pub error_handler: Option<ErrorHandlerConfig>,
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct McpServerConfig {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(flatten)]
+    pub transport: McpTransport,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
 }
 
 /// Node definition in the DSL.
@@ -148,10 +176,18 @@ pub enum BackoffStrategy {
     ExponentialWithJitter,
 }
 
-fn default_backoff_strategy() -> BackoffStrategy { BackoffStrategy::Fixed }
-fn default_backoff_multiplier() -> f64 { 2.0 }
-fn default_max_retry_interval() -> i32 { 60000 }
-fn default_retry_on_retryable_only() -> bool { true }
+fn default_backoff_strategy() -> BackoffStrategy {
+    BackoffStrategy::Fixed
+}
+fn default_backoff_multiplier() -> f64 {
+    2.0
+}
+fn default_max_retry_interval() -> i32 {
+    60000
+}
+fn default_retry_on_retryable_only() -> bool {
+    true
+}
 
 // ================================
 // Workflow Error Handler
@@ -160,21 +196,17 @@ fn default_retry_on_retryable_only() -> bool { true }
 /// How the global error handler processes a workflow-level failure.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ErrorHandlingMode {
     Recover,
+    #[default]
     Notify,
-}
-
-impl Default for ErrorHandlingMode {
-    fn default() -> Self {
-        Self::Notify
-    }
 }
 
 /// Global error handler configuration with an embedded recovery sub-graph.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ErrorHandlerConfig {
-    pub sub_graph: crate::nodes::subgraph::SubGraphDefinition,
+    pub sub_graph: crate::domain::model::SubGraphDefinition,
     #[serde(default)]
     pub mode: ErrorHandlingMode,
 }
@@ -214,10 +246,6 @@ pub enum NodeType {
     ListOperator,
     Agent,
     HumanInput,
-    #[cfg(feature = "memory")]
-    MemoryRecall,
-    #[cfg(feature = "memory")]
-    MemoryStore,
 }
 
 impl std::fmt::Display for NodeType {
@@ -228,6 +256,142 @@ impl std::fmt::Display for NodeType {
             .unwrap_or_else(|| format!("{:?}", self));
         write!(f, "{}", s)
     }
+}
+
+// ================================
+// Human Input Node Config
+// ================================
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct HumanInputNodeData {
+    #[serde(default = "default_human_input_resume_mode")]
+    pub resume_mode: HumanInputResumeMode,
+    #[serde(default)]
+    pub form_fields: Vec<FormFieldDefinition>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default = "default_human_input_timeout_action")]
+    pub timeout_action: HumanInputTimeoutAction,
+    #[serde(default)]
+    pub timeout_default_values: Option<HashMap<String, Value>>,
+    #[serde(default)]
+    pub notification: Option<NotificationConfig>,
+    #[serde(default, alias = "prompt")]
+    pub prompt_text: Option<String>,
+    #[serde(default)]
+    pub prompt_variables: Vec<VariableMapping>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputResumeMode {
+    Form,
+    Approval,
+    Webhook,
+}
+
+fn default_human_input_resume_mode() -> HumanInputResumeMode {
+    HumanInputResumeMode::Form
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputTimeoutAction {
+    Fail,
+    DefaultValue,
+    AutoApprove,
+    AutoReject,
+}
+
+fn default_human_input_timeout_action() -> HumanInputTimeoutAction {
+    HumanInputTimeoutAction::Fail
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputDecision {
+    Approve,
+    Reject,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FormFieldDefinition {
+    pub variable: String,
+    #[serde(default)]
+    pub label: String,
+    pub field_type: FormFieldType,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub default_value: Option<Value>,
+    #[serde(default)]
+    pub default_value_selector: Option<VariableSelector>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub validation: Option<FieldValidation>,
+    #[serde(default)]
+    pub options: Option<Vec<FieldOption>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FormFieldType {
+    Text,
+    Textarea,
+    Number,
+    Checkbox,
+    Radio,
+    Dropdown,
+    MultiSelect,
+    Date,
+    Email,
+    Json,
+    File,
+    Hidden,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FieldValidation {
+    #[serde(default)]
+    pub min_length: Option<i32>,
+    #[serde(default)]
+    pub max_length: Option<i32>,
+    #[serde(default)]
+    pub min_value: Option<f64>,
+    #[serde(default)]
+    pub max_value: Option<f64>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FieldOption {
+    pub value: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct NotificationConfig {
+    #[serde(rename = "type")]
+    pub notification_type: NotificationType,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub params: HashMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationType {
+    Webhook,
+    Event,
+    None,
 }
 
 // ================================
@@ -340,48 +504,6 @@ pub struct Condition {
     pub comparison_operator: ComparisonOperator,
     #[serde(default)]
     pub value: Value,
-}
-
-/// Comparison operators supported by IfElse conditions.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ComparisonOperator {
-    // String/Array
-    Contains,
-    #[serde(alias = "not_contains")]
-    NotContains,
-    #[serde(alias = "start_with")]
-    StartWith,
-    #[serde(alias = "end_with")]
-    EndWith,
-    Is,
-    #[serde(alias = "is_not")]
-    IsNot,
-    Empty,
-    #[serde(alias = "not_empty")]
-    NotEmpty,
-    In,
-    #[serde(alias = "not_in")]
-    NotIn,
-    #[serde(alias = "all_of")]
-    AllOf,
-    // Numeric
-    #[serde(alias = "=")]
-    Equal,
-    #[serde(alias = "≠")]
-    NotEqual,
-    #[serde(alias = ">", alias = "greater_than")]
-    GreaterThan,
-    #[serde(alias = "<", alias = "less_than")]
-    LessThan,
-    #[serde(alias = "≥", alias = "greater_than_or_equal", alias = "greater_or_equal")]
-    GreaterOrEqual,
-    #[serde(alias = "≤", alias = "less_than_or_equal", alias = "less_or_equal")]
-    LessOrEqual,
-    // Null
-    Null,
-    #[serde(alias = "not_null")]
-    NotNull,
 }
 
 /// Logical operator for combining conditions within a case.
@@ -506,18 +628,35 @@ pub enum HttpBody {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Authorization {
     NoAuth,
-    ApiKey { key: String, value: String, position: ApiKeyPosition },
-    BearerToken { token: String },
-    BasicAuth { username: String, password: String },
-    CustomHeaders { headers: Vec<KeyValuePair> },
+    ApiKey {
+        key: String,
+        value: String,
+        position: ApiKeyPosition,
+    },
+    BearerToken {
+        token: String,
+    },
+    BasicAuth {
+        username: String,
+        password: String,
+    },
+    CustomHeaders {
+        headers: Vec<KeyValuePair>,
+    },
 }
 
 /// Where to place an API key in the request.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
-pub enum ApiKeyPosition { Header, Query, Body }
+pub enum ApiKeyPosition {
+    Header,
+    Query,
+    Body,
+}
 
-fn default_timeout() -> u64 { 10 }
+fn default_timeout() -> u64 {
+    10
+}
 
 // ================================
 // Variable Aggregator (Dify: returns first non-null)
@@ -547,29 +686,23 @@ pub struct GatherNodeData {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum JoinMode {
+    #[default]
     All,
     Any,
-    NOfM { n: usize },
-}
-
-impl Default for JoinMode {
-    fn default() -> Self {
-        Self::All
-    }
+    NOfM {
+        n: usize,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TimeoutStrategy {
+    #[default]
     ProceedWithAvailable,
     Fail,
-}
-
-impl Default for TimeoutStrategy {
-    fn default() -> Self {
-        Self::ProceedWithAvailable
-    }
 }
 
 fn default_cancel_remaining() -> bool {
@@ -613,7 +746,9 @@ pub enum WriteMode {
     Clear,
 }
 
-fn default_write_mode() -> WriteMode { WriteMode::Overwrite }
+fn default_write_mode() -> WriteMode {
+    WriteMode::Overwrite
+}
 
 // ================================
 // Iteration Node Config
@@ -632,16 +767,9 @@ pub struct IterationNodeData {
     pub error_handle_mode: IterationErrorMode,
 }
 
-/// Error handling mode for iteration failures.
-#[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum IterationErrorMode {
-    Terminated,
-    RemoveAbnormal,
-    ContinueOnError,
+fn default_iteration_error_mode() -> IterationErrorMode {
+    IterationErrorMode::Terminated
 }
-
-fn default_iteration_error_mode() -> IterationErrorMode { IterationErrorMode::Terminated }
 
 // ================================
 // LLM Node Config (stub)
@@ -659,11 +787,61 @@ pub struct LlmNodeData {
     pub vision: Option<VisionConfig>,
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
-    #[cfg(feature = "memory")]
-    #[serde(default)]
-    pub enhanced_memory: Option<EnhancedMemoryConfig>,
     #[serde(default)]
     pub stream: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ClassifierCategory {
+    pub category_id: String,
+    pub category_name: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct QuestionClassifierNodeData {
+    pub model: ModelConfig,
+    pub query_variable_selector: VariableSelector,
+    #[serde(default)]
+    pub categories: Vec<ClassifierCategory>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ToolNodeData {
+    #[serde(default)]
+    pub mcp_server: Option<McpServerConfig>,
+    #[serde(default)]
+    pub mcp_server_ref: Option<String>,
+    pub tool_name: String,
+    #[serde(default)]
+    pub arguments: HashMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct AgentNodeData {
+    pub model: ModelConfig,
+    pub system_prompt: String,
+    pub query: String,
+    pub tools: AgentToolsConfig,
+    #[serde(default = "default_agent_max_iterations")]
+    pub max_iterations: i32,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+}
+
+fn default_agent_max_iterations() -> i32 {
+    10
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct AgentToolsConfig {
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub mcp_server_refs: Vec<String>,
 }
 
 /// LLM model selection and parameters.
@@ -770,18 +948,13 @@ impl Default for NodeRunResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum EdgeHandle {
     /// Non-branch nodes: all edges are taken
+    #[default]
     Default,
     /// Branch nodes: select specific edge handle
     Branch(String),
-}
-
-impl Default for EdgeHandle {
-    fn default() -> Self {
-        EdgeHandle::Default
-    }
 }
 
 /// Node output container, supporting both synchronous and streaming outputs.
@@ -819,8 +992,7 @@ impl NodeOutputs {
     }
 
     pub fn to_value_map(&self) -> HashMap<String, Value> {
-        self
-            .ready()
+        self.ready()
             .iter()
             .map(|(k, v)| (k.clone(), v.to_value()))
             .collect()
@@ -863,7 +1035,10 @@ mod tests {
         assert_eq!(NodeType::IfElse.to_string(), "if-else");
         assert_eq!(NodeType::Code.to_string(), "code");
         assert_eq!(NodeType::HttpRequest.to_string(), "http-request");
-        assert_eq!(NodeType::TemplateTransform.to_string(), "template-transform");
+        assert_eq!(
+            NodeType::TemplateTransform.to_string(),
+            "template-transform"
+        );
         assert_eq!(NodeType::VariableAssigner.to_string(), "assigner");
     }
 
@@ -871,13 +1046,31 @@ mod tests {
     fn test_node_type_execution_type() {
         assert_eq!(NodeType::Start.execution_type(), NodeExecutionType::Root);
         assert_eq!(NodeType::End.execution_type(), NodeExecutionType::Response);
-        assert_eq!(NodeType::Answer.execution_type(), NodeExecutionType::Response);
+        assert_eq!(
+            NodeType::Answer.execution_type(),
+            NodeExecutionType::Response
+        );
         assert_eq!(NodeType::IfElse.execution_type(), NodeExecutionType::Branch);
-        assert_eq!(NodeType::QuestionClassifier.execution_type(), NodeExecutionType::Branch);
-        assert_eq!(NodeType::Iteration.execution_type(), NodeExecutionType::Container);
-        assert_eq!(NodeType::Loop.execution_type(), NodeExecutionType::Container);
-        assert_eq!(NodeType::Code.execution_type(), NodeExecutionType::Executable);
-        assert_eq!(NodeType::Llm.execution_type(), NodeExecutionType::Executable);
+        assert_eq!(
+            NodeType::QuestionClassifier.execution_type(),
+            NodeExecutionType::Branch
+        );
+        assert_eq!(
+            NodeType::Iteration.execution_type(),
+            NodeExecutionType::Container
+        );
+        assert_eq!(
+            NodeType::Loop.execution_type(),
+            NodeExecutionType::Container
+        );
+        assert_eq!(
+            NodeType::Code.execution_type(),
+            NodeExecutionType::Executable
+        );
+        assert_eq!(
+            NodeType::Llm.execution_type(),
+            NodeExecutionType::Executable
+        );
     }
 
     #[test]
@@ -919,7 +1112,7 @@ mod tests {
 
     #[test]
     fn test_node_outputs_stream() {
-        let (stream, _writer) = crate::core::variable_pool::SegmentStream::channel();
+        let (stream, _writer) = crate::domain::execution::SegmentStream::channel();
         let mut ready = HashMap::new();
         ready.insert("r".into(), Segment::Boolean(true));
         let mut streams = HashMap::new();
@@ -987,10 +1180,6 @@ mod tests {
             NodeType::Iteration,
             NodeType::Loop,
             NodeType::ListOperator,
-            #[cfg(feature = "memory")]
-            NodeType::MemoryRecall,
-            #[cfg(feature = "memory")]
-            NodeType::MemoryStore,
         ];
         for nt in node_types {
             let json = serde_json::to_value(&nt).unwrap();

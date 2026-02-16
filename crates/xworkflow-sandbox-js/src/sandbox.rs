@@ -51,7 +51,7 @@ impl Default for BuiltinSandboxConfig {
             default_timeout: Duration::from_secs(30),
             enable_console: true,
             max_memory_estimate: 32 * 1024 * 1024,
-            max_output_bytes: 1 * 1024 * 1024,
+            max_output_bytes: 1024 * 1024,
             freeze_globals: true,
             allowed_globals: vec![
                 "JSON".into(),
@@ -112,7 +112,7 @@ impl BuiltinSandbox {
         // 2. AST-based dangerous code analysis
         #[cfg(feature = "security")]
         {
-            let analyzer = AstCodeAnalyzer::default();
+            let analyzer = AstCodeAnalyzer;
             let result = analyzer.analyze(code)?;
             if !result.is_safe {
                 let summary = result
@@ -140,8 +140,9 @@ impl BuiltinSandbox {
         // Create a boa context
         let mut context = Context::default();
 
-        crate::builtins::register_all(&mut context)
-            .map_err(|e| SandboxError::InternalError(format!("Failed to register builtins: {}", e)))?;
+        crate::builtins::register_all(&mut context).map_err(|e| {
+            SandboxError::InternalError(format!("Failed to register builtins: {}", e))
+        })?;
 
         // Set up the runtime limit for instruction count (approximate timeout)
         // boa doesn't have a native timeout mechanism, so we measure wall time
@@ -266,13 +267,11 @@ Object.getOwnPropertyNames(__global).forEach(function(key) {{
             })?;
 
         // Parse wrapper result
-        let wrapper: Value = serde_json::from_str(&result_str)
-            .map_err(|e| SandboxError::SerializationError(format!("Failed to parse result: {}", e)))?;
+        let wrapper: Value = serde_json::from_str(&result_str).map_err(|e| {
+            SandboxError::SerializationError(format!("Failed to parse result: {}", e))
+        })?;
 
-        let output = wrapper
-            .get("__output")
-            .cloned()
-            .unwrap_or(Value::Null);
+        let output = wrapper.get("__output").cloned().unwrap_or(Value::Null);
 
         let output_bytes = serde_json::to_vec(&output)
             .map_err(|e| SandboxError::SerializationError(e.to_string()))?;
@@ -306,7 +305,11 @@ Object.getOwnPropertyNames(__global).forEach(function(key) {{
         })
     }
 
-    async fn update_stats(&self, result: &Result<SandboxResult, SandboxError>, execution_time: Duration) {
+    async fn update_stats(
+        &self,
+        result: &Result<SandboxResult, SandboxError>,
+        execution_time: Duration,
+    ) {
         let mut stats = self.stats.write().await;
         stats.total_executions += 1;
         match result {
@@ -320,8 +323,7 @@ Object.getOwnPropertyNames(__global).forEach(function(key) {{
             let total_ns = stats.avg_execution_time.as_nanos() as u64
                 * (stats.total_executions - 1)
                 + execution_time.as_nanos() as u64;
-            stats.avg_execution_time =
-                Duration::from_nanos(total_ns / stats.total_executions);
+            stats.avg_execution_time = Duration::from_nanos(total_ns / stats.total_executions);
         }
     }
 }
@@ -984,7 +986,10 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
-        assert_eq!(result.output["text"], json!("Hello 'world' \"test\" \\ new"));
+        assert_eq!(
+            result.output["text"],
+            json!("Hello 'world' \"test\" \\ new")
+        );
     }
 
     // ---- Builtin API tests ----
@@ -1028,8 +1033,7 @@ mod tests {
         let sandbox = default_sandbox();
         let result = sandbox
             .execute(SandboxRequest {
-                code: "function main(inputs) { return { value: datetime.now() }; }"
-                    .to_string(),
+                code: "function main(inputs) { return { value: datetime.now() }; }".to_string(),
                 language: CodeLanguage::JavaScript,
                 inputs: json!({}),
                 config: ExecutionConfig::default(),
@@ -1046,8 +1050,7 @@ mod tests {
         let sandbox = default_sandbox();
         let result = sandbox
             .execute(SandboxRequest {
-                code: "function main(inputs) { return { value: datetime.format() }; }"
-                    .to_string(),
+                code: "function main(inputs) { return { value: datetime.format() }; }".to_string(),
                 language: CodeLanguage::JavaScript,
                 inputs: json!({}),
                 config: ExecutionConfig::default(),
@@ -1148,8 +1151,7 @@ mod tests {
         let sandbox = default_sandbox();
         let result = sandbox
             .execute(SandboxRequest {
-                code: "function main(inputs) { return { value: randomInt(1, 10) }; }"
-                    .to_string(),
+                code: "function main(inputs) { return { value: randomInt(1, 10) }; }".to_string(),
                 language: CodeLanguage::JavaScript,
                 inputs: json!({}),
                 config: ExecutionConfig::default(),
@@ -1158,7 +1160,7 @@ mod tests {
             .unwrap();
 
         let value = result.output["value"].as_i64().unwrap();
-        assert!(value >= 1 && value <= 10);
+        assert!((1..=10).contains(&value));
     }
 
     #[tokio::test]

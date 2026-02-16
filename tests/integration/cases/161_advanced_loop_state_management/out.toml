@@ -1,0 +1,7 @@
+# Advanced: Loop with multiple state variables and complex logic.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]

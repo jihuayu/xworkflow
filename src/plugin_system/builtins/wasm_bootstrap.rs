@@ -13,17 +13,8 @@ use crate::dsl::schema::{EdgeHandle, NodeOutputs, NodeRunResult, WorkflowNodeExe
 use crate::error::{ErrorCode, ErrorContext, NodeError};
 use crate::nodes::executor::NodeExecutor;
 use crate::plugin_system::wasm::{
-    read_wasm_bytes,
-    AllowedCapabilities,
-    EventEmitter,
-    PluginError as WasmPluginError,
-    PluginHook,
-    PluginHookType,
-    PluginManifest,
-    PluginNodeType,
-    PluginRuntime,
-    PluginState,
-    VariableAccess,
+    read_wasm_bytes, AllowedCapabilities, EventEmitter, PluginError as WasmPluginError, PluginHook,
+    PluginHookType, PluginManifest, PluginNodeType, PluginRuntime, PluginState, VariableAccess,
     WasmEngine,
 };
 
@@ -31,7 +22,9 @@ use super::super::context::PluginContext;
 use super::super::error::PluginError;
 use super::super::hooks::{HookHandler, HookPayload, HookPoint};
 use super::super::loader::{PluginLoadSource, PluginLoader};
-use super::super::traits::{Plugin, PluginCategory, PluginCapabilities, PluginMetadata, PluginSource};
+use super::super::traits::{
+    Plugin, PluginCapabilities, PluginCategory, PluginMetadata, PluginSource,
+};
 
 #[derive(Debug, Clone)]
 pub struct WasmPluginConfig {
@@ -103,7 +96,11 @@ impl WasmPluginLoader {
         Ok(Self { engine, config })
     }
 
-    fn manifest_to_metadata(&self, manifest: &PluginManifest, manifest_path: &Path) -> PluginMetadata {
+    fn manifest_to_metadata(
+        &self,
+        manifest: &PluginManifest,
+        manifest_path: &Path,
+    ) -> PluginMetadata {
         let mut capabilities = PluginCapabilities::default();
         capabilities.read_variables = manifest.capabilities.read_variables;
         capabilities.write_variables = manifest.capabilities.write_variables;
@@ -180,15 +177,11 @@ impl PluginLoader for WasmPluginLoader {
         }
 
         let wasm_path = plugin_dir.join(&manifest.wasm_file);
-        let wasm_bytes = read_wasm_bytes(&wasm_path)
-            .map_err(|e| PluginError::LoadError(e.to_string()))?;
+        let wasm_bytes =
+            read_wasm_bytes(&wasm_path).map_err(|e| PluginError::LoadError(e.to_string()))?;
 
-        let runtime = PluginRuntime::new_with_engine(
-            &self.engine,
-            manifest.clone(),
-            &wasm_bytes,
-        )
-        .map_err(|e| PluginError::LoadError(e.to_string()))?;
+        let runtime = PluginRuntime::new_with_engine(&self.engine, manifest.clone(), &wasm_bytes)
+            .map_err(|e| PluginError::LoadError(e.to_string()))?;
 
         let metadata = self.manifest_to_metadata(&manifest, &manifest_path);
         let plugin = WasmPlugin {
@@ -247,16 +240,22 @@ struct VariablePoolAccess {
 
 impl VariableAccess for VariablePoolAccess {
     fn get(&self, selector: &Value) -> Result<Value> {
-        let selector: Selector = serde_json::from_value(selector.clone())
-            .map_err(|e| anyhow!(e.to_string()))?;
-        let pool = self.pool.read().map_err(|_| anyhow!("Variable pool poisoned"))?;
+        let selector: Selector =
+            serde_json::from_value(selector.clone()).map_err(|e| anyhow!(e.to_string()))?;
+        let pool = self
+            .pool
+            .read()
+            .map_err(|_| anyhow!("Variable pool poisoned"))?;
         Ok(pool.get(&selector).snapshot_to_value())
     }
 
     fn set(&self, selector: &Value, value: &Value) -> Result<()> {
-        let selector: Selector = serde_json::from_value(selector.clone())
-            .map_err(|e| anyhow!(e.to_string()))?;
-        let mut pool = self.pool.write().map_err(|_| anyhow!("Variable pool poisoned"))?;
+        let selector: Selector =
+            serde_json::from_value(selector.clone()).map_err(|e| anyhow!(e.to_string()))?;
+        let mut pool = self
+            .pool
+            .write()
+            .map_err(|_| anyhow!("Variable pool poisoned"))?;
         pool.set(&selector, Segment::from_value(value));
         Ok(())
     }

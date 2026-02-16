@@ -86,18 +86,53 @@ mod tests {
 
     #[test]
     fn test_llm_error_display() {
-        assert_eq!(LlmError::ProviderNotFound("p".into()).to_string(), "Provider not found: p");
-        assert_eq!(LlmError::ModelNotSupported("m".into()).to_string(), "Model not supported: m");
-        assert_eq!(LlmError::AuthenticationError("a".into()).to_string(), "Authentication error: a");
-        assert!(LlmError::RateLimitExceeded { retry_after: Some(60) }.to_string().contains("60"));
-        assert!(LlmError::RateLimitExceeded { retry_after: None }.to_string().contains("None"));
-        assert!(LlmError::ApiError { status: 500, message: "err".into() }.to_string().contains("500"));
-        assert_eq!(LlmError::NetworkError("n".into()).to_string(), "Network error: n");
+        assert_eq!(
+            LlmError::ProviderNotFound("p".into()).to_string(),
+            "Provider not found: p"
+        );
+        assert_eq!(
+            LlmError::ModelNotSupported("m".into()).to_string(),
+            "Model not supported: m"
+        );
+        assert_eq!(
+            LlmError::AuthenticationError("a".into()).to_string(),
+            "Authentication error: a"
+        );
+        assert!(LlmError::RateLimitExceeded {
+            retry_after: Some(60)
+        }
+        .to_string()
+        .contains("60"));
+        assert!(LlmError::RateLimitExceeded { retry_after: None }
+            .to_string()
+            .contains("None"));
+        assert!(LlmError::ApiError {
+            status: 500,
+            message: "err".into()
+        }
+        .to_string()
+        .contains("500"));
+        assert_eq!(
+            LlmError::NetworkError("n".into()).to_string(),
+            "Network error: n"
+        );
         assert_eq!(LlmError::Timeout.to_string(), "Timeout");
-        assert_eq!(LlmError::StreamError("s".into()).to_string(), "Stream error: s");
-        assert_eq!(LlmError::SerializationError("se".into()).to_string(), "Serialization error: se");
-        assert_eq!(LlmError::InvalidRequest("ir".into()).to_string(), "Invalid request: ir");
-        assert_eq!(LlmError::WasmError("w".into()).to_string(), "WASM provider error: w");
+        assert_eq!(
+            LlmError::StreamError("s".into()).to_string(),
+            "Stream error: s"
+        );
+        assert_eq!(
+            LlmError::SerializationError("se".into()).to_string(),
+            "Serialization error: se"
+        );
+        assert_eq!(
+            LlmError::InvalidRequest("ir".into()).to_string(),
+            "Invalid request: ir"
+        );
+        assert_eq!(
+            LlmError::WasmError("w".into()).to_string(),
+            "WASM provider error: w"
+        );
     }
 
     #[test]
@@ -105,12 +140,18 @@ mod tests {
         let err: NodeError = LlmError::AuthenticationError("bad key".into()).into();
         let ctx = err.error_context().unwrap();
         assert_eq!(ctx.code, ErrorCode::LlmAuthError);
-        assert_eq!(ctx.retryability, crate::error::ErrorRetryability::NonRetryable);
+        assert_eq!(
+            ctx.retryability,
+            crate::error::ErrorRetryability::NonRetryable
+        );
     }
 
     #[test]
     fn test_from_llm_error_rate_limit() {
-        let err: NodeError = LlmError::RateLimitExceeded { retry_after: Some(30) }.into();
+        let err: NodeError = LlmError::RateLimitExceeded {
+            retry_after: Some(30),
+        }
+        .into();
         let ctx = err.error_context().unwrap();
         assert_eq!(ctx.code, ErrorCode::LlmRateLimit);
         assert_eq!(ctx.retry_after_secs, Some(30));
@@ -126,7 +167,11 @@ mod tests {
 
     #[test]
     fn test_from_llm_error_api_error_retryable() {
-        let err: NodeError = LlmError::ApiError { status: 500, message: "server err".into() }.into();
+        let err: NodeError = LlmError::ApiError {
+            status: 500,
+            message: "server err".into(),
+        }
+        .into();
         let ctx = err.error_context().unwrap();
         assert_eq!(ctx.code, ErrorCode::LlmApiError);
         assert_eq!(ctx.http_status, Some(500));
@@ -135,7 +180,11 @@ mod tests {
 
     #[test]
     fn test_from_llm_error_api_error_429() {
-        let err: NodeError = LlmError::ApiError { status: 429, message: "rate limit".into() }.into();
+        let err: NodeError = LlmError::ApiError {
+            status: 429,
+            message: "rate limit".into(),
+        }
+        .into();
         let ctx = err.error_context().unwrap();
         assert_eq!(ctx.retryability, crate::error::ErrorRetryability::Retryable);
         assert_eq!(ctx.http_status, Some(429));
@@ -143,9 +192,16 @@ mod tests {
 
     #[test]
     fn test_from_llm_error_api_error_non_retryable() {
-        let err: NodeError = LlmError::ApiError { status: 400, message: "bad request".into() }.into();
+        let err: NodeError = LlmError::ApiError {
+            status: 400,
+            message: "bad request".into(),
+        }
+        .into();
         let ctx = err.error_context().unwrap();
-        assert_eq!(ctx.retryability, crate::error::ErrorRetryability::NonRetryable);
+        assert_eq!(
+            ctx.retryability,
+            crate::error::ErrorRetryability::NonRetryable
+        );
     }
 
     #[test]
@@ -169,7 +225,10 @@ mod tests {
         let err: NodeError = LlmError::InvalidRequest("bad".into()).into();
         let ctx = err.error_context().unwrap();
         assert_eq!(ctx.code, ErrorCode::ConfigError);
-        assert_eq!(ctx.retryability, crate::error::ErrorRetryability::NonRetryable);
+        assert_eq!(
+            ctx.retryability,
+            crate::error::ErrorRetryability::NonRetryable
+        );
     }
 
     #[test]

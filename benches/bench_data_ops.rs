@@ -5,17 +5,21 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use xworkflow::core::variable_pool::{Segment, SegmentArray, SegmentObject, Selector, VariablePool};
+use xworkflow::core::variable_pool::{
+    Segment, SegmentArray, SegmentObject, Selector, VariablePool,
+};
+use xworkflow::dsl::schema::{Case, ComparisonOperator, Condition, LogicalOperator};
 use xworkflow::dsl::{parse_dsl, DslFormat};
 use xworkflow::evaluator::{evaluate_case, evaluate_cases, evaluate_condition};
 use xworkflow::graph::build_graph;
 use xworkflow::template::{render_jinja2, render_template};
-use xworkflow::dsl::schema::{Case, ComparisonOperator, Condition, LogicalOperator};
 
 mod helpers;
 
 use helpers::bench_runtime;
-use helpers::pool_factories::{make_pool_with_objects, make_pool_with_strings, make_realistic_pool};
+use helpers::pool_factories::{
+    make_pool_with_objects, make_pool_with_strings, make_realistic_pool,
+};
 use helpers::workflow_builders::build_linear_workflow;
 
 fn build_pool_with_vars(count: usize) -> VariablePool {
@@ -58,7 +62,9 @@ fn build_json_workflow(node_count: usize) -> String {
     let mut edges = Vec::new();
     if node_count > 1 {
         for i in 0..(node_count - 1) {
-            edges.push(serde_json::json!({"source": format!("n{}", i), "target": format!("n{}", i + 1)}));
+            edges.push(
+                serde_json::json!({"source": format!("n{}", i), "target": format!("n{}", i + 1)}),
+            );
         }
     }
 
@@ -223,14 +229,20 @@ fn bench_data_ops(c: &mut Criterion) {
         let items: Vec<String> = (0..100).map(|i| format!("i{}", i)).collect();
         vars.insert("items".to_string(), serde_json::json!(items));
         b.iter(|| {
-            let _ = black_box(render_jinja2("{% for i in items %}{{ i }} {% endfor %}", &vars));
+            let _ = black_box(render_jinja2(
+                "{% for i in items %}{{ i }} {% endfor %}",
+                &vars,
+            ));
         });
     });
 
     group.bench_function("conditional", |b| {
         let vars = build_jinja_vars(1);
         b.iter(|| {
-            let _ = black_box(render_jinja2("{% if v0 %}yes{% else %}no{% endif %}", &vars));
+            let _ = black_box(render_jinja2(
+                "{% if v0 %}yes{% else %}no{% endif %}",
+                &vars,
+            ));
         });
     });
 
@@ -319,7 +331,11 @@ fn bench_data_ops(c: &mut Criterion) {
             let mut cases = Vec::new();
             for i in 0..10 {
                 let value = if last_match {
-                    if i == 9 { 20 } else { 5 }
+                    if i == 9 {
+                        20
+                    } else {
+                        5
+                    }
                 } else if i == 0 {
                     20
                 } else {
@@ -369,7 +385,7 @@ fn bench_data_ops(c: &mut Criterion) {
 
     group.bench_function("array_1000", |b| {
         let seg = Segment::Array(Arc::new(SegmentArray::new(
-            (0..1000).map(|i| Segment::Integer(i)).collect(),
+            (0..1000).map(Segment::Integer).collect(),
         )));
         b.iter(|| {
             let _ = black_box(seg.to_value());

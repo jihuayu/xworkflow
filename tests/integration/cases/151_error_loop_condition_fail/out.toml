@@ -1,0 +1,8 @@
+# Error: Loop handles error in break condition evaluation.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+iterations = 3

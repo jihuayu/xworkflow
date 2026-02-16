@@ -63,9 +63,7 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
         .get("max_rows")
         .and_then(|v| v.as_u64())
         .unwrap_or(10_000) as usize;
-    let sheet_index = options
-        .get("sheet_index")
-        .and_then(|v| v.as_i64());
+    let sheet_index = options.get("sheet_index").and_then(|v| v.as_i64());
 
     let mut blocks: Vec<String> = Vec::new();
     let sheet_count: u32;
@@ -83,7 +81,8 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                     }
                 }
                 if let Ok(range) = workbook.worksheet_range(name) {
-                    let table = range_to_table(range, include_header, max_rows, request.output_format);
+                    let table =
+                        range_to_table(range, include_header, max_rows, request.output_format);
                     if !table.is_empty() {
                         if request.output_format == OutputFormat::Markdown {
                             blocks.push(format!("### {}\n\n{}", name, table));
@@ -106,7 +105,8 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                     }
                 }
                 if let Ok(range) = workbook.worksheet_range(name) {
-                    let table = range_to_table(range, include_header, max_rows, request.output_format);
+                    let table =
+                        range_to_table(range, include_header, max_rows, request.output_format);
                     if !table.is_empty() {
                         if request.output_format == OutputFormat::Markdown {
                             blocks.push(format!("### {}\n\n{}", name, table));
@@ -129,7 +129,8 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                     }
                 }
                 if let Ok(range) = workbook.worksheet_range(name) {
-                    let table = range_to_table(range, include_header, max_rows, request.output_format);
+                    let table =
+                        range_to_table(range, include_header, max_rows, request.output_format);
                     if !table.is_empty() {
                         if request.output_format == OutputFormat::Markdown {
                             blocks.push(format!("### {}\n\n{}", name, table));
@@ -140,10 +141,12 @@ pub fn extract_spreadsheet(request: &ExtractionRequest) -> Result<ExtractionResu
                 }
             }
         }
-        _ => return Err(ExtractError::UnsupportedFormat {
-            mime_type: request.mime_type.clone(),
-            filename: request.filename.clone(),
-        }),
+        _ => {
+            return Err(ExtractError::UnsupportedFormat {
+                mime_type: request.mime_type.clone(),
+                filename: request.filename.clone(),
+            })
+        }
     }
 
     let mut meta = metadata("builtin-spreadsheet", None);

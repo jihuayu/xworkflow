@@ -98,7 +98,7 @@ pub struct ChatMessage {
 }
 
 // ChatCompletionRequest 增加 tools 字段
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -113,7 +113,7 @@ pub struct ChatCompletionRequest {
 }
 
 // ChatCompletionResponse 增加 tool_calls 字段
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChatCompletionResponse {
     pub content: String,
     pub usage: LlmUsage,
@@ -180,9 +180,14 @@ fn build_payload(&self, request: &ChatCompletionRequest) -> Value {
 ```rust
 fn build_messages(&self, messages: &[ChatMessage]) -> Vec<Value> {
     messages.iter().map(|msg| {
+        let content = match &msg.content {
+            ChatContent::Text(text) => Value::String(text.clone()),
+            ChatContent::MultiModal(parts) => serde_json::to_value(parts)
+                .unwrap_or_else(|_| Value::Array(vec![])),
+        };
         let mut m = json!({
             "role": msg.role,
-            "content": msg.content.to_api_string(),
+            "content": content,
         });
 
         // Assistant message with tool calls
@@ -299,16 +304,17 @@ builtin-agent-node = ["dep:rmcp", "builtin-llm-node"]
 /// MCP Server 连接配置
 #[derive(Deserialize, Serialize, Debug, Clone, Hash, PartialEq, Eq)]
 pub struct McpServerConfig {
-    /// Transport type and settings
-    pub transport: McpTransport,
     /// Optional: server name for logging/debugging
     #[serde(default)]
     pub name: Option<String>,
+    /// Flatten transport config into the same object level
+    #[serde(flatten)]
+    pub transport: McpTransport,
 }
 
 /// Transport mechanism
 #[derive(Deserialize, Serialize, Debug, Clone, Hash, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "transport", rename_all = "snake_case")]
 pub enum McpTransport {
     /// Local subprocess via stdin/stdout
     Stdio {
@@ -332,72 +338,31 @@ pub enum McpTransport {
 **文件**: `src/mcp/client.rs`
 
 ```rust
-use rmcp::{ServiceExt, model::*, transport::*};
-
-pub struct McpClient {
-    inner: rmcp::service::RunningService<rmcp::RoleClient, ()>,
+#[async_trait]
+pub trait McpClient: Send + Sync {
+    async fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError>;
+    async fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, McpError>;
+    async fn close(&self) -> Result<(), McpError>;
 }
 
-impl McpClient {
-    /// Connect via stdio (spawn child process)
+pub struct RmcpClient {
+    inner: tokio::sync::Mutex<rmcp::service::RunningService<rmcp::RoleClient, ()>>,
+}
+
+impl RmcpClient {
     pub async fn connect_stdio(
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Self, McpError> {
-        let transport = TokioChildProcess::new(command, args, env)?;
-        let inner = ().serve(transport).await?;
-        Ok(Self { inner })
+        // spawn child process + rmcp client bootstrap
     }
 
-    /// Connect via Streamable HTTP
     pub async fn connect_http(
         url: &str,
         headers: &HashMap<String, String>,
     ) -> Result<Self, McpError> {
-        let transport = SseTransport::new(url, headers)?;
-        let inner = ().serve(transport).await?;
-        Ok(Self { inner })
-    }
-
-    /// List all tools exposed by this server
-    pub async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, McpError> {
-        let response = self.inner.list_tools(Default::default()).await?;
-        Ok(response.tools)
-    }
-
-    /// Call a tool by name with JSON arguments
-    pub async fn call_tool(
-        &self,
-        name: &str,
-        arguments: &Value,
-    ) -> Result<String, McpError> {
-        let params = CallToolRequestParam {
-            name: name.into(),
-            arguments: Some(arguments.as_object().cloned().unwrap_or_default()),
-        };
-        let result = self.inner.call_tool(params).await?;
-
-        // Extract text content from MCP result
-        let text = result.content.iter()
-            .filter_map(|c| match c {
-                Content::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if result.is_error.unwrap_or(false) {
-            Err(McpError::ToolError(text))
-        } else {
-            Ok(text)
-        }
-    }
-
-    /// Shutdown connection
-    pub async fn close(self) -> Result<(), McpError> {
-        self.inner.cancel().await;
-        Ok(())
+        // create reqwest client + SSE transport + rmcp bootstrap
     }
 }
 ```
@@ -411,12 +376,12 @@ use crate::mcp::client::McpClient;
 use crate::llm::types::ToolDefinition;
 
 /// 从 MCP Server 发现所有工具并转换为 LLM ToolDefinition
-pub async fn discover_tools(client: &McpClient) -> Result<Vec<ToolDefinition>, McpError> {
+pub async fn discover_tools(client: &dyn McpClient) -> Result<Vec<ToolDefinition>, McpError> {
     let mcp_tools = client.list_tools().await?;
 
     Ok(mcp_tools.into_iter().map(|t| ToolDefinition {
-        name: t.name.to_string(),
-        description: t.description.unwrap_or_default().to_string(),
+        name: t.name,
+        description: t.description,
         parameters: t.input_schema,  // MCP 用 JSON Schema，直接透传
     }).collect())
 }
@@ -430,11 +395,11 @@ MCP 的 `input_schema` 和 OpenAI 的 `parameters` 都是 JSON Schema 格式，*
 
 ```rust
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 
 pub struct McpConnectionPool {
-    connections: HashMap<u64, Arc<McpClient>>,
+    connections: HashMap<u64, Arc<dyn McpClient>>,
 }
 
 impl McpConnectionPool {
@@ -446,38 +411,38 @@ impl McpConnectionPool {
     pub async fn get_or_connect(
         &mut self,
         config: &McpServerConfig,
-    ) -> Result<Arc<McpClient>, McpError> {
-        let key = self.config_hash(config);
+    ) -> Result<Arc<dyn McpClient>, McpError> {
+        let key = Self::config_hash(config);
         if let Some(client) = self.connections.get(&key) {
             return Ok(client.clone());
         }
 
-        let client = match &config.transport {
+        let client: Arc<dyn McpClient> = match &config.transport {
             McpTransport::Stdio { command, args, env } => {
-                McpClient::connect_stdio(command, args, env).await?
+                Arc::new(RmcpClient::connect_stdio(command, args, env).await?)
             }
             McpTransport::Http { url, headers } => {
-                McpClient::connect_http(url, headers).await?
+                Arc::new(RmcpClient::connect_http(url, headers).await?)
             }
         };
 
-        let client = Arc::new(client);
         self.connections.insert(key, client.clone());
         Ok(client)
     }
 
     /// Close all connections
     pub async fn close_all(&mut self) {
-        for (_, client) in self.connections.drain() {
-            if let Ok(client) = Arc::try_unwrap(client) {
-                let _ = client.close().await;
-            }
+        let clients: Vec<Arc<dyn McpClient>> = self.connections.drain().map(|(_, c)| c).collect();
+        for client in clients {
+            let _ = client.close().await;
         }
     }
 
-    fn config_hash(&self, config: &McpServerConfig) -> u64 {
+    fn config_hash(config: &McpServerConfig) -> u64 {
         let mut hasher = DefaultHasher::new();
-        config.hash(&mut hasher);
+        if let Ok(bytes) = serde_json::to_vec(config) {
+            hasher.write(&bytes);
+        }
         hasher.finish()
     }
 }
@@ -529,7 +494,7 @@ impl NodeExecutor for ToolNodeExecutor {
             .map_err(|e| NodeError::ConfigError(e.to_string()))?;
 
         // 1. 解析 MCP Server 配置
-        let server_config = self.resolve_server_config(&cfg, context)?;
+        let server_config = self.resolve_server_config(&cfg, variable_pool)?;
 
         // 2. 获取连接
         let client = self.mcp_pool.write().await
@@ -537,11 +502,11 @@ impl NodeExecutor for ToolNodeExecutor {
             .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
 
         // 3. 渲染模板参数
-        let arguments = render_arguments(&cfg.arguments, variable_pool)?;
+        let arguments = render_arguments(&cfg.arguments, variable_pool, context.strict_template())?;
 
         // 4. SecurityGate 检查
         #[cfg(feature = "security")]
-        self.check_tool_security(context, node_id, &cfg.tool_name, &arguments).await?;
+        self.check_tool_security(context, node_id, &cfg.tool_name, &arguments, variable_pool).await?;
 
         // 5. 调用 MCP tool
         let result = client.call_tool(&cfg.tool_name, &arguments).await
@@ -633,7 +598,7 @@ pub struct AgentToolsConfig {
 1. parse config → AgentNodeData
 2. render query template（变量替换）
 3. connect to MCP servers（从连接池获取或新建）
-4. discover tools（合并所有 MCP server 的 tools）
+4. discover tools（合并所有 MCP server 的 tools；若重名则 ConfigError fail-fast）
 5. build initial messages:
    a. [可选] memory messages（复用 append_memory_messages）
    b. system: system_prompt
@@ -652,7 +617,7 @@ pub struct AgentToolsConfig {
       - Yes → continue loop
       - No → final call without tools（强制文本回复）
 7. return NodeRunResult {
-     outputs: { text, tool_calls, usage, iterations },
+     outputs: { text, tool_calls, iterations, tool_calls_count },
      llm_usage: accumulated,
    }
 ```
@@ -684,19 +649,20 @@ impl NodeExecutor for AgentNodeExecutor {
                 format!("LLM provider '{}' not found", cfg.model.provider)
             ))?;
 
-        // Discover all available tools
-        let tool_defs = self.discover_all_tools(&cfg.tools, context).await?;
+        // Discover all available tools and route map
+        let (tool_defs, tool_map) = self
+            .discover_all_tools(&cfg, variable_pool, context, node_id)
+            .await?;
 
         // Build initial messages
-        let rendered_query = render_template(&cfg.query, variable_pool)?;
+        let rendered_query = render_template_async_with_config(
+            &cfg.query, variable_pool, context.strict_template()
+        ).await?;
         let mut messages = Vec::new();
 
         // Optional: memory
         if let Some(ref mem) = cfg.memory {
-            if mem.enabled {
-                let mem_msgs = append_memory_messages(mem, variable_pool)?;
-                messages.extend(mem_msgs);
-            }
+            append_memory_messages(&mut messages, mem, variable_pool).await?;
         }
 
         messages.push(ChatMessage {
@@ -716,12 +682,19 @@ impl NodeExecutor for AgentNodeExecutor {
         let mut total_usage = LlmUsage::default();
         let mut tool_call_log: Vec<Value> = Vec::new();
         let mut final_text = String::new();
+        let mut iterations_used: i64 = 0;
+        let max_iterations = if cfg.max_iterations <= 0 {
+            1
+        } else {
+            cfg.max_iterations as usize
+        };
 
-        for iteration in 0..cfg.max_iterations {
+        for iteration in 0..max_iterations {
+            let allow_tools = iteration + 1 < max_iterations;
             let request = ChatCompletionRequest {
                 model: cfg.model.name.clone(),
                 messages: messages.clone(),
-                tools: tool_defs.clone(),
+                tools: if allow_tools { tool_defs.clone() } else { vec![] },
                 temperature: cfg.model.completion_params.as_ref()
                     .and_then(|p| p.temperature),
                 top_p: cfg.model.completion_params.as_ref()
@@ -734,10 +707,11 @@ impl NodeExecutor for AgentNodeExecutor {
 
             let response = provider.chat_completion(request).await
                 .map_err(NodeError::from)?;
-            total_usage.accumulate(&response.usage);
+            iterations_used += 1;
+            accumulate_usage(&mut total_usage, &response.usage);
 
             // LLM chose to stop — return final answer
-            if response.tool_calls.is_empty() {
+            if response.tool_calls.is_empty() || !allow_tools {
                 final_text = response.content;
                 break;
             }
@@ -753,11 +727,15 @@ impl NodeExecutor for AgentNodeExecutor {
             for tc in &response.tool_calls {
                 // Security check
                 #[cfg(feature = "security")]
-                self.check_tool_security(context, node_id, &tc.name, &tc.arguments).await?;
+                self.check_tool_security(context, node_id, &tc.name, &tc.arguments, variable_pool).await?;
 
                 // Execute MCP tool
-                let result = self.mcp_pool.read().await
-                    .call_tool(&tc.name, &tc.arguments).await;
+                let result = match tool_map.get(&tc.name) {
+                    Some(client) => client.call_tool(&tc.name, &tc.arguments).await,
+                    None => Err(McpError::ToolError(
+                        format!("tool '{}' not found on any MCP server", tc.name)
+                    )),
+                };
 
                 let (content, is_error) = match result {
                     Ok(text) => (text, false),
@@ -781,30 +759,10 @@ impl NodeExecutor for AgentNodeExecutor {
                     tool_call_id: Some(tc.id.clone()),
                 });
             }
-
-            // Last iteration: force text reply by removing tools
-            if iteration == cfg.max_iterations - 2 {
-                // Next iteration will be the last, remove tools to force conclusion
-            }
-        }
-
-        // If loop ended by max_iterations (no natural stop)
-        if final_text.is_empty() {
-            let force_request = ChatCompletionRequest {
-                model: cfg.model.name.clone(),
-                messages,
-                tools: vec![],  // No tools = force text reply
-                stream: false,
-                ..Default::default()
-            };
-            let response = provider.chat_completion(force_request).await
-                .map_err(NodeError::from)?;
-            total_usage.accumulate(&response.usage);
-            final_text = response.content;
         }
 
         // Build output
-        let iterations_used = tool_call_log.len() as i64;
+        let tool_calls_count = tool_call_log.len() as i64;
         Ok(NodeRunResult {
             status: WorkflowNodeExecutionStatus::Succeeded,
             outputs: NodeOutputs::Sync({
@@ -814,6 +772,8 @@ impl NodeExecutor for AgentNodeExecutor {
                     Segment::from_value(&Value::Array(tool_call_log)));
                 m.insert("iterations".to_string(),
                     Segment::Integer(iterations_used));
+                m.insert("tool_calls_count".to_string(),
+                    Segment::Integer(tool_calls_count));
                 m
             }),
             llm_usage: Some(total_usage),
@@ -877,6 +837,7 @@ impl NodeExecutor for AgentNodeExecutor {
 {{research.text}}        — 最终回答文本
 {{research.tool_calls}}  — 工具调用记录（JSON Array）
 {{research.iterations}}  — 实际 LLM 调用轮数
+{{research.tool_calls_count}} — 实际工具调用次数
 ```
 
 ---
@@ -943,13 +904,14 @@ nodes:
 pub(crate) fn render_arguments(
     arguments: &HashMap<String, Value>,
     variable_pool: &VariablePool,
+    strict: bool,
 ) -> Result<Value, NodeError> {
     // 遍历每个值，对 String 类型执行模板渲染
     let mut rendered = serde_json::Map::new();
     for (key, value) in arguments {
         let rendered_value = match value {
             Value::String(s) => {
-                let rendered = render_template_sync(s, variable_pool)?;
+                let rendered = render_template_with_config(s, variable_pool, strict)?;
                 Value::String(rendered)
             }
             other => other.clone(),
@@ -986,7 +948,7 @@ builtin-agent-node = ["dep:rmcp", "builtin-llm-node"]
 ```
 
 `builtin-agent-node` 启用 `rmcp` 可选依赖 + 依赖 `builtin-llm-node`（需要 `LlmProviderRegistry`）。
-未启用时 `src/mcp/` 模块整体不编译，零开销。
+未启用时 `src/mcp/` 模块整体不编译，零开销；但 `WorkflowSchema.mcp_servers` 仍可被 DSL 正常解析（类型定义在 `src/dsl/schema.rs`）。
 
 与现有模式一致：`builtin-code-node = ["builtin-sandbox-js"]` 依赖沙箱而非外部 crate。
 
@@ -1037,14 +999,18 @@ async fn check_tool_security(
     node_id: &str,
     tool_name: &str,
     arguments: &Value,
+    variable_pool: &VariablePool,
 ) -> Result<(), NodeError> {
     // 1. SecurityGate 前置检查
+    let gate = crate::core::security_gate::new_security_gate(
+        Arc::new(context.clone()),
+        Arc::new(ParkingRwLock::new(variable_pool.clone())),
+    );
     let tool_config = json!({
         "mcp_tool": tool_name,
         "arguments": arguments,
     });
-    context.security_gate()
-        .check_before_node(node_id, "mcp-tool-call", &tool_config).await?;
+    gate.check_before_node(node_id, "mcp-tool-call", &tool_config).await?;
 
     // 2. 审计日志
     audit_security_event(
@@ -1088,11 +1054,12 @@ async fn check_tool_security(
 | `test_tool_node_basic` | MockMcpClient + 指定工具调用 → 返回 result |
 | `test_tool_node_missing_server` | 无 mcp_server 配置 → ConfigError |
 | `test_tool_node_template_args` | `{{start.id}}` 在参数中正确渲染 |
-| `test_agent_no_tool_calls` | LLM 直接返回文本 → 0 iterations |
-| `test_agent_single_iteration` | LLM 调一次工具后停止 → 1 iteration |
+| `test_agent_no_tool_calls` | LLM 直接返回文本 → `iterations=1`, `tool_calls_count=0` |
+| `test_agent_single_iteration` | LLM 调一次工具后停止 → `iterations=2`, `tool_calls_count=1` |
 | `test_agent_max_iterations` | LLM 持续调工具直到上限 → forced stop |
 | `test_agent_tool_error` | 工具返回错误 → LLM 收到错误信息继续推理 |
 | `test_agent_empty_tools` | 无工具配置 → 等同于 llm 节点 |
+| `test_agent_duplicate_tool_name_conflict` | 多 MCP server 暴露同名工具 → ConfigError fail-fast |
 
 ### 11.2 集成测试
 
@@ -1109,13 +1076,13 @@ async fn check_tool_security(
 - mock LLM: 第一次返回 tool_call，第二次返回 text
 - mock MCP: 暴露 `search` tool
 - workflow: `start → agent → end`
-- 验证：输出 `text`、`tool_calls`（1 次）、`iterations`（2）
+- 验证：输出 `text`、`tool_calls`（1 次）、`iterations`（2）、`tool_calls_count`（1）
 
 #### Case 132: `agent_node_max_iterations`
 
 - mock LLM: 始终返回 tool_calls
 - workflow: agent 配置 max_iterations=3
-- 验证：强制结束，iterations=3
+- 验证：强制结束，`iterations=3`，`tool_calls_count=2`
 
 ---
 
@@ -1126,13 +1093,13 @@ async fn check_tool_security(
 | `src/llm/types.rs` | 修改 | 添加 ToolDefinition, ToolCall, ToolResult, ChatRole::Tool, ChatMessage 扩展 |
 | `src/llm/provider/openai.rs` | 修改 | build_payload/build_messages/parse_response 支持 tools |
 | `src/llm/executor.rs` | 修改 | 3 个函数改为 `pub(crate)`（同 question-classifier） |
-| `src/dsl/schema.rs` | 修改 | 添加 ToolNodeData, AgentNodeData, AgentToolsConfig；`mcp_servers` 字段引用 `crate::mcp::config::McpServerConfig` |
+| `src/dsl/schema.rs` | 修改 | 添加 ToolNodeData, AgentNodeData, AgentToolsConfig；新增 workflow 级 `mcp_servers` |
 | `src/nodes/tool.rs` | **新建** | ToolNodeExecutor 实现 |
 | `src/nodes/agent.rs` | **新建** | AgentNodeExecutor 实现 |
 | `src/nodes/mod.rs` | 修改 | 添加 tool, agent 模块声明 |
 | `src/nodes/executor.rs` | 修改 | 添加 set_mcp_pool 注册方法 |
 | `src/mcp/mod.rs` | **新建** | MCP 模块声明（pub mod config, client, pool, tools, error） |
-| `src/mcp/config.rs` | **新建** | McpServerConfig, McpTransport 类型定义 |
+| `src/mcp/config.rs` | **新建** | re-export DSL 中的 `McpServerConfig`, `McpTransport` |
 | `src/mcp/client.rs` | **新建** | McpClient — rmcp 封装（connect_stdio, connect_http, list_tools, call_tool） |
 | `src/mcp/pool.rs` | **新建** | McpConnectionPool — 按 config hash 复用连接 |
 | `src/mcp/tools.rs` | **新建** | discover_tools() — MCP tool → ToolDefinition 零转换 |

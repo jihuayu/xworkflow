@@ -6,13 +6,8 @@ use tempfile::TempDir;
 
 use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
 use xworkflow::plugin_system::wasm::{
-    AllowedCapabilities,
-    parse_wat_str,
-    PluginCapabilities,
-    PluginHook,
-    PluginHookType,
-    PluginManifest,
-    PluginNodeType,
+    parse_wat_str, AllowedCapabilities, PluginCapabilities, PluginHook, PluginHookType,
+    PluginManifest, PluginNodeType,
 };
 use xworkflow::plugin_system::{PluginLoadSource, PluginRegistry};
 
@@ -121,10 +116,7 @@ async fn test_plugin_discover() {
         .unwrap();
 
     let mut params = std::collections::HashMap::new();
-    params.insert(
-        "dir".to_string(),
-        plugin_dir.to_string_lossy().into_owned(),
-    );
+    params.insert("dir".to_string(), plugin_dir.to_string_lossy().into_owned());
     let sources = vec![PluginLoadSource {
         loader_type: "wasm".to_string(),
         params,
@@ -166,10 +158,7 @@ async fn test_plugin_capability_deny() {
         .unwrap();
 
     let mut params = std::collections::HashMap::new();
-    params.insert(
-        "dir".to_string(),
-        plugin_dir.to_string_lossy().into_owned(),
-    );
+    params.insert("dir".to_string(), plugin_dir.to_string_lossy().into_owned());
     let sources = vec![PluginLoadSource {
         loader_type: "wasm".to_string(),
         params,

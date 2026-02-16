@@ -4,20 +4,13 @@ use std::sync::Arc;
 use crate::core::http_client::{HttpClientProvider, HttpPoolConfig};
 use crate::llm::LlmProviderRegistry;
 use crate::nodes::executor::NodeExecutorRegistry;
-#[cfg(feature = "memory")]
-use crate::memory::MemoryProvider;
 
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::TemplateFunction;
 
 #[cfg(feature = "security")]
 use crate::security::{
-    AuditLogger,
-    CredentialProvider,
-    ResourceGovernor,
-    ResourceGroup,
-    ResourceQuota,
-    SecurityLevel,
+    AuditLogger, CredentialProvider, ResourceGovernor, ResourceGroup, ResourceQuota, SecurityLevel,
     SecurityPolicy,
 };
 
@@ -32,8 +25,6 @@ pub struct RuntimeGroup {
     pub template_functions: Option<Arc<HashMap<String, Arc<dyn TemplateFunction>>>>,
     pub sandbox_pool: Option<Arc<dyn SandboxPool>>,
     pub http_client_provider: Option<Arc<HttpClientProvider>>,
-    #[cfg(feature = "memory")]
-    pub memory_provider: Option<Arc<dyn MemoryProvider>>,
     #[cfg(feature = "security")]
     pub resource_group: Option<ResourceGroup>,
     #[cfg(feature = "security")]
@@ -60,9 +51,9 @@ impl Default for RuntimeGroup {
             #[cfg(feature = "plugin-system")]
             template_functions: Some(Arc::new(HashMap::new())),
             sandbox_pool: Some(Arc::new(DefaultSandboxPool::new())),
-            http_client_provider: Some(Arc::new(HttpClientProvider::new(HttpPoolConfig::default()))),
-            #[cfg(feature = "memory")]
-            memory_provider: None,
+            http_client_provider: Some(Arc::new(
+                HttpClientProvider::new(HttpPoolConfig::default()),
+            )),
             #[cfg(feature = "security")]
             resource_group: None,
             #[cfg(feature = "security")]
@@ -89,6 +80,12 @@ impl RuntimeGroup {
 
 pub struct RuntimeGroupBuilder {
     group: RuntimeGroup,
+}
+
+impl Default for RuntimeGroupBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RuntimeGroupBuilder {
@@ -144,12 +141,6 @@ impl RuntimeGroupBuilder {
 
     pub fn http_pool_config(mut self, config: HttpPoolConfig) -> Self {
         self.group.http_client_provider = Some(Arc::new(HttpClientProvider::new(config)));
-        self
-    }
-
-    #[cfg(feature = "memory")]
-    pub fn memory_provider(mut self, provider: Arc<dyn MemoryProvider>) -> Self {
-        self.group.memory_provider = Some(provider);
         self
     }
 
@@ -217,3 +208,260 @@ impl DefaultSandboxPool {
 }
 
 impl SandboxPool for DefaultSandboxPool {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_runtime_group_default() {
+        let group = RuntimeGroup::default();
+        assert!(group.group_id.is_none());
+        assert!(group.group_name.is_none());
+        assert!(group.sandbox_pool.is_some());
+        assert!(group.http_client_provider.is_some());
+        #[cfg(feature = "plugin-system")]
+        assert!(group.template_functions.is_some());
+        #[cfg(feature = "security")]
+        {
+            assert!(group.resource_group.is_none());
+            assert!(group.security_policy.is_none());
+            assert!(group.credential_provider.is_none());
+            assert!(group.resource_governor.is_none());
+            assert!(group.audit_logger.is_none());
+            assert_eq!(
+                group.security_level,
+                crate::security::SecurityLevel::Standard
+            );
+        }
+    }
+
+    #[test]
+    fn test_runtime_group_builder_basic() {
+        let group = RuntimeGroup::builder()
+            .group_id("test_id")
+            .group_name("test_name")
+            .build();
+
+        assert_eq!(group.group_id, Some("test_id".to_string()));
+        assert_eq!(group.group_name, Some("test_name".to_string()));
+    }
+
+    #[test]
+    fn test_runtime_group_builder_registries() {
+        let node_registry = Arc::new(NodeExecutorRegistry::new());
+        let llm_registry = Arc::new(LlmProviderRegistry::new());
+
+        let group = RuntimeGroup::builder()
+            .node_executor_registry(node_registry.clone())
+            .llm_provider_registry(llm_registry.clone())
+            .build();
+
+        assert!(Arc::ptr_eq(&group.node_executor_registry, &node_registry));
+        assert!(Arc::ptr_eq(&group.llm_provider_registry, &llm_registry));
+    }
+
+    #[test]
+    fn test_runtime_group_builder_sandbox_pool() {
+        let pool = Arc::new(DefaultSandboxPool::new());
+        let group = RuntimeGroup::builder().sandbox_pool(pool.clone()).build();
+
+        assert!(group.sandbox_pool.is_some());
+    }
+
+    #[test]
+    fn test_runtime_group_builder_http_pool_config() {
+        use std::time::Duration;
+
+        let config = HttpPoolConfig {
+            pool_max_idle_per_host: 20,
+            pool_idle_timeout: Duration::from_secs(120),
+            default_timeout: Duration::from_secs(45),
+            tcp_keepalive: Some(Duration::from_secs(90)),
+            http2_enabled: false,
+            #[cfg(feature = "security")]
+            max_group_clients: 64,
+            #[cfg(feature = "security")]
+            group_client_idle_timeout: Duration::from_secs(600),
+        };
+
+        let group = RuntimeGroup::builder()
+            .http_pool_config(config.clone())
+            .build();
+
+        // Just verify the provider exists since config is private
+        assert!(group.http_client_provider.is_some());
+    }
+
+    #[cfg(feature = "plugin-system")]
+    #[test]
+    fn test_runtime_group_builder_template_functions() {
+        use std::collections::HashMap;
+
+        let functions = Arc::new(HashMap::new());
+        let group = RuntimeGroup::builder()
+            .template_functions(functions.clone())
+            .build();
+
+        assert!(group.template_functions.is_some());
+        assert!(Arc::ptr_eq(&group.template_functions.unwrap(), &functions));
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_runtime_group_builder_resource_group() {
+        use crate::security::{ResourceGroup, ResourceQuota, SecurityLevel};
+
+        let resource_group = ResourceGroup {
+            group_id: "rg_id".to_string(),
+            group_name: Some("RG Name".to_string()),
+            security_level: SecurityLevel::Strict,
+            quota: ResourceQuota {
+                max_concurrent_workflows: 10,
+                ..ResourceQuota::default()
+            },
+            credential_refs: std::collections::HashMap::new(),
+        };
+
+        let group = RuntimeGroup::builder()
+            .resource_group(resource_group.clone())
+            .build();
+
+        assert_eq!(group.group_id, Some("rg_id".to_string()));
+        assert_eq!(group.group_name, Some("RG Name".to_string()));
+        assert_eq!(group.security_level, SecurityLevel::Strict);
+        assert_eq!(group.quota.max_concurrent_workflows, 10);
+        assert!(group.resource_group.is_some());
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_runtime_group_builder_quota() {
+        use crate::security::ResourceQuota;
+
+        let quota = ResourceQuota {
+            max_concurrent_workflows: 5,
+            ..ResourceQuota::default()
+        };
+
+        let group = RuntimeGroup::builder().quota(quota.clone()).build();
+
+        assert_eq!(group.quota.max_concurrent_workflows, 5);
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_runtime_group_builder_security_level() {
+        use crate::security::SecurityLevel;
+
+        let group = RuntimeGroup::builder()
+            .security_level(SecurityLevel::Strict)
+            .build();
+
+        assert_eq!(group.security_level, SecurityLevel::Strict);
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_runtime_group_builder_security_policy() {
+        use crate::security::{NetworkPolicy, SecurityPolicy};
+
+        let policy = SecurityPolicy {
+            network: Some(NetworkPolicy::default()),
+            ..SecurityPolicy::standard()
+        };
+        let group = RuntimeGroup::builder()
+            .security_policy(policy.clone())
+            .build();
+
+        assert!(group.security_policy.is_some());
+    }
+
+    #[test]
+    fn test_runtime_group_builder_chaining() {
+        let group = RuntimeGroup::builder()
+            .group_id("chain_id")
+            .group_name("Chain Name")
+            .node_executor_registry(Arc::new(NodeExecutorRegistry::new()))
+            .llm_provider_registry(Arc::new(LlmProviderRegistry::new()))
+            .build();
+
+        assert_eq!(group.group_id, Some("chain_id".to_string()));
+        assert_eq!(group.group_name, Some("Chain Name".to_string()));
+    }
+
+    #[test]
+    fn test_default_sandbox_pool() {
+        let pool = DefaultSandboxPool::new();
+        let _: &dyn SandboxPool = &pool;
+    }
+
+    #[test]
+    fn test_runtime_group_clone() {
+        let group = RuntimeGroup::builder().group_id("test").build();
+
+        let cloned = group.clone();
+        assert_eq!(cloned.group_id, group.group_id);
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_group_id_sync_with_resource_group() {
+        use crate::security::ResourceGroup;
+
+        let resource_group = ResourceGroup {
+            group_id: "original_id".to_string(),
+            group_name: None,
+            security_level: crate::security::SecurityLevel::Standard,
+            quota: crate::security::ResourceQuota::default(),
+            credential_refs: std::collections::HashMap::new(),
+        };
+
+        // Create builder with resource_group first
+        let mut builder = RuntimeGroup::builder();
+        builder.group.resource_group = Some(resource_group.clone());
+
+        // Setting group_id should update resource_group
+        let group = builder.group_id("new_id").build();
+
+        assert_eq!(group.group_id, Some("new_id".to_string()));
+        assert_eq!(group.resource_group.as_ref().unwrap().group_id, "new_id");
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn test_group_name_sync_with_resource_group() {
+        use crate::security::ResourceGroup;
+
+        let resource_group = ResourceGroup {
+            group_id: "id".to_string(),
+            group_name: Some("original_name".to_string()),
+            security_level: crate::security::SecurityLevel::Standard,
+            quota: crate::security::ResourceQuota::default(),
+            credential_refs: std::collections::HashMap::new(),
+        };
+
+        // Create builder with resource_group first
+        let mut builder = RuntimeGroup::builder();
+        builder.group.resource_group = Some(resource_group.clone());
+
+        // Setting group_name should update resource_group
+        let group = builder.group_name("new_name").build();
+
+        assert_eq!(group.group_name, Some("new_name".to_string()));
+        assert_eq!(
+            group.resource_group.as_ref().unwrap().group_name,
+            Some("new_name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_runtime_group_access_resources() {
+        let group = RuntimeGroup::default();
+
+        // Test that we can access all resources
+        assert!(group.node_executor_registry.get("start").is_some());
+        assert!(group.sandbox_pool.is_some());
+        assert!(group.http_client_provider.is_some());
+    }
+}

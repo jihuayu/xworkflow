@@ -1,0 +1,61 @@
+version = "0.1.0"
+
+[mcp_servers.mock_search]
+name = "mock-search"
+transport = "stdio"
+command = "mock"
+
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "question"
+label = "Question"
+type = "string"
+required = false
+
+[[nodes]]
+id = "agent1"
+
+[nodes.data]
+type = "agent"
+title = "Agent"
+system_prompt = "You are helpful"
+query = "{{#start.question#}}"
+max_iterations = 3
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o"
+
+[nodes.data.tools]
+mcp_server_refs = ["mock_search"]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "text"
+value_selector = ["agent1", "text"]
+
+[[nodes.data.outputs]]
+variable = "iterations"
+value_selector = ["agent1", "iterations"]
+
+[[nodes.data.outputs]]
+variable = "tool_calls_count"
+value_selector = ["agent1", "tool_calls_count"]
+
+[[edges]]
+source = "start"
+target = "agent1"
+
+[[edges]]
+source = "agent1"
+target = "end"

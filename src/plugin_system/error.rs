@@ -18,7 +18,10 @@ pub enum PluginError {
     #[error("Plugin conflict: {0}")]
     ConflictError(String),
     #[error("Wrong phase: expected {expected:?}, actual {actual:?}")]
-    WrongPhase { expected: PluginPhase, actual: PluginPhase },
+    WrongPhase {
+        expected: PluginPhase,
+        actual: PluginPhase,
+    },
     #[error("Capability denied: {0}")]
     CapabilityDenied(String),
     #[error("Plugin not found: {0}")]
@@ -33,18 +36,35 @@ mod tests {
 
     #[test]
     fn test_plugin_error_display() {
-        assert!(PluginError::InvalidConfig("bad".into()).to_string().contains("bad"));
-        assert!(PluginError::LoadError("fail".into()).to_string().contains("fail"));
-        assert!(PluginError::MissingExport("fn".into()).to_string().contains("fn"));
-        assert!(PluginError::ConflictError("dup".into()).to_string().contains("dup"));
-        assert!(PluginError::CapabilityDenied("http".into()).to_string().contains("http"));
-        assert!(PluginError::NotFound("p1".into()).to_string().contains("p1"));
-        assert!(PluginError::RegisterError("err".into()).to_string().contains("err"));
+        assert!(PluginError::InvalidConfig("bad".into())
+            .to_string()
+            .contains("bad"));
+        assert!(PluginError::LoadError("fail".into())
+            .to_string()
+            .contains("fail"));
+        assert!(PluginError::MissingExport("fn".into())
+            .to_string()
+            .contains("fn"));
+        assert!(PluginError::ConflictError("dup".into())
+            .to_string()
+            .contains("dup"));
+        assert!(PluginError::CapabilityDenied("http".into())
+            .to_string()
+            .contains("http"));
+        assert!(PluginError::NotFound("p1".into())
+            .to_string()
+            .contains("p1"));
+        assert!(PluginError::RegisterError("err".into())
+            .to_string()
+            .contains("err"));
     }
 
     #[test]
     fn test_plugin_error_abi_mismatch() {
-        let err = PluginError::AbiVersionMismatch { expected: 1, actual: 2 };
+        let err = PluginError::AbiVersionMismatch {
+            expected: 1,
+            actual: 2,
+        };
         let msg = err.to_string();
         assert!(msg.contains("1"));
         assert!(msg.contains("2"));

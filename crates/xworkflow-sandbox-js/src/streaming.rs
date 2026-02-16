@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use boa_engine::{Context, Source};
@@ -9,11 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::builtins as js_builtins;
 use crate::sandbox::BuiltinSandbox;
 use xworkflow_types::sandbox::{
-    CodeLanguage,
-    SandboxError,
-    SandboxRequest,
-    SandboxResult,
-    StreamingSandbox,
+    CodeLanguage, SandboxError, SandboxRequest, SandboxResult, StreamingSandbox,
     StreamingSandboxHandle,
 };
 
@@ -87,8 +83,8 @@ fn parse_json_result(result_str: &str) -> Result<Option<Value>, String> {
     if result_str == "__undefined__" {
         return Ok(None);
     }
-    let val: Value = serde_json::from_str(result_str)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+    let val: Value =
+        serde_json::from_str(result_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
     if val.is_null() {
         return Ok(None);
     }
@@ -125,7 +121,8 @@ async fn spawn_js_stream_runtime_inner(
         stream_setup.push_str("var __inputs = JSON.parse('");
         stream_setup.push_str(&inputs_json_escaped);
         stream_setup.push_str("');\n");
-        stream_setup.push_str("globalThis.__stream_callbacks__ = globalThis.__stream_callbacks__ || {};\n");
+        stream_setup
+            .push_str("globalThis.__stream_callbacks__ = globalThis.__stream_callbacks__ || {};\n");
 
         for var_name in &stream_vars {
             let var_escaped = escape_js_string(var_name);
@@ -195,9 +192,9 @@ async fn spawn_js_stream_runtime_inner(
 
         let _ = ready_tx.send(Ok((initial_output, has_callbacks)));
 
-        loop {
-            match cmd_rx.blocking_recv() {
-                Some(RuntimeCommand::Invoke(inv)) => {
+        while let Some(cmd) = cmd_rx.blocking_recv() {
+            match cmd {
+                RuntimeCommand::Invoke(inv) => {
                     let arg_json = inv
                         .arg
                         .map(|v| serde_json::to_string(&v).unwrap_or("null".into()))
@@ -215,7 +212,7 @@ async fn spawn_js_stream_runtime_inner(
                     };
                     let _ = inv.resp.send(result);
                 }
-                Some(RuntimeCommand::Shutdown) | None => break,
+                RuntimeCommand::Shutdown => break,
             }
         }
 
@@ -229,7 +226,11 @@ async fn spawn_js_stream_runtime_inner(
         .map_err(|_| SandboxError::ExecutionError("JS runtime setup failed".into()))?
         .map_err(SandboxError::ExecutionError)?;
 
-    Ok((initial_output, has_callbacks, JsStreamRuntime { tx: cmd_tx }))
+    Ok((
+        initial_output,
+        has_callbacks,
+        JsStreamRuntime { tx: cmd_tx },
+    ))
 }
 
 #[doc(hidden)]

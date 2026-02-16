@@ -1,0 +1,4 @@
+# Question classifier parse error expected result
+
+status = "failed"
+error_contains = "Failed to parse question-classifier response"

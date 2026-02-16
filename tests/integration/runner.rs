@@ -4,62 +4,53 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use xworkflow::core::debug::{DebugConfig, DebugEvent, PauseLocation, PauseReason};
 use xworkflow::core::Segment;
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::dsl::schema::McpServerConfig;
+#[cfg(feature = "plugin-system")]
+use xworkflow::dsl::schema::{LlmUsage, NodeRunResult, WorkflowNodeExecutionStatus};
 use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::{
-    EngineConfig,
-    ExecutionStatus,
-    FakeIdGenerator,
-    FakeTimeProvider,
-    RuntimeContext,
-    WorkflowRunner,
-};
 #[cfg(feature = "plugin-system")]
-use xworkflow::plugin_system::{
-    HookHandler,
-    HookPayload,
-    HookPoint,
-    Plugin,
-    PluginCategory,
-    PluginContext,
-    PluginError,
-    PluginLoadSource,
-    PluginMetadata,
-    PluginSource,
-    PluginSystemConfig,
-};
+use xworkflow::error::NodeError;
 #[cfg(feature = "plugin-system")]
-use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
+use xworkflow::llm::{
+    ChatCompletionRequest, ChatCompletionResponse, LlmProvider, ModelInfo, ProviderInfo,
+    StreamChunk,
+};
+use xworkflow::llm::{LlmProviderRegistry, OpenAiConfig, OpenAiProvider};
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::mcp::client::{McpClient, McpToolInfo};
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::mcp::error::McpError;
+#[cfg(feature = "builtin-agent-node")]
+use xworkflow::mcp::pool::{clear_mock_connections, register_mock_connection};
 #[cfg(feature = "plugin-system")]
 use xworkflow::nodes::executor::NodeExecutor;
 #[cfg(feature = "plugin-system")]
-use xworkflow::dsl::schema::{LlmUsage, NodeRunResult, WorkflowNodeExecutionStatus};
+use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
 #[cfg(feature = "plugin-system")]
-use xworkflow::error::NodeError;
-use xworkflow::llm::{LlmProviderRegistry, OpenAiConfig, OpenAiProvider};
-#[cfg(feature = "plugin-system")]
-use xworkflow::llm::{
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    LlmProvider,
-    ModelInfo,
-    ProviderInfo,
-    StreamChunk,
+use xworkflow::plugin_system::{
+    HookHandler, HookPayload, HookPoint, Plugin, PluginCategory, PluginContext, PluginError,
+    PluginLoadSource, PluginMetadata, PluginSource, PluginSystemConfig,
 };
 #[cfg(feature = "plugin-system")]
 use xworkflow::sandbox::{
-    CodeLanguage,
-    CodeSandbox,
-    HealthStatus,
-    SandboxError,
-    SandboxRequest,
-    SandboxResult,
-    SandboxStats,
-    SandboxType,
+    CodeLanguage, CodeSandbox, HealthStatus, SandboxError, SandboxRequest, SandboxResult,
+    SandboxStats, SandboxType,
 };
+use xworkflow::{
+    EngineConfig, ExecutionStatus, FakeIdGenerator, FakeTimeProvider, RuntimeContext,
+    WorkflowRunner,
+};
+
+static INTEGRATION_CASE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn integration_case_lock() -> &'static tokio::sync::Mutex<()> {
+    INTEGRATION_CASE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 #[derive(Debug, Deserialize, Default)]
 struct StateFile {
@@ -82,6 +73,48 @@ struct StateFile {
     llm_providers: Option<LlmProvidersConfig>,
     #[serde(default)]
     mock_server: Option<Vec<MockEndpoint>>,
+    #[cfg(feature = "builtin-agent-node")]
+    #[serde(default)]
+    mock_mcp_servers: Vec<MockMcpServerState>,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+#[derive(Debug, Deserialize, Clone)]
+struct MockMcpServerState {
+    config: McpServerConfig,
+    #[serde(default = "default_mock_mcp_tool_name")]
+    tool_name: String,
+    #[serde(default = "default_mock_mcp_tool_description")]
+    tool_description: String,
+    #[serde(default = "default_mock_mcp_tool_schema")]
+    tool_input_schema: Value,
+    #[serde(default = "default_mock_mcp_tool_result")]
+    tool_result: String,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_name() -> String {
+    "search".to_string()
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_description() -> String {
+    "Mock MCP search tool".to_string()
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "q": {"type": "string"}
+        }
+    })
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn default_mock_mcp_tool_result() -> String {
+    "tool-result".to_string()
 }
 
 #[cfg(feature = "plugin-system")]
@@ -167,23 +200,19 @@ fn default_status() -> usize {
 
 #[cfg(feature = "plugin-system")]
 fn build_plugin_system_config(case_dir: &Path, state: &PluginSystemState) -> PluginSystemConfig {
-    let mut config = PluginSystemConfig::default();
-
-    config.bootstrap_dll_paths = state
-        .bootstrap_dll_paths
-        .iter()
-        .map(|path| resolve_plugin_path(case_dir, path))
-        .collect();
-
-    config.normal_dll_paths = state
-        .normal_dll_paths
-        .iter()
-        .map(|path| resolve_plugin_path(case_dir, path))
-        .collect();
-
-    config.normal_load_sources = normalize_load_sources(case_dir, &state.normal_load_sources);
-
-    config
+    PluginSystemConfig {
+        bootstrap_dll_paths: state
+            .bootstrap_dll_paths
+            .iter()
+            .map(|path| resolve_plugin_path(case_dir, path))
+            .collect(),
+        normal_dll_paths: state
+            .normal_dll_paths
+            .iter()
+            .map(|path| resolve_plugin_path(case_dir, path))
+            .collect(),
+        normal_load_sources: normalize_load_sources(case_dir, &state.normal_load_sources),
+    }
 }
 
 #[cfg(feature = "plugin-system")]
@@ -376,7 +405,11 @@ struct TestLlmPlugin {
 impl TestLlmPlugin {
     fn new() -> Self {
         Self {
-            metadata: base_metadata("test.llm.provider", "Test LLM Provider", PluginCategory::Normal),
+            metadata: base_metadata(
+                "test.llm.provider",
+                "Test LLM Provider",
+                PluginCategory::Normal,
+            ),
         }
     }
 }
@@ -431,6 +464,7 @@ impl LlmProvider for TestLlmProvider {
             usage: LlmUsage::default(),
             model,
             finish_reason: Some("stop".to_string()),
+            tool_calls: vec![],
         })
     }
 
@@ -453,6 +487,7 @@ impl LlmProvider for TestLlmProvider {
             usage: LlmUsage::default(),
             model,
             finish_reason: Some("stop".to_string()),
+            tool_calls: vec![],
         })
     }
 }
@@ -552,6 +587,8 @@ struct ExpectedOutput {
 }
 
 pub async fn run_case(case_dir: &Path) {
+    let _case_guard = integration_case_lock().lock().await;
+
     let workflow_toml = read_to_string(case_dir.join("workflow.toml"));
     let inputs: HashMap<String, Value> = read_toml(case_dir.join("in.toml"));
     let mut state: StateFile = read_toml(case_dir.join("state.toml"));
@@ -560,6 +597,8 @@ pub async fn run_case(case_dir: &Path) {
 
     // Set up mock HTTP server if configured
     let _mock_server_guard = setup_mock_server(&mut state).await;
+    #[cfg(feature = "builtin-agent-node")]
+    let _mock_mcp_guard = setup_mock_mcp_servers(&state);
 
     let schema = parse_dsl(&workflow_toml, DslFormat::Toml)
         .unwrap_or_else(|e| panic!("Failed to parse workflow.toml: {}", e));
@@ -620,7 +659,6 @@ pub async fn run_case(case_dir: &Path) {
         }
     }
 
-
     let handle = builder.run().await;
     if handle.is_err() {
         let err = handle.err().unwrap();
@@ -653,7 +691,8 @@ pub async fn run_case(case_dir: &Path) {
                     }
                 } else {
                     assert_eq!(
-                        actual_outputs, expected.outputs,
+                        actual_outputs,
+                        expected.outputs,
                         "Outputs mismatch for case: {}",
                         case_dir.display()
                     );
@@ -683,7 +722,10 @@ pub async fn run_case(case_dir: &Path) {
             ),
         },
         "failed_with_recovery" => match status {
-            ExecutionStatus::FailedWithRecovery { original_error, recovered_outputs } => {
+            ExecutionStatus::FailedWithRecovery {
+                original_error,
+                recovered_outputs,
+            } => {
                 if let Some(substr) = expected.error_contains {
                     assert!(
                         original_error.contains(&substr),
@@ -703,7 +745,8 @@ pub async fn run_case(case_dir: &Path) {
                     }
                 } else {
                     assert_eq!(
-                        recovered_outputs, expected.outputs,
+                        recovered_outputs,
+                        expected.outputs,
                         "Outputs mismatch for case: {}",
                         case_dir.display()
                     );
@@ -723,6 +766,72 @@ pub async fn run_case(case_dir: &Path) {
 struct MockServerGuard {
     _server: mockito::ServerGuard,
     _mocks: Vec<mockito::Mock>,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+struct MockMcpClientState {
+    tool_name: String,
+    tool_description: String,
+    tool_input_schema: Value,
+    tool_result: String,
+}
+
+#[cfg(feature = "builtin-agent-node")]
+#[async_trait::async_trait]
+impl McpClient for MockMcpClientState {
+    async fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
+        Ok(vec![McpToolInfo {
+            name: self.tool_name.clone(),
+            description: self.tool_description.clone(),
+            input_schema: self.tool_input_schema.clone(),
+        }])
+    }
+
+    async fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, McpError> {
+        if name != self.tool_name {
+            return Err(McpError::ToolNotFound(name.to_string()));
+        }
+        if let Some(query) = arguments.get("q").and_then(|v| v.as_str()) {
+            return Ok(format!("{}:{}", self.tool_result, query));
+        }
+        Ok(self.tool_result.clone())
+    }
+
+    async fn close(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "builtin-agent-node")]
+struct MockMcpGuard;
+
+#[cfg(feature = "builtin-agent-node")]
+impl Drop for MockMcpGuard {
+    fn drop(&mut self) {
+        clear_mock_connections();
+    }
+}
+
+#[cfg(feature = "builtin-agent-node")]
+fn setup_mock_mcp_servers(state: &StateFile) -> Option<MockMcpGuard> {
+    if state.mock_mcp_servers.is_empty() {
+        return None;
+    }
+
+    clear_mock_connections();
+    for mock in &state.mock_mcp_servers {
+        register_mock_connection(
+            &mock.config,
+            Arc::new(MockMcpClientState {
+                tool_name: mock.tool_name.clone(),
+                tool_description: mock.tool_description.clone(),
+                tool_input_schema: mock.tool_input_schema.clone(),
+                tool_result: mock.tool_result.clone(),
+            }),
+        );
+    }
+
+    Some(MockMcpGuard)
 }
 
 // =====================================================================
@@ -784,6 +893,8 @@ struct DebugStep {
 }
 
 pub async fn run_debug_case(case_dir: &Path) {
+    let _case_guard = integration_case_lock().lock().await;
+
     let workflow_toml = read_to_string(case_dir.join("workflow.toml"));
     let inputs: HashMap<String, Value> = read_toml(case_dir.join("in.toml"));
     let mut state: StateFile = read_toml(case_dir.join("state.toml"));
@@ -793,6 +904,8 @@ pub async fn run_debug_case(case_dir: &Path) {
 
     // Set up mock HTTP server if configured
     let _mock_server_guard = setup_mock_server(&mut state).await;
+    #[cfg(feature = "builtin-agent-node")]
+    let _mock_mcp_guard = setup_mock_mcp_servers(&state);
 
     let schema = parse_dsl(&workflow_toml, DslFormat::Toml)
         .unwrap_or_else(|e| panic!("Failed to parse workflow.toml: {}", e));
@@ -808,12 +921,15 @@ pub async fn run_debug_case(case_dir: &Path) {
     let config = state.config.unwrap_or_default();
 
     // Build DebugConfig from debug.toml
-    let mut dbg_config = DebugConfig::default();
-    dbg_config.break_on_start = debug_test.config.break_on_start;
-    dbg_config.auto_snapshot = debug_test.config.auto_snapshot;
+    let mut breakpoints = std::collections::HashSet::new();
     for bp in &debug_test.config.breakpoints {
-        dbg_config.breakpoints.insert(bp.clone());
+        breakpoints.insert(bp.clone());
     }
+    let dbg_config = DebugConfig {
+        break_on_start: debug_test.config.break_on_start,
+        auto_snapshot: debug_test.config.auto_snapshot,
+        breakpoints,
+    };
 
     let sys_base_url = state
         .system_variables
@@ -862,7 +978,6 @@ pub async fn run_debug_case(case_dir: &Path) {
         }
     }
 
-
     let (handle, debug) = builder
         .run_debug()
         .await
@@ -873,18 +988,21 @@ pub async fn run_debug_case(case_dir: &Path) {
         // For actions that require waiting for a pause first
         let needs_pause = matches!(
             step.action.as_str(),
-            "step" | "continue" | "abort" | "inspect" | "update_variables"
-                | "add_breakpoint" | "remove_breakpoint"
+            "step"
+                | "continue"
+                | "abort"
+                | "inspect"
+                | "update_variables"
+                | "add_breakpoint"
+                | "remove_breakpoint"
         );
 
         if needs_pause {
-            let pause_event = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                debug.wait_for_pause(),
-            )
-            .await
-            .unwrap_or_else(|_| panic!("Step {}: Timed out waiting for pause", i))
-            .unwrap_or_else(|e| panic!("Step {}: wait_for_pause error: {:?}", i, e));
+            let pause_event =
+                tokio::time::timeout(std::time::Duration::from_secs(10), debug.wait_for_pause())
+                    .await
+                    .unwrap_or_else(|_| panic!("Step {}: Timed out waiting for pause", i))
+                    .unwrap_or_else(|e| panic!("Step {}: wait_for_pause error: {:?}", i, e));
 
             // Verify pause expectations
             if let DebugEvent::Paused { reason, location } = &pause_event {
@@ -908,9 +1026,12 @@ pub async fn run_debug_case(case_dir: &Path) {
                         PauseReason::UserRequested => "user_requested",
                     };
                     assert_eq!(
-                        actual_reason, expected_reason.as_str(),
+                        actual_reason,
+                        expected_reason.as_str(),
                         "Step {}: expected reason '{}', got '{}'",
-                        i, expected_reason, actual_reason
+                        i,
+                        expected_reason,
+                        actual_reason
                     );
                 }
 
@@ -920,9 +1041,12 @@ pub async fn run_debug_case(case_dir: &Path) {
                         PauseLocation::AfterNode { .. } => "after",
                     };
                     assert_eq!(
-                        actual_phase, expected_phase.as_str(),
+                        actual_phase,
+                        expected_phase.as_str(),
                         "Step {}: expected phase '{}', got '{}'",
-                        i, expected_phase, actual_phase
+                        i,
+                        expected_phase,
+                        actual_phase
                     );
                 }
             }
@@ -938,9 +1062,10 @@ pub async fn run_debug_case(case_dir: &Path) {
                 if let Some(bp) = &step.remove_breakpoint {
                     debug.remove_breakpoint(bp).await.unwrap();
                 }
-                debug.step().await.unwrap_or_else(|e| {
-                    panic!("Step {}: step command failed: {:?}", i, e)
-                });
+                debug
+                    .step()
+                    .await
+                    .unwrap_or_else(|e| panic!("Step {}: step command failed: {:?}", i, e));
             }
             "continue" => {
                 if let Some(bp) = &step.add_breakpoint {
@@ -949,40 +1074,40 @@ pub async fn run_debug_case(case_dir: &Path) {
                 if let Some(bp) = &step.remove_breakpoint {
                     debug.remove_breakpoint(bp).await.unwrap();
                 }
-                debug.continue_run().await.unwrap_or_else(|e| {
-                    panic!("Step {}: continue command failed: {:?}", i, e)
-                });
+                debug
+                    .continue_run()
+                    .await
+                    .unwrap_or_else(|e| panic!("Step {}: continue command failed: {:?}", i, e));
             }
             "abort" => {
                 debug
                     .abort(step.abort_reason.clone())
                     .await
-                    .unwrap_or_else(|e| {
-                        panic!("Step {}: abort command failed: {:?}", i, e)
-                    });
+                    .unwrap_or_else(|e| panic!("Step {}: abort command failed: {:?}", i, e));
             }
             "inspect" => {
-                debug.inspect_variables().await.unwrap_or_else(|e| {
-                    panic!("Step {}: inspect command failed: {:?}", i, e)
-                });
+                debug
+                    .inspect_variables()
+                    .await
+                    .unwrap_or_else(|e| panic!("Step {}: inspect command failed: {:?}", i, e));
 
                 if step.expect_snapshot {
-                    let snapshot_event: std::collections::HashMap<String, Segment> = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        async {
+                    let snapshot_event: std::collections::HashMap<String, Segment> =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), async {
                             loop {
                                 match debug.next_event().await {
                                     Some(DebugEvent::VariableSnapshot { variables }) => {
                                         return variables
                                     }
                                     Some(_) => continue,
-                                    None => panic!("Step {}: channel closed waiting for snapshot", i),
+                                    None => {
+                                        panic!("Step {}: channel closed waiting for snapshot", i)
+                                    }
                                 }
                             }
-                        },
-                    )
-                    .await
-                    .unwrap_or_else(|_| panic!("Step {}: Timed out waiting for snapshot", i));
+                        })
+                        .await
+                        .unwrap_or_else(|_| panic!("Step {}: Timed out waiting for snapshot", i));
 
                     // snapshot_event 类型为 HashMap<String, Segment>
 
@@ -995,7 +1120,8 @@ pub async fn run_debug_case(case_dir: &Path) {
                                 assert!(
                                     actual.is_some(),
                                     "Step {}: snapshot missing key '{}'",
-                                    i, key
+                                    i,
+                                    key
                                 );
                                 let actual_val = actual.unwrap().to_value();
                                 assert_eq!(
@@ -1014,12 +1140,9 @@ pub async fn run_debug_case(case_dir: &Path) {
             }
             "update_variables" => {
                 let vars = step.variables.clone().unwrap_or_default();
-                debug
-                    .update_variables(vars)
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!("Step {}: update_variables command failed: {:?}", i, e)
-                    });
+                debug.update_variables(vars).await.unwrap_or_else(|e| {
+                    panic!("Step {}: update_variables command failed: {:?}", i, e)
+                });
                 // UpdateVariables returns an action that continues execution
             }
             other => panic!("Step {}: unknown action '{}'", i, other),
@@ -1027,12 +1150,9 @@ pub async fn run_debug_case(case_dir: &Path) {
     }
 
     // Wait for workflow completion
-    let status = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        handle.wait(),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("Timed out waiting for workflow completion"));
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), handle.wait())
+        .await
+        .unwrap_or_else(|_| panic!("Timed out waiting for workflow completion"));
 
     // Verify final outcome
     match expected.status.as_str() {
@@ -1049,7 +1169,8 @@ pub async fn run_debug_case(case_dir: &Path) {
                     }
                 } else {
                     assert_eq!(
-                        actual_outputs, expected.outputs,
+                        actual_outputs,
+                        expected.outputs,
                         "Outputs mismatch for debug case: {}",
                         case_dir.display()
                     );
@@ -1131,9 +1252,8 @@ async fn setup_mock_server(state: &mut StateFile) -> Option<MockServerGuard> {
 }
 
 fn read_to_string(path: impl AsRef<Path>) -> String {
-    fs::read_to_string(path.as_ref()).unwrap_or_else(|e| {
-        panic!("Failed to read {}: {}", path.as_ref().display(), e)
-    })
+    fs::read_to_string(path.as_ref())
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.as_ref().display(), e))
 }
 
 /// Read a TOML file and deserialize into `T`.
@@ -1143,13 +1263,11 @@ fn read_to_string(path: impl AsRef<Path>) -> String {
 /// correctly), and then deserialized into the target type.
 fn read_toml<T: DeserializeOwned>(path: impl AsRef<Path>) -> T {
     let content = read_to_string(path.as_ref());
-    let toml_val: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
-        panic!("Failed to parse TOML {}: {}", path.as_ref().display(), e)
-    });
+    let toml_val: toml::Value = toml::from_str(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse TOML {}: {}", path.as_ref().display(), e));
     let json_val = toml_value_to_json(toml_val);
-    serde_json::from_value(json_val).unwrap_or_else(|e| {
-        panic!("Failed to deserialize {}: {}", path.as_ref().display(), e)
-    })
+    serde_json::from_value(json_val)
+        .unwrap_or_else(|e| panic!("Failed to deserialize {}: {}", path.as_ref().display(), e))
 }
 
 /// Convert a `toml::Value` into a `serde_json::Value`.

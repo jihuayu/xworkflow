@@ -1,0 +1,19 @@
+# Security: Network policy blocks SSRF attempts to internal IPs.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[engine_config.security]
+enable_network_policy = true
+
+[engine_config.security.network_policy]
+block_private_ips = true
+allowed_domains = ["localhost"]
+
+[[mock_server]]
+method = "GET"
+path = "/api/data"
+response_status = 200
+response_body = "public data"
+expect = 1
+
+[mock_server.response_headers]
+content-type = "text/plain"

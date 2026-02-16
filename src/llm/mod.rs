@@ -15,11 +15,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-
 pub mod error;
 pub mod executor;
-pub mod types;
 pub mod provider;
+pub mod question_classifier;
+pub mod types;
 
 /// A chat-completion provider (e.g. OpenAI, a WASM plugin, etc.).
 ///
@@ -95,12 +95,14 @@ impl LlmProviderRegistry {
             let base_url = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into());
             let org_id = std::env::var("OPENAI_ORG_ID").ok();
-            reg.register(Arc::new(provider::OpenAiProvider::new(provider::OpenAiConfig {
-                api_key,
-                base_url,
-                org_id,
-                default_model: "gpt-4o".into(),
-            })));
+            reg.register(Arc::new(provider::OpenAiProvider::new(
+                provider::OpenAiConfig {
+                    api_key,
+                    base_url,
+                    org_id,
+                    default_model: "gpt-4o".into(),
+                },
+            )));
         }
         reg
     }
@@ -120,10 +122,19 @@ impl Default for LlmProviderRegistry {
     }
 }
 
+pub use error::LlmError;
+pub use executor::LlmNodeExecutor;
+pub use provider::{OpenAiConfig, OpenAiProvider};
+pub use question_classifier::QuestionClassifierExecutor;
+pub use types::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatContent, ChatMessage, ChatRole, ContentPart,
+    ImageUrlDetail, ModelInfo, ProviderInfo, StreamChunk, ToolCall, ToolDefinition, ToolResult,
+};
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::types::*;
+    use super::*;
 
     struct MockProvider {
         id: String,
@@ -223,8 +234,12 @@ mod tests {
     fn test_apply_plugin_providers() {
         let mut reg = LlmProviderRegistry::new();
         let providers: Vec<Arc<dyn LlmProvider>> = vec![
-            Arc::new(MockProvider { id: "plugin1".into() }),
-            Arc::new(MockProvider { id: "plugin2".into() }),
+            Arc::new(MockProvider {
+                id: "plugin1".into(),
+            }),
+            Arc::new(MockProvider {
+                id: "plugin2".into(),
+            }),
         ];
         reg.apply_plugin_providers(&providers);
         assert_eq!(reg.list().len(), 2);
@@ -232,19 +247,3 @@ mod tests {
         assert!(reg.get("plugin2").is_some());
     }
 }
-
-pub use error::LlmError;
-pub use executor::LlmNodeExecutor;
-pub use provider::{OpenAiConfig, OpenAiProvider};
-pub use types::{
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ChatContent,
-    ChatMessage,
-    ChatRole,
-    ContentPart,
-    ImageUrlDetail,
-    ModelInfo,
-    ProviderInfo,
-    StreamChunk,
-};

@@ -65,12 +65,14 @@ fn parse_page_ranges(input: &str, max_pages: usize) -> Result<Vec<usize>, Extrac
             continue;
         }
         if let Some((start, end)) = part.split_once('-') {
-            let start = start.trim().parse::<usize>().map_err(|_| {
-                extraction_failed("pdf", format!("invalid page range: {input}"))
-            })?;
-            let end = end.trim().parse::<usize>().map_err(|_| {
-                extraction_failed("pdf", format!("invalid page range: {input}"))
-            })?;
+            let start = start
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| extraction_failed("pdf", format!("invalid page range: {input}")))?;
+            let end = end
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| extraction_failed("pdf", format!("invalid page range: {input}")))?;
             if start == 0 || end == 0 || start > end {
                 return Err(extraction_failed(
                     "pdf",
@@ -83,9 +85,9 @@ fn parse_page_ranges(input: &str, max_pages: usize) -> Result<Vec<usize>, Extrac
                 }
             }
         } else {
-            let page = part.parse::<usize>().map_err(|_| {
-                extraction_failed("pdf", format!("invalid page range: {input}"))
-            })?;
+            let page = part
+                .parse::<usize>()
+                .map_err(|_| extraction_failed("pdf", format!("invalid page range: {input}")))?;
             if page == 0 {
                 return Err(extraction_failed(
                     "pdf",

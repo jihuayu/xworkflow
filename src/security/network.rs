@@ -196,12 +196,20 @@ pub async fn validate_url(url: &str, policy: &NetworkPolicy) -> Result<(), Netwo
 
     match &policy.mode {
         NetworkPolicyMode::AllowList => {
-            if !policy.allowed_domains.iter().any(|d| domain_matches(host, d)) {
+            if !policy
+                .allowed_domains
+                .iter()
+                .any(|d| domain_matches(host, d))
+            {
                 return Err(NetworkError::DomainNotAllowed(host.to_string()));
             }
         }
         NetworkPolicyMode::DenyList => {
-            if policy.denied_domains.iter().any(|d| domain_matches(host, d)) {
+            if policy
+                .denied_domains
+                .iter()
+                .any(|d| domain_matches(host, d))
+            {
                 return Err(NetworkError::DomainDenied(host.to_string()));
             }
         }
@@ -233,12 +241,20 @@ fn validate_redirect_url_sync(url: &Url, policy: &NetworkPolicy) -> Result<(), N
 
     match &policy.mode {
         NetworkPolicyMode::AllowList => {
-            if !policy.allowed_domains.iter().any(|d| domain_matches(host, d)) {
+            if !policy
+                .allowed_domains
+                .iter()
+                .any(|d| domain_matches(host, d))
+            {
                 return Err(NetworkError::DomainNotAllowed(host.to_string()));
             }
         }
         NetworkPolicyMode::DenyList => {
-            if policy.denied_domains.iter().any(|d| domain_matches(host, d)) {
+            if policy
+                .denied_domains
+                .iter()
+                .any(|d| domain_matches(host, d))
+            {
                 return Err(NetworkError::DomainDenied(host.to_string()));
             }
         }
@@ -280,7 +296,10 @@ impl SecureHttpClientFactory {
         builder
     }
 
-    pub fn build(policy: &NetworkPolicy, timeout: std::time::Duration) -> Result<reqwest::Client, NetworkError> {
+    pub fn build(
+        policy: &NetworkPolicy,
+        timeout: std::time::Duration,
+    ) -> Result<reqwest::Client, NetworkError> {
         Self::builder(policy, timeout)
             .build()
             .map_err(|e| NetworkError::ClientBuildFailed(e.to_string()))
@@ -508,7 +527,10 @@ mod tests {
         assert!(e5.to_string().contains("evil.com"));
         let e6 = NetworkError::DnsResolutionFailed("host".into());
         assert!(e6.to_string().contains("host"));
-        let e7 = NetworkError::BlockedIp { host: "h".into(), ip: "1.2.3.4".parse().unwrap() };
+        let e7 = NetworkError::BlockedIp {
+            host: "h".into(),
+            ip: "1.2.3.4".parse().unwrap(),
+        };
         assert!(e7.to_string().contains("1.2.3.4"));
         let e8 = NetworkError::RedirectBlocked("reason".into());
         assert!(e8.to_string().contains("reason"));

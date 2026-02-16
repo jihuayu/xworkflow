@@ -1,0 +1,15 @@
+# Question classifier basic: valid category_id routes to matching branch.
+# File: Runtime state
+
+[[mock_server]]
+method = "POST"
+path = "/v1/chat/completions"
+response_status = 200
+response_body = "{\"model\":\"gpt-4o-mini\",\"choices\":[{\"message\":{\"content\":\"{\\\"category_id\\\":\\\"cat_support\\\",\\\"category_name\\\":\\\"IgnoreMe\\\"}\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}"
+
+[mock_server.response_headers]
+content-type = "application/json"
+
+[llm_providers.openai]
+api_key = "test-key"
+default_model = "gpt-4o-mini"

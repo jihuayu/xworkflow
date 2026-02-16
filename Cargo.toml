@@ -3,6 +3,7 @@ name = "xworkflow"
 version = "0.1.0"
 edition = "2021"
 autobenches = false
+license = "Apache-2.0"
 
 [lib]
 name = "xworkflow"
@@ -57,6 +58,7 @@ infer = "0.16"
 
 # JavaScript sandbox engine and WASM runtime moved to plugin crates
 rand = "0.8"
+tokio-util = { version = "0.7" }
 
 # Shared types
 xworkflow-types = { path = "crates/xworkflow-types" }
@@ -66,6 +68,7 @@ xworkflow-sandbox-js = { path = "crates/xworkflow-sandbox-js", optional = true }
 xworkflow-sandbox-wasm = { path = "crates/xworkflow-sandbox-wasm", optional = true }
 xworkflow-plugin-wasm = { path = "crates/xworkflow-plugin-wasm", optional = true }
 xworkflow-docextract-builtin = { path = "crates/xworkflow-docextract-builtin", optional = true }
+rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"], optional = true }
 minijinja = { version = "2.0", features = [
 	"builtins",
 	"fuel",
@@ -111,6 +114,8 @@ builtin-code-node = ["builtin-sandbox-js"]
 builtin-docextract-node = ["dep:xworkflow-docextract-builtin"]
 builtin-subgraph-nodes = []
 builtin-llm-node = []
+builtin-agent-node = ["dep:rmcp", "builtin-llm-node"]
+checkpoint = []
 
 [workspace]
 resolver = "2"

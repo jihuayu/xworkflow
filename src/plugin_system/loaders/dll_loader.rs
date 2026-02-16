@@ -11,6 +11,12 @@ pub struct DllPluginLoader {
     abi_version: u32,
 }
 
+impl Default for DllPluginLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DllPluginLoader {
     pub fn new() -> Self {
         Self {

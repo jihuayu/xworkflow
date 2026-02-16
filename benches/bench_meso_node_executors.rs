@@ -2,9 +2,13 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use xworkflow::core::runtime_context::RuntimeContext;
 use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
+use xworkflow::nodes::control_flow::{
+    AnswerNodeExecutor, EndNodeExecutor, IfElseNodeExecutor, StartNodeExecutor,
+};
 use xworkflow::nodes::executor::NodeExecutor;
-use xworkflow::nodes::control_flow::{AnswerNodeExecutor, EndNodeExecutor, IfElseNodeExecutor, StartNodeExecutor};
-use xworkflow::nodes::data_transform::{CodeNodeExecutor, TemplateTransformExecutor, VariableAggregatorExecutor};
+use xworkflow::nodes::transform::{
+    CodeNodeExecutor, TemplateTransformExecutor, VariableAggregatorExecutor,
+};
 
 mod helpers;
 use helpers::bench_runtime;
@@ -68,7 +72,10 @@ fn bench_node_executors(c: &mut Criterion) {
         let executor = AnswerNodeExecutor;
         let context = RuntimeContext::default();
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("ans", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("ans", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -95,7 +102,10 @@ fn bench_node_executors(c: &mut Criterion) {
         let executor = IfElseNodeExecutor;
         let context = RuntimeContext::default();
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("if1", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("if1", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -134,7 +144,10 @@ fn bench_node_executors(c: &mut Criterion) {
         let executor = VariableAggregatorExecutor;
         let context = RuntimeContext::default();
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("agg", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("agg", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });
@@ -148,7 +161,10 @@ fn bench_node_executors(c: &mut Criterion) {
         let executor = CodeNodeExecutor::new();
         let context = RuntimeContext::default();
         b.to_async(&rt).iter(|| async {
-            let result = executor.execute("code", &config, &pool, &context).await.unwrap();
+            let result = executor
+                .execute("code", &config, &pool, &context)
+                .await
+                .unwrap();
             black_box(result.outputs.clone());
         });
     });

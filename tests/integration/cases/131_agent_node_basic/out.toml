@@ -1,0 +1,8 @@
+status = "completed"
+partial_match = true
+outputs_json = "{\"tool_calls\":[{\"iteration\":0,\"tool\":\"search\",\"arguments\":{\"q\":\"rust\"},\"result\":\"tool-result:rust\",\"is_error\":false}]}"
+
+[outputs]
+text = "final-answer"
+iterations = 2
+tool_calls_count = 1

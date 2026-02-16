@@ -66,15 +66,7 @@ value_selector = [ "conversation", "visit_count",]
 
 [[edges]]
 source = "start"
-target = "tmpl_greet"
-
-[[edges]]
-source = "start"
 target = "code_inc"
-
-[[edges]]
-source = "tmpl_greet"
-target = "end"
 
 [[edges]]
 source = "code_inc"
@@ -82,6 +74,10 @@ target = "assign_count"
 
 [[edges]]
 source = "assign_count"
+target = "tmpl_greet"
+
+[[edges]]
+source = "tmpl_greet"
 target = "end"
 
 [[conversation_variables]]

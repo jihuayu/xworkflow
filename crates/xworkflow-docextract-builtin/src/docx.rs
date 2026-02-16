@@ -39,35 +39,33 @@ pub fn extract_docx(request: &ExtractionRequest) -> Result<ExtractionResult, Ext
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                match e.name().as_ref() {
-                    b"w:p" => {
-                        in_paragraph = true;
-                        current_paragraph.clear();
-                        heading_level = None;
-                        is_list_item = false;
-                    }
-                    b"w:pStyle" => {
-                        if let Some(level) = parse_heading_level(&e) {
-                            heading_level = Some(level);
-                        }
-                    }
-                    b"w:numPr" => {
-                        is_list_item = true;
-                    }
-                    b"w:tbl" => {
-                        in_table = true;
-                        table_rows.clear();
-                    }
-                    b"w:tr" => {
-                        current_row.clear();
-                    }
-                    b"w:tc" => {
-                        current_cell.clear();
-                    }
-                    _ => {}
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"w:p" => {
+                    in_paragraph = true;
+                    current_paragraph.clear();
+                    heading_level = None;
+                    is_list_item = false;
                 }
-            }
+                b"w:pStyle" => {
+                    if let Some(level) = parse_heading_level(&e) {
+                        heading_level = Some(level);
+                    }
+                }
+                b"w:numPr" => {
+                    is_list_item = true;
+                }
+                b"w:tbl" => {
+                    in_table = true;
+                    table_rows.clear();
+                }
+                b"w:tr" => {
+                    current_row.clear();
+                }
+                b"w:tc" => {
+                    current_cell.clear();
+                }
+                _ => {}
+            },
             Ok(Event::Text(e)) => {
                 let text = e.unescape().unwrap_or_default().to_string();
                 if in_table {
@@ -104,11 +102,9 @@ pub fn extract_docx(request: &ExtractionRequest) -> Result<ExtractionResult, Ext
                     let line = current_paragraph.trim();
                     if !line.is_empty() {
                         let rendered = match request.output_format {
-                            OutputFormat::Markdown => render_markdown_paragraph(
-                                line,
-                                heading_level,
-                                is_list_item,
-                            ),
+                            OutputFormat::Markdown => {
+                                render_markdown_paragraph(line, heading_level, is_list_item)
+                            }
                             OutputFormat::Text => line.to_string(),
                         };
                         blocks.push(rendered);

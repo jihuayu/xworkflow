@@ -1,0 +1,32 @@
+[llm_providers.openai]
+api_key = "test-key"
+default_model = "gpt-4o"
+
+[[mock_server]]
+method = "POST"
+path = "/v1/chat/completions"
+response_status = 200
+response_body = "{\"model\":\"gpt-4o\",\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"rust\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}"
+expect = 1
+
+[mock_server.response_headers]
+content-type = "application/json"
+
+[[mock_server]]
+method = "POST"
+path = "/v1/chat/completions"
+response_status = 200
+response_body = "{\"model\":\"gpt-4o\",\"choices\":[{\"message\":{\"content\":\"final-answer\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}"
+expect = 1
+
+[mock_server.response_headers]
+content-type = "application/json"
+
+[[mock_mcp_servers]]
+tool_name = "search"
+tool_result = "tool-result"
+
+[mock_mcp_servers.config]
+name = "mock-search"
+transport = "stdio"
+command = "mock"

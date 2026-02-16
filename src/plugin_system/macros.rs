@@ -17,12 +17,16 @@ macro_rules! xworkflow_declare_plugin {
         #[no_mangle]
         pub extern "C" fn xworkflow_plugin_destroy(ptr: *mut std::ffi::c_void) {
             if !ptr.is_null() {
-                unsafe { let _ = Box::from_raw(ptr as *mut dyn $crate::plugin_system::Plugin); }
+                unsafe {
+                    let _ = Box::from_raw(ptr as *mut dyn $crate::plugin_system::Plugin);
+                }
             }
         }
 
         #[no_mangle]
-        pub extern "C" fn xworkflow_plugin_abi_version() -> u32 { 1 }
+        pub extern "C" fn xworkflow_plugin_abi_version() -> u32 {
+            1
+        }
     };
 }
 

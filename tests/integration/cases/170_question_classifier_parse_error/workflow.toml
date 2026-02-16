@@ -1,0 +1,85 @@
+# Question classifier parse error: unparseable model response should fail the node.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = false
+
+[[nodes]]
+id = "qc1"
+
+[nodes.data]
+type = "question-classifier"
+title = "Classifier"
+query_variable_selector = ["start", "query"]
+
+[nodes.data.model]
+provider = "openai"
+name = "gpt-4o-mini"
+
+[[nodes.data.categories]]
+category_id = "cat_support"
+category_name = "Customer Support"
+
+[[nodes.data.categories]]
+category_id = "cat_sales"
+category_name = "Sales Inquiry"
+
+[[nodes]]
+id = "end_support"
+
+[nodes.data]
+type = "end"
+title = "End Support"
+[[nodes.data.outputs]]
+variable = "category_id"
+value_selector = ["qc1", "category_id"]
+
+[[nodes]]
+id = "end_sales"
+
+[nodes.data]
+type = "end"
+title = "End Sales"
+[[nodes.data.outputs]]
+variable = "category_id"
+value_selector = ["qc1", "category_id"]
+
+[[nodes]]
+id = "end_default"
+
+[nodes.data]
+type = "end"
+title = "End Default"
+[[nodes.data.outputs]]
+variable = "category_id"
+value_selector = ["qc1", "category_id"]
+
+[[edges]]
+source = "start"
+target = "qc1"
+
+[[edges]]
+source = "qc1"
+target = "end_support"
+sourceHandle = "cat_support"
+
+[[edges]]
+source = "qc1"
+target = "end_sales"
+sourceHandle = "cat_sales"
+
+[[edges]]
+source = "qc1"
+target = "end_default"
+sourceHandle = "default"

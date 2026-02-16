@@ -1,0 +1,45 @@
+# Security: Audit logging captures workflow execution events.
+# File: Workflow DSL definition
+
+version = "0.1.0"
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "action"
+label = "Action"
+type = "string"
+required = true
+
+[[nodes]]
+id = "code1"
+
+[nodes.data]
+type = "code"
+title = "Process"
+code = "function main(inputs) { return { result: 'processed: ' + inputs.action }; }"
+language = "javascript"
+[[nodes.data.variables]]
+variable = "action"
+value_selector = [ "start", "action",]
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = [ "code1", "result",]
+
+[[edges]]
+source = "start"
+target = "code1"
+
+[[edges]]
+source = "code1"
+target = "end"

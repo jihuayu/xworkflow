@@ -45,8 +45,8 @@ impl Default for WasmSandboxConfig {
             max_memory_pages: 256,
             max_fuel: 1_000_000_000,
             enable_fuel: true,
-            max_input_bytes: 1 * 1024 * 1024,
-            max_output_bytes: 1 * 1024 * 1024,
+            max_input_bytes: 1024 * 1024,
+            max_output_bytes: 1024 * 1024,
             allow_wasi: false,
             fuel_warning_threshold: 800_000_000,
         }
@@ -98,12 +98,18 @@ impl WasmSandbox {
             });
         }
         if bytes.len() < 4 || !bytes.starts_with(b"\0asm") {
-            return Err(SandboxError::CompilationError("Invalid WASM magic header".into()));
+            return Err(SandboxError::CompilationError(
+                "Invalid WASM magic header".into(),
+            ));
         }
         Ok(())
     }
 
-    async fn update_stats(&self, result: &Result<SandboxResult, SandboxError>, execution_time: Duration) {
+    async fn update_stats(
+        &self,
+        result: &Result<SandboxResult, SandboxError>,
+        execution_time: Duration,
+    ) {
         let mut stats = self.stats.write().await;
         stats.total_executions += 1;
         match result {

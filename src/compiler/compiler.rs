@@ -6,16 +6,13 @@ use std::time::Instant;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::compiler::helpers::{collect_conversation_variable_types, collect_start_variable_types};
 use crate::dsl::{parse_dsl, validate_schema, DslFormat, WorkflowSchema};
 use crate::error::WorkflowError;
 use crate::graph::{build_graph, Graph};
-use crate::scheduler::{collect_conversation_variable_types, collect_start_variable_types};
 
 use super::compiled_workflow::{
-    CompiledConfig,
-    CompiledNodeConfig,
-    CompiledNodeConfigMap,
-    CompiledWorkflow,
+    CompiledConfig, CompiledNodeConfig, CompiledNodeConfigMap, CompiledWorkflow,
 };
 
 pub struct WorkflowCompiler;
@@ -40,7 +37,7 @@ impl WorkflowCompiler {
     ) -> Result<CompiledWorkflow, WorkflowError> {
         let report = validate_schema(&schema);
         if !report.is_valid {
-            return Err(WorkflowError::ValidationFailed(report));
+            return Err(WorkflowError::ValidationFailed(Box::new(report)));
         }
 
         let graph = build_graph(&schema)?;
@@ -48,7 +45,6 @@ impl WorkflowCompiler {
 
         let start_var_types = collect_start_variable_types(&schema);
         let conversation_var_types = collect_conversation_variable_types(&schema);
-        let start_node_id = graph.root_node_id().to_string();
 
         let node_configs = Self::compile_node_configs(&graph);
 
@@ -59,7 +55,6 @@ impl WorkflowCompiler {
             graph_template,
             start_var_types: Arc::new(start_var_types),
             conversation_var_types: Arc::new(conversation_var_types),
-            start_node_id: Arc::from(start_node_id),
             validation_report: Arc::new(report),
             node_configs: Arc::new(node_configs),
         })
@@ -84,7 +79,9 @@ impl WorkflowCompiler {
             "code" => Self::compile_typed(raw, CompiledNodeConfig::Code),
             "http-request" => Self::compile_typed(raw, CompiledNodeConfig::HttpRequest),
             "document-extractor" => Self::compile_typed(raw, CompiledNodeConfig::DocumentExtractor),
-            "variable-aggregator" => Self::compile_typed(raw, CompiledNodeConfig::VariableAggregator),
+            "variable-aggregator" => {
+                Self::compile_typed(raw, CompiledNodeConfig::VariableAggregator)
+            }
             "assigner" | "variable-assigner" => {
                 Self::compile_typed(raw, CompiledNodeConfig::VariableAssigner)
             }
@@ -92,11 +89,17 @@ impl WorkflowCompiler {
             "loop" => Self::compile_typed(raw, CompiledNodeConfig::Loop),
             "list-operator" => Self::compile_typed(raw, CompiledNodeConfig::ListOperator),
             "llm" => Self::compile_typed(raw, CompiledNodeConfig::Llm),
+            "question-classifier" => {
+                Self::compile_typed(raw, CompiledNodeConfig::QuestionClassifier)
+            }
             _ => CompiledNodeConfig::Raw(raw.clone()),
         }
     }
 
-    fn compile_typed<T>(raw: &Value, wrap: fn(CompiledConfig<T>) -> CompiledNodeConfig) -> CompiledNodeConfig
+    fn compile_typed<T>(
+        raw: &Value,
+        wrap: fn(CompiledConfig<T>) -> CompiledNodeConfig,
+    ) -> CompiledNodeConfig
     where
         T: DeserializeOwned,
     {
@@ -167,14 +170,14 @@ impl WorkflowCompiler {
 
 #[cfg(all(test, feature = "builtin-core-nodes"))]
 mod tests {
-        use super::*;
-        use crate::scheduler::ExecutionStatus;
-        use serde_json::Value;
-        use std::collections::HashMap;
+    use super::*;
+    use crate::domain::execution::ExecutionStatus;
+    use serde_json::Value;
+    use std::collections::HashMap;
 
-        #[tokio::test]
-        async fn test_compile_and_run_basic() {
-            let yaml = r#"
+    #[tokio::test]
+    async fn test_compile_and_run_basic() {
+        let yaml = r#"
     version: "0.1.0"
     nodes:
       - id: start
@@ -197,18 +200,235 @@ mod tests {
       - source: start
         target: end
     "#;
-            let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
+        let compiled = WorkflowCompiler::compile(yaml, DslFormat::Yaml).unwrap();
 
-            let mut inputs = HashMap::new();
-            inputs.insert("query".to_string(), Value::String("hello".into()));
+        let mut inputs = HashMap::new();
+        inputs.insert("query".to_string(), Value::String("hello".into()));
 
-            let handle = compiled.runner().user_inputs(inputs).run().await.unwrap();
-            let status = handle.wait().await;
-            match status {
-                ExecutionStatus::Completed(outputs) => {
-                    assert_eq!(outputs.get("result"), Some(&Value::String("hello".into())));
-                }
-                other => panic!("Expected Completed, got {:?}", other),
+        let handle = compiled.runner().user_inputs(inputs).run().await.unwrap();
+        let status = handle.wait().await;
+        match status {
+            ExecutionStatus::Completed(outputs) => {
+                assert_eq!(outputs.get("result"), Some(&Value::String("hello".into())));
             }
+            other => panic!("Expected Completed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_compile_yaml_valid() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        let result = WorkflowCompiler::compile(yaml, DslFormat::Yaml);
+        assert!(result.is_ok());
+        let compiled = result.unwrap();
+        assert!(compiled.validation_report().is_valid);
+    }
+
+    #[test]
+    fn test_compile_json_valid() {
+        let json = r#"{"version":"0.1.0","nodes":[{"id":"start","data":{"type":"start","title":"Start"}},{"id":"end","data":{"type":"end","title":"End","outputs":[]}}],"edges":[{"source":"start","target":"end"}]}"#;
+        let result = WorkflowCompiler::compile(json, DslFormat::Json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_compile_invalid_returns_error() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+edges:
+  - source: start
+    target: nonexistent
+"#;
+        let result = WorkflowCompiler::compile(yaml, DslFormat::Yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compile_schema() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        let schema: WorkflowSchema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+        let result = WorkflowCompiler::compile_schema(schema);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_hash_bytes() {
+        let data1 = b"test data";
+        let data2 = b"test data";
+        let data3 = b"different";
+
+        let hash1 = WorkflowCompiler::hash_bytes(data1);
+        let hash2 = WorkflowCompiler::hash_bytes(data2);
+        let hash3 = WorkflowCompiler::hash_bytes(data3);
+
+        assert_eq!(hash1, hash2);
+        assert_ne!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_hash_schema() {
+        let yaml = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start
+  - id: end
+    data:
+      type: end
+      title: End
+      outputs: []
+edges:
+  - source: start
+    target: end
+"#;
+        let schema: WorkflowSchema = parse_dsl(yaml, DslFormat::Yaml).unwrap();
+
+        let hash1 = WorkflowCompiler::hash_schema(&schema);
+        let hash2 = WorkflowCompiler::hash_schema(&schema);
+
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compile_node_config_types() {
+        let start_config = serde_json::json!({
+            "type": "start",
+            "title": "Start Node",
+            "variables": []
+        });
+        let compiled = WorkflowCompiler::compile_node_config("start", &start_config);
+        match compiled {
+            CompiledNodeConfig::Start(_) => {}
+            _ => panic!("Expected Start config"),
+        }
+
+        let end_config = serde_json::json!({
+            "type": "end",
+            "title": "End Node",
+            "outputs": []
+        });
+        let compiled = WorkflowCompiler::compile_node_config("end", &end_config);
+        match compiled {
+            CompiledNodeConfig::End(_) => {}
+            _ => panic!("Expected End config"),
+        }
+
+        let unknown_config = serde_json::json!({"type": "unknown"});
+        let compiled = WorkflowCompiler::compile_node_config("unknown", &unknown_config);
+        match compiled {
+            CompiledNodeConfig::Raw(_) => {}
+            _ => panic!("Expected Raw config"),
+        }
+    }
+
+    #[test]
+    fn test_hash_value_null() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut hasher1 = DefaultHasher::new();
+        let mut hasher2 = DefaultHasher::new();
+
+        WorkflowCompiler::hash_value(&Value::Null, &mut hasher1);
+        WorkflowCompiler::hash_value(&Value::Null, &mut hasher2);
+
+        assert_eq!(hasher1.finish(), hasher2.finish());
+    }
+
+    #[test]
+    fn test_hash_value_bool() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut hasher1 = DefaultHasher::new();
+        let mut hasher2 = DefaultHasher::new();
+
+        WorkflowCompiler::hash_value(&Value::Bool(true), &mut hasher1);
+        WorkflowCompiler::hash_value(&Value::Bool(true), &mut hasher2);
+
+        assert_eq!(hasher1.finish(), hasher2.finish());
+    }
+
+    #[test]
+    fn test_hash_value_number() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut hasher = DefaultHasher::new();
+        WorkflowCompiler::hash_value(&serde_json::json!(42), &mut hasher);
+        assert_ne!(hasher.finish(), 0);
+    }
+
+    #[test]
+    fn test_hash_value_string() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut hasher1 = DefaultHasher::new();
+        let mut hasher2 = DefaultHasher::new();
+
+        WorkflowCompiler::hash_value(&Value::String("test".into()), &mut hasher1);
+        WorkflowCompiler::hash_value(&Value::String("test".into()), &mut hasher2);
+
+        assert_eq!(hasher1.finish(), hasher2.finish());
+    }
+
+    #[test]
+    fn test_hash_value_array() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut hasher = DefaultHasher::new();
+        let arr = serde_json::json!([1, 2, 3]);
+        WorkflowCompiler::hash_value(&arr, &mut hasher);
+        assert_ne!(hasher.finish(), 0);
+    }
+
+    #[test]
+    fn test_hash_value_object() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+
+        let mut hasher = DefaultHasher::new();
+        let obj = serde_json::json!({"key": "value"});
+        WorkflowCompiler::hash_value(&obj, &mut hasher);
+        assert_ne!(hasher.finish(), 0);
+    }
 }

@@ -9,23 +9,17 @@ use crate::core::event_bus::GraphEngineEvent;
 use crate::core::runtime_context::RuntimeContext;
 use crate::core::variable_pool::{Segment, SegmentStream, Selector, VariablePool};
 use crate::dsl::schema::{
-    EdgeHandle, LlmNodeData, MemoryConfig, NodeOutputs, PromptMessage,
-    WorkflowNodeExecutionStatus,
+    EdgeHandle, LlmNodeData, MemoryConfig, NodeOutputs, PromptMessage, WorkflowNodeExecutionStatus,
 };
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
-use crate::template::render_template_async_with_config;
-#[cfg(feature = "memory")]
-use crate::memory::{
-    resolve_namespace,
-    MemoryEntry,
-    MemoryInjectionPosition,
-    MemoryQuery,
-};
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 #[cfg(feature = "security")]
 use crate::security::network::validate_url;
+use crate::template::render_template_async_with_config;
+#[cfg(feature = "builtin-agent-node")]
+use crate::template::render_template_with_config;
 
 use super::types::{
     ChatCompletionRequest, ChatContent, ChatMessage, ChatRole, ContentPart, ImageUrlDetail,
@@ -65,52 +59,6 @@ impl NodeExecutor for LlmNodeExecutor {
             append_memory_messages(&mut messages, memory, variable_pool).await?;
         }
 
-        #[cfg(feature = "memory")]
-        if let Some(enhanced_memory) = &data.enhanced_memory {
-            if enhanced_memory.enabled {
-                if let Some(provider) = context.memory_provider() {
-                    let namespace = resolve_namespace(
-                        &enhanced_memory.scope,
-                        variable_pool,
-                        context,
-                        node_id,
-                    )
-                    .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
-
-                    let query_text = if let Some(sel) = &enhanced_memory.query_selector {
-                        variable_pool.get_resolved(sel).await.as_string()
-                    } else {
-                        None
-                    };
-
-                    let query = MemoryQuery {
-                        namespace,
-                        key: None,
-                        query_text,
-                        filter: enhanced_memory.filter.clone(),
-                        top_k: enhanced_memory.top_k,
-                    };
-
-                    let entries = provider
-                        .recall(query)
-                        .await
-                        .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
-
-                    if !entries.is_empty() {
-                        let memory_text = format_memory_entries(
-                            &entries,
-                            enhanced_memory.format_template.as_deref(),
-                        );
-                        inject_memory_context(
-                            &mut messages,
-                            &memory_text,
-                            &enhanced_memory.injection_position,
-                        );
-                    }
-                }
-            }
-        }
-
         for msg in &data.prompt_template {
             let rendered = render_template_async_with_config(
                 &msg.text,
@@ -123,6 +71,8 @@ impl NodeExecutor for LlmNodeExecutor {
             messages.push(ChatMessage {
                 role,
                 content: ChatContent::Text(rendered),
+                tool_calls: vec![],
+                tool_call_id: None,
             });
         }
 
@@ -145,9 +95,8 @@ impl NodeExecutor for LlmNodeExecutor {
                     let urls = extract_image_urls(&seg);
                     if !urls.is_empty() {
                         #[cfg(feature = "security")]
-                        if let Some(policy) = context
-                            .security_policy()
-                            .and_then(|p| p.network.as_ref())
+                        if let Some(policy) =
+                            context.security_policy().and_then(|p| p.network.as_ref())
                         {
                             for url in &urls {
                                 if let Err(err) = validate_url(url, policy).await {
@@ -177,19 +126,17 @@ impl NodeExecutor for LlmNodeExecutor {
                         messages.push(ChatMessage {
                             role: ChatRole::User,
                             content: ChatContent::MultiModal(parts),
+                            tool_calls: vec![],
+                            tool_call_id: None,
                         });
                     }
                 }
             }
         }
 
-        let provider = self
-            .registry
-            .get(&data.model.provider)
-            .ok_or_else(|| NodeError::ExecutionError(format!(
-                "Provider not found: {}",
-                data.model.provider
-            )))?;
+        let provider = self.registry.get(&data.model.provider).ok_or_else(|| {
+            NodeError::ExecutionError(format!("Provider not found: {}", data.model.provider))
+        })?;
 
         let completion = data.model.completion_params.clone();
         let request = ChatCompletionRequest {
@@ -200,15 +147,15 @@ impl NodeExecutor for LlmNodeExecutor {
             max_tokens: completion.as_ref().and_then(|c| c.max_tokens),
             stream: data.stream.unwrap_or(false),
             credentials: data.model.credentials.clone().unwrap_or_default(),
+            tools: vec![],
         };
 
         #[cfg(feature = "security")]
         let request = {
             let mut req = request;
-            if let (Some(provider), Some(group)) = (
-                context.credential_provider(),
-                context.resource_group(),
-            ) {
+            if let (Some(provider), Some(group)) =
+                (context.credential_provider(), context.resource_group())
+            {
                 match provider
                     .get_credentials(&group.group_id, &data.model.provider)
                     .await
@@ -279,7 +226,7 @@ impl NodeExecutor for LlmNodeExecutor {
                                     node_id: node_id_for_chunks.clone(),
                                     node_type: "llm".to_string(),
                                     chunk: chunk.delta.clone(),
-                                        selector: Selector::new(node_id_for_chunks.clone(), "text"),
+                                    selector: Selector::new(node_id_for_chunks.clone(), "text"),
                                     is_final: chunk.finish_reason.is_some(),
                                 })
                                 .await;
@@ -326,7 +273,10 @@ impl NodeExecutor for LlmNodeExecutor {
             .map_err(NodeError::from)?;
 
         let mut outputs = HashMap::new();
-        outputs.insert("text".to_string(), Segment::String(response.content.clone()));
+        outputs.insert(
+            "text".to_string(),
+            Segment::String(response.content.clone()),
+        );
         outputs.insert(
             "usage".to_string(),
             Segment::from_value(
@@ -336,10 +286,7 @@ impl NodeExecutor for LlmNodeExecutor {
         );
 
         let mut metadata = HashMap::new();
-        metadata.insert(
-            "model".to_string(),
-            Value::String(response.model.clone()),
-        );
+        metadata.insert("model".to_string(), Value::String(response.model.clone()));
         metadata.insert(
             "provider".to_string(),
             Value::String(data.model.provider.clone()),
@@ -357,7 +304,7 @@ impl NodeExecutor for LlmNodeExecutor {
 }
 
 #[cfg(feature = "security")]
-async fn audit_security_event(
+pub(crate) async fn audit_security_event(
     context: &RuntimeContext,
     event_type: SecurityEventType,
     severity: EventSeverity,
@@ -383,11 +330,12 @@ async fn audit_security_event(
     logger.log_event(event).await;
 }
 
-fn map_role(role: &str) -> Result<ChatRole, NodeError> {
+pub(crate) fn map_role(role: &str) -> Result<ChatRole, NodeError> {
     match role.to_lowercase().as_str() {
         "system" => Ok(ChatRole::System),
         "user" => Ok(ChatRole::User),
         "assistant" => Ok(ChatRole::Assistant),
+        "tool" => Ok(ChatRole::Tool),
         other => Err(NodeError::ConfigError(format!(
             "Unsupported role: {}",
             other
@@ -396,10 +344,13 @@ fn map_role(role: &str) -> Result<ChatRole, NodeError> {
 }
 
 fn inject_context(messages: &mut Vec<ChatMessage>, ctx: String) {
-    if let Some(system_msg) = messages.iter_mut().find(|m| matches!(m.role, ChatRole::System)) {
+    if let Some(system_msg) = messages
+        .iter_mut()
+        .find(|m| matches!(m.role, ChatRole::System))
+    {
         match &mut system_msg.content {
             ChatContent::Text(text) => {
-                text.push_str("\n");
+                text.push('\n');
                 text.push_str(&ctx);
             }
             ChatContent::MultiModal(parts) => {
@@ -412,6 +363,8 @@ fn inject_context(messages: &mut Vec<ChatMessage>, ctx: String) {
             ChatMessage {
                 role: ChatRole::System,
                 content: ChatContent::Text(ctx),
+                tool_calls: vec![],
+                tool_call_id: None,
             },
         );
     }
@@ -421,15 +374,12 @@ fn extract_image_urls(seg: &Segment) -> Vec<String> {
     match seg {
         Segment::String(s) => vec![s.clone()],
         Segment::ArrayString(arr) => arr.as_ref().clone(),
-        Segment::Array(arr) => arr
-            .iter()
-            .filter_map(|s| s.as_string())
-            .collect(),
+        Segment::Array(arr) => arr.iter().filter_map(|s| s.as_string()).collect(),
         _ => Vec::new(),
     }
 }
 
-async fn append_memory_messages(
+pub(crate) async fn append_memory_messages(
     messages: &mut Vec<ChatMessage>,
     memory: &MemoryConfig,
     pool: &VariablePool,
@@ -456,83 +406,42 @@ async fn append_memory_messages(
             messages.push(ChatMessage {
                 role,
                 content: ChatContent::Text(prompt.text),
+                tool_calls: vec![],
+                tool_call_id: None,
             });
         }
     }
     Ok(())
 }
 
-#[cfg(feature = "memory")]
-fn format_memory_entries(entries: &[MemoryEntry], template: Option<&str>) -> String {
-    let mut lines = Vec::with_capacity(entries.len() + 1);
-    lines.push("[Memory Context]".to_string());
-
-    for entry in entries {
-        let line = if let Some(tpl) = template {
-            tpl.replace("{{id}}", &entry.id)
-                .replace("{{namespace}}", &entry.namespace)
-                .replace("{{key}}", &entry.key)
-                .replace("{{value}}", &entry.value.to_string())
-                .replace(
-                    "{{metadata}}",
-                    &entry
-                        .metadata
-                        .as_ref()
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "null".to_string()),
-                )
-        } else {
-            format!("- {}: {}", entry.key, entry.value)
+#[cfg(feature = "builtin-agent-node")]
+pub(crate) fn render_arguments(
+    arguments: &HashMap<String, Value>,
+    variable_pool: &VariablePool,
+    strict: bool,
+) -> Result<Value, NodeError> {
+    let mut rendered = serde_json::Map::new();
+    for (key, value) in arguments {
+        let rendered_value = match value {
+            Value::String(text) => {
+                let value = render_template_with_config(text, variable_pool, strict)
+                    .map_err(|e| NodeError::VariableNotFound(e.selector))?;
+                Value::String(value)
+            }
+            other => other.clone(),
         };
-        lines.push(line);
+        rendered.insert(key.clone(), rendered_value);
     }
-
-    lines.join("\n")
-}
-
-#[cfg(feature = "memory")]
-fn inject_memory_context(
-    messages: &mut Vec<ChatMessage>,
-    memory_text: &str,
-    position: &MemoryInjectionPosition,
-) {
-    let memory_msg = ChatMessage {
-        role: ChatRole::System,
-        content: ChatContent::Text(memory_text.to_string()),
-    };
-
-    match position {
-        MemoryInjectionPosition::BeforeSystem => {
-            if let Some(index) = messages.iter().position(|m| matches!(m.role, ChatRole::System)) {
-                messages.insert(index, memory_msg);
-            } else {
-                messages.insert(0, memory_msg);
-            }
-        }
-        MemoryInjectionPosition::AfterSystem => {
-            if let Some(index) = messages.iter().rposition(|m| matches!(m.role, ChatRole::System)) {
-                messages.insert(index + 1, memory_msg);
-            } else {
-                messages.insert(0, memory_msg);
-            }
-        }
-        MemoryInjectionPosition::BeforeUser => {
-            if let Some(index) = messages.iter().position(|m| matches!(m.role, ChatRole::User)) {
-                messages.insert(index, memory_msg);
-            } else {
-                messages.push(memory_msg);
-            }
-        }
-    }
+    Ok(Value::Object(rendered))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{LlmError, LlmProvider};
-    use crate::llm::types::{ChatCompletionResponse, ProviderInfo};
-    use crate::dsl::schema::LlmUsage;
     use crate::core::variable_pool::SegmentArray;
+    use crate::dsl::schema::LlmUsage;
+    use crate::llm::types::{ChatCompletionResponse, ProviderInfo};
+    use crate::llm::{LlmError, LlmProvider};
     use tokio::sync::mpsc;
 
     struct MockProvider;
@@ -560,6 +469,7 @@ mod tests {
                 usage: LlmUsage::default(),
                 model: "mock".into(),
                 finish_reason: Some("stop".into()),
+                tool_calls: vec![],
             })
         }
 
@@ -580,6 +490,7 @@ mod tests {
                 usage: LlmUsage::default(),
                 model: "mock".into(),
                 finish_reason: Some("stop".into()),
+                tool_calls: vec![],
             })
         }
     }
@@ -598,10 +509,16 @@ mod tests {
         });
 
         let mut pool = VariablePool::new();
-        pool.set(&Selector::new("start", "query"), Segment::String("world".into()));
+        pool.set(
+            &Selector::new("start", "query"),
+            Segment::String("world".into()),
+        );
 
         let context = RuntimeContext::default();
-        let result = executor.execute("llm1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("llm1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Segment::String("hello".into()))
@@ -622,12 +539,15 @@ mod tests {
 
     #[test]
     fn test_map_role_assistant() {
-        assert!(matches!(map_role("assistant").unwrap(), ChatRole::Assistant));
+        assert!(matches!(
+            map_role("assistant").unwrap(),
+            ChatRole::Assistant
+        ));
     }
 
     #[test]
     fn test_map_role_invalid() {
-        let result = map_role("tool");
+        let result = map_role("unknown_role");
         assert!(result.is_err());
     }
 
@@ -637,10 +557,14 @@ mod tests {
             ChatMessage {
                 role: ChatRole::System,
                 content: ChatContent::Text("You are a bot.".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             },
             ChatMessage {
                 role: ChatRole::User,
                 content: ChatContent::Text("Hi".into()),
+                tool_calls: vec![],
+                tool_call_id: None,
             },
         ];
         inject_context(&mut messages, "Context: foo".into());
@@ -659,6 +583,8 @@ mod tests {
         let mut messages = vec![ChatMessage {
             role: ChatRole::User,
             content: ChatContent::Text("Hi".into()),
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         inject_context(&mut messages, "Context: bar".into());
         assert_eq!(messages.len(), 2);
@@ -676,6 +602,8 @@ mod tests {
             content: ChatContent::MultiModal(vec![ContentPart::Text {
                 text: "base".into(),
             }]),
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         inject_context(&mut messages, "extra context".into());
         match &messages[0].content {
@@ -727,7 +655,9 @@ mod tests {
         };
         let pool = VariablePool::new();
         let mut messages = Vec::new();
-        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        append_memory_messages(&mut messages, &memory, &pool)
+            .await
+            .unwrap();
         assert!(messages.is_empty());
     }
 
@@ -740,7 +670,9 @@ mod tests {
         };
         let pool = VariablePool::new();
         let mut messages = Vec::new();
-        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        append_memory_messages(&mut messages, &memory, &pool)
+            .await
+            .unwrap();
         assert!(messages.is_empty());
     }
 
@@ -760,7 +692,9 @@ mod tests {
             ])),
         );
         let mut messages = Vec::new();
-        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        append_memory_messages(&mut messages, &memory, &pool)
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, ChatRole::User));
         assert!(matches!(messages[1].role, ChatRole::Assistant));
@@ -783,7 +717,9 @@ mod tests {
             ])),
         );
         let mut messages = Vec::new();
-        append_memory_messages(&mut messages, &memory, &pool).await.unwrap();
+        append_memory_messages(&mut messages, &memory, &pool)
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 1);
         match &messages[0].content {
             ChatContent::Text(t) => assert_eq!(t, "Third"),
@@ -844,7 +780,10 @@ mod tests {
             Segment::String("background info".into()),
         );
         let context = RuntimeContext::default();
-        let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("n1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Segment::String("hello".into()))
@@ -867,7 +806,10 @@ mod tests {
 
         let pool = VariablePool::new();
         let context = RuntimeContext::default();
-        let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("n1", &config, &pool, &context)
+            .await
+            .unwrap();
         // Stream result has stream outputs
         assert!(result.outputs.streams().unwrap().contains_key("text"));
     }
@@ -899,7 +841,10 @@ mod tests {
             ])),
         );
         let context = RuntimeContext::default();
-        let result = executor.execute("n1", &config, &pool, &context).await.unwrap();
+        let result = executor
+            .execute("n1", &config, &pool, &context)
+            .await
+            .unwrap();
         assert_eq!(
             result.outputs.ready().get("text"),
             Some(&Segment::String("hello".into()))
@@ -928,19 +873,15 @@ mod tests {
             .expect("llm execute");
 
         let stream = match result.outputs {
-            NodeOutputs::Stream { streams, .. } => streams
-                .get("text")
-                .cloned()
-                .expect("stream output"),
+            NodeOutputs::Stream { streams, .. } => {
+                streams.get("text").cloned().expect("stream output")
+            }
             other => panic!("expected stream outputs, got {:?}", other),
         };
 
-        let collected = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            stream.collect(),
-        )
-        .await
-        .expect("llm stream collect timed out");
+        let collected = tokio::time::timeout(std::time::Duration::from_secs(2), stream.collect())
+            .await
+            .expect("llm stream collect timed out");
 
         assert!(collected.is_ok());
     }

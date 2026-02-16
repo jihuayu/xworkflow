@@ -4,12 +4,12 @@ pub mod pool_factories;
 pub mod workflow_builders;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
-use serde_json::Value;
 
 use xworkflow::core::dispatcher::{EngineConfig, EventEmitter, WorkflowDispatcher};
 use xworkflow::core::variable_pool::VariablePool;
@@ -20,10 +20,11 @@ use xworkflow::nodes::NodeExecutorRegistry;
 use xworkflow::{FakeIdGenerator, FakeTimeProvider, RuntimeContext};
 
 pub fn bench_context() -> RuntimeContext {
-    let mut ctx = RuntimeContext::default();
-    ctx.time_provider = std::sync::Arc::new(FakeTimeProvider::new(1_700_000_000));
-    ctx.id_generator = std::sync::Arc::new(FakeIdGenerator::new("bench".into()));
-    ctx
+    RuntimeContext {
+        time_provider: std::sync::Arc::new(FakeTimeProvider::new(1_700_000_000)),
+        id_generator: std::sync::Arc::new(FakeIdGenerator::new("bench".into())),
+        ..RuntimeContext::default()
+    }
 }
 
 pub fn bench_runtime() -> Runtime {

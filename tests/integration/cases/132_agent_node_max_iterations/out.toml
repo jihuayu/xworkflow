@@ -1,0 +1,7 @@
+status = "completed"
+partial_match = true
+
+[outputs]
+text = "forced-final"
+iterations = 3
+tool_calls_count = 2

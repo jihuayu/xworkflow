@@ -71,7 +71,10 @@ mod tests {
         let q = ResourceQuota::default();
         let json = serde_json::to_string(&q).unwrap();
         let deserialized: ResourceQuota = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.max_concurrent_workflows, q.max_concurrent_workflows);
+        assert_eq!(
+            deserialized.max_concurrent_workflows,
+            q.max_concurrent_workflows
+        );
         assert_eq!(deserialized.max_steps, q.max_steps);
     }
 
@@ -100,6 +103,9 @@ mod tests {
             quota: ResourceQuota::default(),
             credential_refs: creds,
         };
-        assert_eq!(group.credential_refs.get("openai"), Some(&"ref-123".to_string()));
+        assert_eq!(
+            group.credential_refs.get("openai"),
+            Some(&"ref-123".to_string())
+        );
     }
 }

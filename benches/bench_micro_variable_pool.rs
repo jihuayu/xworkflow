@@ -7,7 +7,9 @@ use xworkflow::core::variable_pool::{Segment, SegmentArray, Selector, VariablePo
 
 mod helpers;
 
-use helpers::pool_factories::{make_pool_with_objects, make_pool_with_strings, make_realistic_pool};
+use helpers::pool_factories::{
+    make_pool_with_objects, make_pool_with_strings, make_realistic_pool,
+};
 
 fn bench_variable_pool(c: &mut Criterion) {
     c.bench_function("pool_set_string", |b| {
@@ -78,9 +80,7 @@ fn bench_variable_pool(c: &mut Criterion) {
                 let mut pool = VariablePool::new();
                 pool.set(
                     &selector,
-                    Segment::Array(Arc::new(SegmentArray::new(
-                        vec![Segment::Integer(1); 100],
-                    ))),
+                    Segment::Array(Arc::new(SegmentArray::new(vec![Segment::Integer(1); 100]))),
                 );
                 pool
             },

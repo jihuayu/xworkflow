@@ -1,7 +1,7 @@
 pub mod builtins;
+pub mod sandbox;
 #[cfg(feature = "security")]
 pub mod security;
-pub mod sandbox;
 pub mod streaming;
 
 pub use sandbox::{BuiltinSandbox, BuiltinSandboxConfig};

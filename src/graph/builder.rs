@@ -2,9 +2,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::dsl::schema::{WorkflowSchema, NodeSchema};
-use crate::error::WorkflowError;
 use super::types::{Graph, GraphEdge, GraphNode, GraphTopology};
+use crate::dsl::schema::{NodeSchema, WorkflowSchema};
+use crate::error::WorkflowError;
 
 /// Build a Graph from a validated WorkflowSchema
 pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
@@ -58,18 +58,24 @@ pub fn build_graph(schema: &WorkflowSchema) -> Result<Graph, WorkflowError> {
             source_handle: es.source_handle.clone(),
         };
 
-        in_edges.entry(es.target.clone()).or_default().push(edge_id.clone());
-        out_edges.entry(es.source.clone()).or_default().push(edge_id.clone());
+        in_edges
+            .entry(es.target.clone())
+            .or_default()
+            .push(edge_id.clone());
+        out_edges
+            .entry(es.source.clone())
+            .or_default()
+            .push(edge_id.clone());
 
         edges.insert(edge_id, edge);
     }
 
     let topology = GraphTopology {
-      nodes,
-      edges,
-      in_edges,
-      out_edges,
-      root_node_id,
+        nodes,
+        edges,
+        in_edges,
+        out_edges,
+        root_node_id,
     };
 
     Ok(Graph::from_topology(Arc::new(topology)))
@@ -85,13 +91,22 @@ fn build_node_config(ns: &NodeSchema) -> Value {
         config.insert(k.clone(), v.clone());
     }
     if let Some(es) = &ns.data.error_strategy {
-        config.insert("error_strategy".to_string(), serde_json::to_value(es).unwrap_or(Value::Null));
+        config.insert(
+            "error_strategy".to_string(),
+            serde_json::to_value(es).unwrap_or(Value::Null),
+        );
     }
     if let Some(rc) = &ns.data.retry_config {
-        config.insert("retry_config".to_string(), serde_json::to_value(rc).unwrap_or(Value::Null));
+        config.insert(
+            "retry_config".to_string(),
+            serde_json::to_value(rc).unwrap_or(Value::Null),
+        );
     }
     if let Some(timeout_secs) = ns.data.timeout_secs {
-      config.insert("timeout_secs".to_string(), Value::Number(timeout_secs.into()));
+        config.insert(
+            "timeout_secs".to_string(),
+            Value::Number(timeout_secs.into()),
+        );
     }
     Value::Object(config)
 }

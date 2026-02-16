@@ -8,9 +8,7 @@ use xworkflow::plugin_system::{
     PluginSource,
 };
 use xworkflow_types::{
-    DocumentExtractorProvider,
-    DocumentExtractorProviderWrapper,
-    DOC_EXTRACT_PROVIDE_KEY,
+    DocumentExtractorProvider, DocumentExtractorProviderWrapper, DOC_EXTRACT_PROVIDE_KEY,
 };
 
 pub struct DocumentExtractorPlugin {

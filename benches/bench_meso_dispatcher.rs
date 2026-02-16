@@ -55,7 +55,10 @@ fn bench_dispatcher(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
             pool.set(&Selector::new("start", "flag0"), Segment::Boolean(true));
-            pool.set(&Selector::new("start", "query"), Segment::String("bench".into()));
+            pool.set(
+                &Selector::new("start", "query"),
+                Segment::String("bench".into()),
+            );
             setup.run_hot(pool).await;
         });
     });

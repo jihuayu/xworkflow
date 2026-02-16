@@ -95,10 +95,7 @@ impl InMemoryResourceGovernor {
     }
 
     fn quota_for(&self, group_id: &str) -> ResourceQuota {
-        self.quotas
-            .get(group_id)
-            .cloned()
-            .unwrap_or_default()
+        self.quotas.get(group_id).cloned().unwrap_or_default()
     }
 
     async fn state_for(&self, group_id: &str) -> Arc<Mutex<GroupUsageState>> {
@@ -267,8 +264,10 @@ mod tests {
     #[tokio::test]
     async fn test_governor_concurrent_limit() {
         let mut quotas = HashMap::new();
-        let mut quota = ResourceQuota::default();
-        quota.max_concurrent_workflows = 1;
+        let quota = ResourceQuota {
+            max_concurrent_workflows: 1,
+            ..ResourceQuota::default()
+        };
         quotas.insert("g1".to_string(), quota);
         let governor = InMemoryResourceGovernor::new(quotas);
 
@@ -287,8 +286,10 @@ mod tests {
     #[tokio::test]
     async fn test_governor_http_rate_limit() {
         let mut quotas = HashMap::new();
-        let mut quota = ResourceQuota::default();
-        quota.http_rate_limit_per_minute = 1;
+        let quota = ResourceQuota {
+            http_rate_limit_per_minute: 1,
+            ..ResourceQuota::default()
+        };
         quotas.insert("g1".to_string(), quota);
         let governor = InMemoryResourceGovernor::new(quotas);
 
@@ -305,8 +306,10 @@ mod tests {
     #[tokio::test]
     async fn test_governor_llm_rate_limit() {
         let mut quotas = HashMap::new();
-        let mut quota = ResourceQuota::default();
-        quota.llm_rate_limit_per_minute = 1;
+        let quota = ResourceQuota {
+            llm_rate_limit_per_minute: 1,
+            ..ResourceQuota::default()
+        };
         quotas.insert("g1".to_string(), quota);
         let governor = InMemoryResourceGovernor::new(quotas);
 
@@ -321,14 +324,19 @@ mod tests {
     #[tokio::test]
     async fn test_governor_llm_request_too_large() {
         let mut quotas = HashMap::new();
-        let mut quota = ResourceQuota::default();
-        quota.llm_max_tokens_per_request = 100;
+        let quota = ResourceQuota {
+            llm_max_tokens_per_request: 100,
+            ..ResourceQuota::default()
+        };
         quotas.insert("g1".to_string(), quota);
         let governor = InMemoryResourceGovernor::new(quotas);
 
         let err = governor.check_llm_request("g1", 200).await.unwrap_err();
         match err {
-            QuotaError::LlmRequestTooLarge { max_tokens, requested } => {
+            QuotaError::LlmRequestTooLarge {
+                max_tokens,
+                requested,
+            } => {
                 assert_eq!(max_tokens, 100);
                 assert_eq!(requested, 200);
             }
@@ -339,15 +347,20 @@ mod tests {
     #[tokio::test]
     async fn test_governor_llm_token_budget() {
         let mut quotas = HashMap::new();
-        let mut quota = ResourceQuota::default();
-        quota.llm_daily_token_budget = 50;
-        quota.llm_rate_limit_per_minute = 100;
+        let quota = ResourceQuota {
+            llm_daily_token_budget: 50,
+            llm_rate_limit_per_minute: 100,
+            ..ResourceQuota::default()
+        };
         quotas.insert("g1".to_string(), quota);
         let governor = InMemoryResourceGovernor::new(quotas);
 
         assert!(governor.check_llm_request("g1", 30).await.is_ok());
         // Record usage to increment the token counter
-        let usage = LlmUsage { total_tokens: 30, ..Default::default() };
+        let usage = LlmUsage {
+            total_tokens: 30,
+            ..Default::default()
+        };
         governor.record_llm_usage("g1", &usage).await;
         let err = governor.check_llm_request("g1", 30).await.unwrap_err();
         match err {
@@ -394,22 +407,36 @@ mod tests {
     #[tokio::test]
     async fn test_governor_variable_pool_size() {
         let mut quotas = HashMap::new();
-        let mut quota = ResourceQuota::default();
-        quota.max_variable_pool_entries = 10;
-        quota.max_variable_pool_bytes = 1000;
+        let quota = ResourceQuota {
+            max_variable_pool_entries: 10,
+            max_variable_pool_bytes: 1000,
+            ..ResourceQuota::default()
+        };
         quotas.insert("g1".to_string(), quota);
         let governor = InMemoryResourceGovernor::new(quotas);
 
-        assert!(governor.check_variable_pool_size("g1", 5, 500).await.is_ok());
-        let err = governor.check_variable_pool_size("g1", 20, 500).await.unwrap_err();
+        assert!(governor
+            .check_variable_pool_size("g1", 5, 500)
+            .await
+            .is_ok());
+        let err = governor
+            .check_variable_pool_size("g1", 20, 500)
+            .await
+            .unwrap_err();
         match err {
-            QuotaError::VariablePoolTooLarge { max_entries, current } => {
+            QuotaError::VariablePoolTooLarge {
+                max_entries,
+                current,
+            } => {
                 assert_eq!(max_entries, 10);
                 assert_eq!(current, 20);
             }
             other => panic!("unexpected error: {:?}", other),
         }
-        let err = governor.check_variable_pool_size("g1", 5, 2000).await.unwrap_err();
+        let err = governor
+            .check_variable_pool_size("g1", 5, 2000)
+            .await
+            .unwrap_err();
         match err {
             QuotaError::VariablePoolMemoryExceeded { max_bytes, current } => {
                 assert_eq!(max_bytes, 1000);
@@ -434,13 +461,25 @@ mod tests {
         assert!(e.to_string().contains("5"));
         let e = QuotaError::LlmRateLimit { max_per_minute: 10 };
         assert!(e.to_string().contains("10"));
-        let e = QuotaError::LlmTokenBudgetExhausted { budget: 1000, used: 500 };
+        let e = QuotaError::LlmTokenBudgetExhausted {
+            budget: 1000,
+            used: 500,
+        };
         assert!(e.to_string().contains("1000"));
-        let e = QuotaError::LlmRequestTooLarge { max_tokens: 100, requested: 200 };
+        let e = QuotaError::LlmRequestTooLarge {
+            max_tokens: 100,
+            requested: 200,
+        };
         assert!(e.to_string().contains("200"));
-        let e = QuotaError::VariablePoolTooLarge { max_entries: 10, current: 20 };
+        let e = QuotaError::VariablePoolTooLarge {
+            max_entries: 10,
+            current: 20,
+        };
         assert!(e.to_string().contains("20"));
-        let e = QuotaError::VariablePoolMemoryExceeded { max_bytes: 1000, current: 2000 };
+        let e = QuotaError::VariablePoolMemoryExceeded {
+            max_bytes: 1000,
+            current: 2000,
+        };
         assert!(e.to_string().contains("2000"));
     }
 }

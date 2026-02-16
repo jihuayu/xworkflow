@@ -9,24 +9,14 @@ use tempfile::TempDir;
 use xworkflow::dsl::schema::{NodeRunResult, WorkflowNodeExecutionStatus};
 use xworkflow::error::NodeError;
 use xworkflow::nodes::executor::NodeExecutor;
-use xworkflow::plugin_system::wasm::{
-    parse_wat_str,
-    PluginCapabilities,
-    PluginManifest,
-    PluginNodeType,
-};
 use xworkflow::plugin_system::builtins::{WasmBootstrapPlugin, WasmPluginConfig};
 use xworkflow::plugin_system::loaders::{DllPluginLoader, HostPluginLoader};
+use xworkflow::plugin_system::wasm::{
+    parse_wat_str, PluginCapabilities, PluginManifest, PluginNodeType,
+};
 use xworkflow::plugin_system::{
-    Plugin,
-    PluginCategory,
-    PluginContext,
-    PluginError,
-    PluginLoadSource,
-    PluginLoader,
-    PluginMetadata,
-    PluginRegistry,
-    PluginSource,
+    Plugin, PluginCategory, PluginContext, PluginError, PluginLoadSource, PluginLoader,
+    PluginMetadata, PluginRegistry, PluginSource,
 };
 
 fn base_metadata(id: &str, name: &str, category: PluginCategory) -> PluginMetadata {
@@ -93,7 +83,11 @@ struct LoadedPlugin {
 impl LoadedPlugin {
     fn new() -> Self {
         Self {
-            metadata: base_metadata("test.loaded.plugin", "Loaded Plugin", PluginCategory::Normal),
+            metadata: base_metadata(
+                "test.loaded.plugin",
+                "Loaded Plugin",
+                PluginCategory::Normal,
+            ),
         }
     }
 }
@@ -236,16 +230,15 @@ async fn test_wasm_bootstrap_loader() {
     registry
         .run_bootstrap_phase(
             Vec::new(),
-            vec![Box::new(WasmBootstrapPlugin::new(WasmPluginConfig::default()))],
+            vec![Box::new(WasmBootstrapPlugin::new(
+                WasmPluginConfig::default(),
+            ))],
         )
         .await
         .expect("bootstrap phase failed");
 
     let mut params = HashMap::new();
-    params.insert(
-        "dir".to_string(),
-        plugin_dir.to_string_lossy().into_owned(),
-    );
+    params.insert("dir".to_string(), plugin_dir.to_string_lossy().into_owned());
     let sources = vec![PluginLoadSource {
         loader_type: "wasm".to_string(),
         params,

@@ -1,0 +1,5 @@
+# Security: Code node runs in isolated sandbox.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[engine_config.security]
+enable_sandbox_hardening = true

@@ -1,0 +1,6 @@
+# Security: Audit logging captures workflow execution events.
+# File: Runtime state: engine config, mock server, fake time/id, etc.
+
+[engine_config.security]
+enable_audit_logging = true
+audit_log_path = "/tmp/audit.log"

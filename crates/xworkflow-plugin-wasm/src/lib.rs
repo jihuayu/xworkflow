@@ -8,11 +8,7 @@ use std::path::Path;
 pub use error::PluginError;
 pub use host_functions::{EventEmitter, PluginState, VariableAccess, HOST_MODULE};
 pub use manifest::{
-    AllowedCapabilities,
-    PluginCapabilities,
-    PluginHook,
-    PluginHookType,
-    PluginManifest,
+    AllowedCapabilities, PluginCapabilities, PluginHook, PluginHookType, PluginManifest,
     PluginNodeType,
 };
 pub use runtime::{PluginRuntime, PluginStatus, WasmEngine};

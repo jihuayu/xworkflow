@@ -2,13 +2,11 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use xworkflow::dsl::{parse_dsl, DslFormat};
-use xworkflow::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner};
+use xworkflow::{ExecutionStatus, WorkflowHandle, WorkflowRunner};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     println!("=== XWorkflow Scheduler Demo ===\n");
 
@@ -46,15 +44,15 @@ edges:
     sys.insert("query".into(), json!("Hello from scheduler!"));
 
     let handle: WorkflowHandle = WorkflowRunner::builder(schema)
-      .user_inputs(inputs)
-      .system_vars(sys)
-      .run()
-      .await
-      .unwrap();
+        .user_inputs(inputs)
+        .system_vars(sys)
+        .run()
+        .await
+        .unwrap();
     let status = handle.wait().await;
     match status {
-      ExecutionStatus::Completed(outputs) => println!("Result: {:?}\n", outputs),
-      other => println!("Result: {:?}\n", other),
+        ExecutionStatus::Completed(outputs) => println!("Result: {:?}\n", outputs),
+        other => println!("Result: {:?}\n", other),
     }
 
     // --- Demo 2: Branch workflow ---
@@ -112,14 +110,14 @@ edges:
     inputs2.insert("n".into(), json!(10));
 
     let handle2: WorkflowHandle = WorkflowRunner::builder(schema2)
-      .user_inputs(inputs2)
-      .run()
-      .await
-      .unwrap();
+        .user_inputs(inputs2)
+        .run()
+        .await
+        .unwrap();
     let status2 = handle2.wait().await;
     match status2 {
-      ExecutionStatus::Completed(outputs) => println!("Result: {:?}\n", outputs),
-      other => println!("Result: {:?}\n", other),
+        ExecutionStatus::Completed(outputs) => println!("Result: {:?}\n", outputs),
+        other => println!("Result: {:?}\n", other),
     }
 
     println!("=== Demo complete ===");

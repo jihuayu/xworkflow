@@ -38,7 +38,12 @@ pub struct DropCounter {
 impl DropCounter {
     pub fn new() -> (Self, Arc<AtomicUsize>) {
         let counter = Arc::new(AtomicUsize::new(0));
-        (Self { counter: counter.clone() }, counter)
+        (
+            Self {
+                counter: counter.clone(),
+            },
+            counter,
+        )
     }
 }
 
@@ -138,7 +143,8 @@ impl DispatcherSetup {
     pub fn from_schema(schema: &WorkflowSchema) -> Self {
         let graph = build_graph(schema).expect("build graph");
         let registry = Arc::new(NodeExecutorRegistry::new());
-        let context = Arc::new(RuntimeContext::default().with_node_executor_registry(Arc::clone(&registry)));
+        let context =
+            Arc::new(RuntimeContext::default().with_node_executor_registry(Arc::clone(&registry)));
         let config = EngineConfig::default();
         Self {
             graph,

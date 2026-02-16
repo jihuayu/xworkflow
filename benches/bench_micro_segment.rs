@@ -32,7 +32,7 @@ fn bench_segment(c: &mut Criterion) {
 
     c.bench_function("segment_to_value_array_1000", |b| {
         let seg = Segment::Array(Arc::new(SegmentArray::new(
-            (0..1000).map(|i| Segment::Integer(i)).collect(),
+            (0..1000).map(Segment::Integer).collect(),
         )));
         b.iter(|| {
             let _ = black_box(seg.to_value());

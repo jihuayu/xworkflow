@@ -29,7 +29,7 @@ pub struct CacheStats {
     pub total_entries: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupCacheStats {
     pub entries: usize,
 }
@@ -173,11 +173,7 @@ impl WorkflowCache {
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             group_count: self.groups.len(),
-            total_entries: self
-                .groups
-                .iter()
-                .map(|g| g.entries.len())
-                .sum(),
+            total_entries: self.groups.iter().map(|g| g.entries.len()).sum(),
         }
     }
 
@@ -220,11 +216,7 @@ impl WorkflowCache {
             return;
         }
         loop {
-            let total_entries: usize = self
-                .groups
-                .iter()
-                .map(|g| g.entries.len())
-                .sum();
+            let total_entries: usize = self.groups.iter().map(|g| g.entries.len()).sum();
             if total_entries <= self.config.max_total_entries {
                 break;
             }
@@ -279,14 +271,14 @@ impl WorkflowCache {
 
 #[cfg(all(test, feature = "workflow-cache", feature = "builtin-core-nodes"))]
 mod tests {
-        use super::*;
+    use super::*;
+    use crate::domain::execution::ExecutionStatus;
     use crate::dsl::DslFormat;
-        use crate::scheduler::ExecutionStatus;
-        use serde_json::Value;
-        use std::collections::HashMap;
+    use serde_json::Value;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-        fn sample_yaml() -> &'static str {
+    fn sample_yaml() -> &'static str {
         r#"
 version: "0.1.0"
 nodes:
@@ -310,10 +302,10 @@ edges:
   - source: start
     target: end
 "#
-        }
+    }
 
-        #[tokio::test]
-        async fn test_cache_reuses_compiled_workflow() {
+    #[tokio::test]
+    async fn test_cache_reuses_compiled_workflow() {
         let cache = WorkflowCache::new(WorkflowCacheConfig {
             max_entries_per_group: 10,
             max_total_entries: 100,
@@ -339,5 +331,217 @@ edges:
             }
             other => panic!("Expected Completed, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_cache_different_groups_isolated() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        let yaml1 = sample_yaml();
+        let yaml2 = r#"
+version: "0.1.0"
+nodes:
+  - id: start
+    data:
+      type: start
+      title: Start2
+      variables: []
+  - id: end
+    data:
+      type: end
+      title: End2
+edges:
+  - source: start
+    target: end
+"#;
+
+        let compiled_a = cache
+            .get_or_compile("group_a", yaml1, DslFormat::Yaml)
+            .unwrap();
+        let compiled_b = cache
+            .get_or_compile("group_b", yaml2, DslFormat::Yaml)
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&compiled_a, &compiled_b));
+
+        let stats = cache.stats();
+        assert_eq!(stats.group_count, 2);
+        assert_eq!(stats.total_entries, 2);
+    }
+
+    #[tokio::test]
+    async fn test_cache_eviction_per_group() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 2,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        let yaml1 = sample_yaml();
+        let yaml2 = yaml1.replace("Start", "Start2");
+        let yaml3 = yaml1.replace("Start", "Start3");
+
+        cache
+            .get_or_compile("group_a", yaml1, DslFormat::Yaml)
+            .unwrap();
+        cache
+            .get_or_compile("group_a", &yaml2, DslFormat::Yaml)
+            .unwrap();
+        cache
+            .get_or_compile("group_a", &yaml3, DslFormat::Yaml)
+            .unwrap();
+
+        let group_stats = cache.group_stats("group_a").unwrap();
+        assert_eq!(group_stats.entries, 2);
+    }
+
+    #[tokio::test]
+    async fn test_cache_global_eviction() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 3,
+            ttl: None,
+        });
+
+        for i in 0..5 {
+            let yaml = sample_yaml().replace("Start", &format!("Start{}", i));
+            cache
+                .get_or_compile(&format!("group_{}", i), &yaml, DslFormat::Yaml)
+                .unwrap();
         }
+
+        let stats = cache.stats();
+        assert!(stats.total_entries <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidate() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        let yaml = sample_yaml();
+        cache
+            .get_or_compile("group_a", yaml, DslFormat::Yaml)
+            .unwrap();
+
+        let content_hash = WorkflowCache::hash_content(yaml);
+        cache.invalidate("group_a", content_hash);
+
+        let group_stats = cache.group_stats("group_a").unwrap();
+        assert_eq!(group_stats.entries, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_clear_group() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        cache
+            .get_or_compile("group_a", sample_yaml(), DslFormat::Yaml)
+            .unwrap();
+        cache
+            .get_or_compile("group_b", sample_yaml(), DslFormat::Yaml)
+            .unwrap();
+
+        cache.clear_group("group_a");
+
+        assert_eq!(cache.group_stats("group_a"), None);
+        assert!(cache.group_stats("group_b").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cache_clear_all() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        cache
+            .get_or_compile("group_a", sample_yaml(), DslFormat::Yaml)
+            .unwrap();
+        cache
+            .get_or_compile("group_b", sample_yaml(), DslFormat::Yaml)
+            .unwrap();
+
+        cache.clear_all();
+
+        let stats = cache.stats();
+        assert_eq!(stats.group_count, 0);
+        assert_eq!(stats.total_entries, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_ttl_expiration() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: Some(Duration::from_millis(50)),
+        });
+
+        cache
+            .get_or_compile("group_a", sample_yaml(), DslFormat::Yaml)
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Should recompile due to expiration
+        let compiled = cache
+            .get_or_compile("group_a", sample_yaml(), DslFormat::Yaml)
+            .unwrap();
+        assert!(!compiled.schema.nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cache_by_workflow_id() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        let yaml = sample_yaml();
+        let compiled_a = cache
+            .get_or_compile_by_id("group_a", "workflow_1", yaml, DslFormat::Yaml)
+            .unwrap();
+        let compiled_b = cache
+            .get_or_compile_by_id("group_a", "workflow_1", yaml, DslFormat::Yaml)
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&compiled_a, &compiled_b));
+    }
+
+    #[tokio::test]
+    async fn test_cache_access_count_updates() {
+        let cache = WorkflowCache::new(WorkflowCacheConfig {
+            max_entries_per_group: 10,
+            max_total_entries: 100,
+            ttl: None,
+        });
+
+        let yaml = sample_yaml();
+        cache
+            .get_or_compile("group_a", yaml, DslFormat::Yaml)
+            .unwrap();
+        cache
+            .get_or_compile("group_a", yaml, DslFormat::Yaml)
+            .unwrap();
+        cache
+            .get_or_compile("group_a", yaml, DslFormat::Yaml)
+            .unwrap();
+
+        // The cache should still contain the entry
+        let group_stats = cache.group_stats("group_a").unwrap();
+        assert_eq!(group_stats.entries, 1);
+    }
 }

@@ -2,7 +2,9 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use serde_json::Value;
 use xworkflow_sandbox_wasm::wasmtime::{Engine, Linker, Module, Store, StoreLimitsBuilder};
 
-use xworkflow::sandbox::{CodeLanguage, CodeSandbox, ExecutionConfig, SandboxRequest, WasmSandbox, WasmSandboxConfig};
+use xworkflow::sandbox::{
+    CodeLanguage, CodeSandbox, ExecutionConfig, SandboxRequest, WasmSandbox, WasmSandboxConfig,
+};
 
 mod helpers;
 use helpers::bench_runtime;
@@ -42,7 +44,9 @@ fn execute_precompiled(engine: &Engine, module: &Module, inputs: &Value) -> Valu
 
     let instance = linker.instantiate(&mut store, module).unwrap();
     let memory = instance.get_memory(&mut store, "memory").unwrap();
-    let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc")
+        .unwrap();
     let dealloc = instance
         .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
         .unwrap();
@@ -53,12 +57,16 @@ fn execute_precompiled(engine: &Engine, module: &Module, inputs: &Value) -> Valu
     let input_bytes = serde_json::to_vec(inputs).unwrap();
     let input_len = input_bytes.len() as i32;
     let input_ptr = alloc.call(&mut store, input_len).unwrap();
-    memory.write(&mut store, input_ptr as usize, &input_bytes).unwrap();
+    memory
+        .write(&mut store, input_ptr as usize, &input_bytes)
+        .unwrap();
 
     let result_ptr = main.call(&mut store, (input_ptr, input_len)).unwrap();
 
     let mut header = [0u8; 8];
-    memory.read(&mut store, result_ptr as usize, &mut header).unwrap();
+    memory
+        .read(&mut store, result_ptr as usize, &mut header)
+        .unwrap();
     let out_ptr = i32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
     let out_len = i32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
     let mut out_bytes = vec![0u8; out_len];
@@ -103,16 +111,23 @@ fn bench_wasm_sandbox(c: &mut Criterion) {
 
     c.bench_function("wasm_validation_only", |b| {
         b.to_async(&rt).iter(|| async {
-            let _ = sandbox.validate(BASIC_WAT, CodeLanguage::Wasm).await.unwrap();
+            sandbox
+                .validate(BASIC_WAT, CodeLanguage::Wasm)
+                .await
+                .unwrap();
         });
     });
 
     let mut group = c.benchmark_group("wasm_fuel_overhead");
-    let mut fuel_config = WasmSandboxConfig::default();
-    fuel_config.enable_fuel = true;
+    let fuel_config = WasmSandboxConfig {
+        enable_fuel: true,
+        ..WasmSandboxConfig::default()
+    };
     let fuel_sandbox = WasmSandbox::new(fuel_config);
-    let mut no_fuel_config = WasmSandboxConfig::default();
-    no_fuel_config.enable_fuel = false;
+    let no_fuel_config = WasmSandboxConfig {
+        enable_fuel: false,
+        ..WasmSandboxConfig::default()
+    };
     let no_fuel_sandbox = WasmSandbox::new(no_fuel_config);
 
     for (label, sb) in [("enabled", &fuel_sandbox), ("disabled", &no_fuel_sandbox)] {

@@ -1,0 +1,7 @@
+# Question classifier basic expected output
+
+status = "completed"
+
+[outputs]
+category_id = "cat_support"
+class_name = "Customer Support"

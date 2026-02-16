@@ -53,93 +53,64 @@
 //! | `builtin-subgraph-nodes` | Registers Iteration, Loop, ListOperator executors |
 //! | `builtin-llm-node` | Registers the LLM executor |
 
+pub mod compiler;
 pub mod core;
 pub mod dsl;
 pub mod error;
 pub mod evaluator;
 pub mod graph;
-pub mod compiler;
-pub mod nodes;
-pub mod sandbox;
-pub mod template;
-pub mod scheduler;
 pub mod llm;
-#[cfg(feature = "memory")]
-pub mod memory;
-#[cfg(feature = "security")]
-pub mod security;
+#[cfg(feature = "builtin-agent-node")]
+pub mod mcp;
+pub mod nodes;
 #[cfg(feature = "plugin-system")]
 pub mod plugin_system;
+pub mod sandbox;
+#[cfg(feature = "security")]
+pub mod security;
+pub mod template;
 
-pub use crate::core::{
-	GraphEngineEvent,
-	Segment,
-	SegmentType,
-	VariablePool,
-	WorkflowDispatcher,
-	HttpClientProvider,
-	HttpPoolConfig,
-	RuntimeContext,
-	RuntimeGroup,
-	RuntimeGroupBuilder,
-	SandboxPool,
-	DefaultSandboxPool,
-	WorkflowContext,
-	SubGraphRunner,
-	DefaultSubGraphRunner,
-	TimeProvider,
-	IdGenerator,
-	RealTimeProvider,
-	RealIdGenerator,
-	FakeTimeProvider,
-	FakeIdGenerator,
+// New architecture layers (see docs/architecture-reorganization-design.md)
+pub mod api;
+pub mod application;
+pub mod domain;
+pub mod engine;
+pub mod infrastructure;
+
+pub use crate::api::{WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};
+#[cfg(feature = "workflow-cache")]
+pub use crate::compiler::{
+    CacheKey, CacheStats, GroupCacheStats, WorkflowCache, WorkflowCacheConfig,
 };
+pub use crate::compiler::{
+    CompiledConfig, CompiledNodeConfig, CompiledNodeConfigMap, CompiledWorkflow,
+    CompiledWorkflowRunnerBuilder, WorkflowCompiler,
+};
+pub use crate::core::dispatcher::{Command, EngineConfig};
+#[cfg(feature = "checkpoint")]
+pub use crate::core::{
+    ChangeSeverity, Checkpoint, CheckpointError, CheckpointStore, ContextFingerprint,
+    EnvironmentChange, FileCheckpointStore, MemoryCheckpointStore, ResumeDiagnostic, ResumePolicy,
+    SerializableEdgeState,
+};
+pub use crate::core::{
+    DefaultSandboxPool, DefaultSubGraphRunner, FakeIdGenerator, FakeTimeProvider, GraphEngineEvent,
+    HttpClientProvider, HttpPoolConfig, IdGenerator, RealIdGenerator, RealTimeProvider,
+    RuntimeContext, RuntimeGroup, RuntimeGroupBuilder, SafeStopSignal, SandboxPool, Segment,
+    SegmentType, SubGraphRunner, TimeProvider, VariablePool, WorkflowContext, WorkflowDispatcher,
+};
+pub use crate::domain::execution::ExecutionStatus;
 pub use crate::dsl::{
-	parse_dsl,
-	validate_dsl,
-	validate_schema,
-	Diagnostic,
-	DiagnosticLevel,
-	ValidationReport,
-	DslFormat,
-	WorkflowSchema,
+    parse_dsl, validate_dsl, validate_schema, Diagnostic, DiagnosticLevel, DslFormat,
+    ValidationReport, WorkflowSchema,
 };
 pub use crate::error::{NodeError, WorkflowError};
 pub use crate::graph::{build_graph, Graph};
-pub use crate::compiler::{
-	CompiledConfig,
-	CompiledNodeConfig,
-	CompiledNodeConfigMap,
-	CompiledWorkflow,
-	CompiledWorkflowRunnerBuilder,
-	WorkflowCompiler,
-};
-#[cfg(feature = "workflow-cache")]
-pub use crate::compiler::{
-	CacheKey,
-	CacheStats,
-	GroupCacheStats,
-	WorkflowCache,
-	WorkflowCacheConfig,
-};
 pub use crate::nodes::NodeExecutorRegistry;
-pub use crate::core::dispatcher::{Command, EngineConfig};
-pub use crate::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};
-#[cfg(feature = "memory")]
-pub use crate::memory::*;
-#[cfg(feature = "security")]
-pub use crate::security::*;
 #[cfg(feature = "plugin-system")]
 pub use crate::plugin_system::{
-	Plugin,
-	PluginCategory,
-	PluginContext,
-	PluginError,
-	PluginLoadSource,
-	PluginLoader,
-	PluginMetadata,
-	PluginPhase,
-	PluginRegistry,
-	PluginSource,
-	PluginSystemConfig,
+    Plugin, PluginCategory, PluginContext, PluginError, PluginLoadSource, PluginLoader,
+    PluginMetadata, PluginPhase, PluginRegistry, PluginSource, PluginSystemConfig,
 };
+#[cfg(feature = "security")]
+pub use crate::security::*;

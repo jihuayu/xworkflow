@@ -21,8 +21,8 @@ pub fn extract_json(request: &ExtractionRequest) -> Result<ExtractionResult, Ext
 pub fn extract_yaml(request: &ExtractionRequest) -> Result<ExtractionResult, ExtractError> {
     let value: serde_yaml::Value = serde_yaml::from_slice(&request.content)
         .map_err(|e| extraction_failed("yaml", e.to_string()))?;
-    let text = serde_yaml::to_string(&value)
-        .map_err(|e| extraction_failed("yaml", e.to_string()))?;
+    let text =
+        serde_yaml::to_string(&value).map_err(|e| extraction_failed("yaml", e.to_string()))?;
 
     Ok(ExtractionResult {
         text,

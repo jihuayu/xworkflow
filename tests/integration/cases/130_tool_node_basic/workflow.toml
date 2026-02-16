@@ -1,0 +1,48 @@
+version = "0.1.0"
+
+[mcp_servers.mock_search]
+name = "mock-search"
+transport = "stdio"
+command = "mock"
+
+[[nodes]]
+id = "start"
+
+[nodes.data]
+type = "start"
+title = "Start"
+[[nodes.data.variables]]
+variable = "query"
+label = "Query"
+type = "string"
+required = false
+
+[[nodes]]
+id = "tool1"
+
+[nodes.data]
+type = "tool"
+title = "Tool"
+mcp_server_ref = "mock_search"
+tool_name = "search"
+
+[nodes.data.arguments]
+q = "{{#start.query#}}"
+
+[[nodes]]
+id = "end"
+
+[nodes.data]
+type = "end"
+title = "End"
+[[nodes.data.outputs]]
+variable = "result"
+value_selector = ["tool1", "result"]
+
+[[edges]]
+source = "start"
+target = "tool1"
+
+[[edges]]
+source = "tool1"
+target = "end"

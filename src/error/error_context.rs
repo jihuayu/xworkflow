@@ -133,9 +133,15 @@ mod tests {
     #[test]
     fn test_error_retryability_variants() {
         assert_eq!(ErrorRetryability::Retryable, ErrorRetryability::Retryable);
-        assert_eq!(ErrorRetryability::NonRetryable, ErrorRetryability::NonRetryable);
+        assert_eq!(
+            ErrorRetryability::NonRetryable,
+            ErrorRetryability::NonRetryable
+        );
         assert_eq!(ErrorRetryability::Unknown, ErrorRetryability::Unknown);
-        assert_ne!(ErrorRetryability::Retryable, ErrorRetryability::NonRetryable);
+        assert_ne!(
+            ErrorRetryability::Retryable,
+            ErrorRetryability::NonRetryable
+        );
     }
 
     #[test]
@@ -219,8 +225,8 @@ mod tests {
 
     #[test]
     fn test_with_retry_after() {
-        let ctx = ErrorContext::retryable(ErrorCode::LlmRateLimit, "rate limited")
-            .with_retry_after(60);
+        let ctx =
+            ErrorContext::retryable(ErrorCode::LlmRateLimit, "rate limited").with_retry_after(60);
         assert_eq!(ctx.retry_after_secs, Some(60));
     }
 

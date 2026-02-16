@@ -5,9 +5,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use super::error::PluginError;
 use crate::core::event_bus::GraphEngineEvent;
 use crate::core::variable_pool::VariablePool;
-use super::error::PluginError;
 
 /// Points in the workflow lifecycle where hooks can be invoked.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -53,7 +53,10 @@ mod tests {
         assert_eq!(HookPoint::AfterWorkflowRun, HookPoint::AfterWorkflowRun);
         assert_eq!(HookPoint::BeforeNodeExecute, HookPoint::BeforeNodeExecute);
         assert_eq!(HookPoint::AfterNodeExecute, HookPoint::AfterNodeExecute);
-        assert_eq!(HookPoint::BeforeVariableWrite, HookPoint::BeforeVariableWrite);
+        assert_eq!(
+            HookPoint::BeforeVariableWrite,
+            HookPoint::BeforeVariableWrite
+        );
         assert_eq!(HookPoint::AfterDslValidation, HookPoint::AfterDslValidation);
         assert_eq!(HookPoint::AfterPluginLoaded, HookPoint::AfterPluginLoaded);
         assert_ne!(HookPoint::BeforeWorkflowRun, HookPoint::AfterWorkflowRun);

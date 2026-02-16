@@ -40,7 +40,7 @@ xworkflow 的原始假设是"短时运行、不做持久化、纯内存"。AI �
 
 ## 2. CheckpointStore Trait
 
-**文件**: 新建 `src/core/checkpoint.rs`
+**文件**: `src/core/checkpoint/`（入口 `src/core/checkpoint/mod.rs`）
 
 ### 2.1 核心 Trait
 
@@ -603,7 +603,10 @@ pub enum Command {
     UpdateVariables { variables: HashMap<String, Value> },
     /// 恢复暂停的 workflow，注入 human input
     ResumeWithInput { input: HashMap<String, Value> },
-    /// 安全停止：保存检查点后终止
+    /// 安全停止：停止调度新节点，并等待正在执行的节点收敛。
+    ///
+    /// - 若启用 checkpoint 且配置了 CheckpointStore：会 best-effort 保存检查点；可选在超时后强制中断仍未完成的节点。
+    /// - 若未启用 checkpoint 或未配置 CheckpointStore：不会保存检查点，也不会强制中断，单纯等待运行中的节点自然结束。
     SafeStop,
 }
 ```
@@ -618,7 +621,7 @@ pub enum ExecutionStatus {
     Failed(String),
     FailedWithRecovery { original_error: String, recovered_outputs: HashMap<String, Value> },
     Paused { node_id: String, node_title: String, prompt: String },
-    /// 安全停止完成 — 所有进行中的工作已保存检查点
+    /// 安全停止完成 — workflow 已进入安全停止终态（可能保存检查点）
     SafeStopped {
         /// 最后完成的节点 ID
         last_completed_node: Option<String>,
@@ -632,15 +635,17 @@ pub enum ExecutionStatus {
 
 ### 5.5 SafeStopSignal — 跨 workflow 广播
 
-**文件**: `src/core/checkpoint.rs`
+### 5.5 SafeStopSignal — core 跨 workflow 广播
 
-```rust
+**文件**: `src/core/safe_stop.rs`
 use tokio_util::sync::CancellationToken;
 
 /// 安全停止信号 — 可在多个 workflow 之间共享
 ///
-/// 调用 `trigger()` 后，所有持有该 signal clone 的 workflow
-/// 会在当前节点完成后保存检查点并终止。
+/// 调用 `trigger()` 后，所有持有该 signal clone 的 workflow 会进入安全停止流程：
+/// - 停止调度新节点；
+/// - 等待当前正在执行的节点收敛；
+/// - 若启用 checkpoint 且配置了 CheckpointStore，则会 best-effort 保存检查点后终止。
 #[derive(Clone)]
 pub struct SafeStopSignal {
     token: CancellationToken,
@@ -659,7 +664,9 @@ impl SafeStopSignal {
     /// 触发安全停止
     ///
     /// `timeout_secs`: 等待正在执行的节点完成的最长时间。
-    /// 超时后仍未完成的节点会被中断（结果丢失，从上一个检查点恢复）。
+    ///
+    /// 说明：该超时仅在“需要可恢复的安全停止”（启用 checkpoint 且配置了 CheckpointStore）时生效。
+    /// 若未启用 checkpoint 或未配置 CheckpointStore，则不会因为超时强制中断节点。
     pub fn trigger(&self, timeout_secs: u64) {
         self.timeout.store(timeout_secs, Ordering::Relaxed);
         self.token.cancel();
@@ -1001,6 +1008,9 @@ let status2 = handle2.wait().await;
 - 资源不足需要腾出
 - 运维人员手动干预
 
+> 重要：Safe Stop 是**执行引擎的 core 能力**，不依赖 checkpoint。
+> checkpoint 只是 Safe Stop 的一个可选增强：在可用时保存检查点、并（可选）在超时后中断未完成节点以便快速退出。
+
 ### 8.2 执行流程
 
 ```
@@ -1014,19 +1024,17 @@ let status2 = handle2.wait().await;
      ready: [node_C, node_D]  (冻结)
      running: {node_A, node_B} (继续)
 
-  2. 等待正在执行的节点完成（带超时）
-     ┌─ node_A 完成 → 正常处理结果、更新变量
-     │  → ready 可能变为 [node_C, node_D, node_E]（但不派发）
-     │
-     └─ node_B 超时未完成 → 强制中断
-        → node_B 的结果丢失（下次从上一个检查点恢复时重跑）
+  2. 等待正在执行的节点完成（drain running）
+      ┌─ node_A 完成 → 正常处理结果、更新变量
+      │  → ready 可能变为 [node_C, node_D, node_E]（但不派发）
+      │
+      └─ node_B 仍在执行：
+          - 若启用 checkpoint 且配置了 CheckpointStore：可选超时；超时后强制中断，并把 node_B 记录到 interrupted_nodes（下次从检查点恢复时重跑）
+          - 若未启用 checkpoint 或未配置 CheckpointStore：不强制中断，等待 node_B 自然结束
 
-  3. 保存检查点
-     checkpoint = {
-       node_states: {A: Taken, B: Pending, C: Pending, D: Pending},
-       ready_queue: [node_B, node_C, node_D, node_E],  // B 回到 ready
-       variables: 包含 A 的输出，不含 B 的输出,
-     }
+    3. （可选）保存检查点（best-effort）
+         - 仅当启用 checkpoint 且配置了 CheckpointStore 时执行
+         - 未完成/被中断的节点会回到 ready，便于下次恢复后重跑
 
   4. 广播 SafeStopped 状态 → WorkflowHandle 收到终态
 ```
@@ -1095,74 +1103,110 @@ async fn execute_safe_stop(
     step_count: i32,
     start_time: i64,
 ) -> WorkflowResult<HashMap<String, Value>> {
-    let timeout_secs = self.safe_stop_signal
-        .as_ref()
-        .map(|s| s.timeout_secs())
-        .unwrap_or(30);
+    // 仅当需要可恢复（配置了 CheckpointStore）时才启用超时强制中断。
+    let force_stop_deadline = if self.checkpoint_store.is_some() {
+        let timeout_secs = self.safe_stop_signal
+            .as_ref()
+            .map(|s| s.timeout_secs())
+            .unwrap_or(30);
+        Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs))
+    } else {
+        None
+    };
 
     let mut interrupted_nodes = Vec::new();
     let mut last_completed = None;
 
-    // 1. 等待正在执行的节点完成（带超时）
+    // 1. 等待正在执行的节点完成：
+    //    - 有 deadline：到点后中断剩余节点
+    //    - 无 deadline：等待所有 running 自然结束
     if !join_set.is_empty() {
-        let deadline = tokio::time::Instant::now()
-            + tokio::time::Duration::from_secs(timeout_secs);
-
         loop {
-            tokio::select! {
-                joined = join_set.join_next() => {
-                    let Some(joined) = joined else { break };
+            if running.is_empty() {
+                break;
+            }
 
-                    match joined {
-                        Ok(outcome) => {
-                            running.remove(&outcome.node_id);
-                            last_completed = Some(outcome.node_id.clone());
+            if let Some(deadline) = force_stop_deadline {
+                tokio::select! {
+                    joined = join_set.join_next() => {
+                        let Some(joined) = joined else { break };
 
-                            // 正常处理完成的节点
-                            match outcome.result {
-                                Ok(result) => {
-                                    let _ = self.handle_node_success(
-                                        &outcome.exec_id,
-                                        &outcome.node_id,
-                                        &outcome.info,
-                                        result,
-                                        ready,
-                                    ).await;
-                                }
-                                Err(_) => {
-                                    // 节点失败 → 不影响安全停止，继续等其他节点
+                        match joined {
+                            Ok(outcome) => {
+                                running.remove(&outcome.node_id);
+                                last_completed = Some(outcome.node_id.clone());
+
+                                // 正常处理完成的节点
+                                match outcome.result {
+                                    Ok(result) => {
+                                        let _ = self.handle_node_success(
+                                            &outcome.exec_id,
+                                            &outcome.node_id,
+                                            &outcome.info,
+                                            result,
+                                            ready,
+                                        ).await;
+                                    }
+                                    Err(_) => {
+                                        // 节点失败 → 不影响安全停止，继续等其他节点
+                                    }
                                 }
                             }
-                        }
-                        Err(join_error) => {
-                            if !join_error.is_cancelled() {
-                                // JoinError → 记录但不阻止安全停止
+                            Err(join_error) => {
+                                if !join_error.is_cancelled() {
+                                    // JoinError → 记录但不阻止安全停止
+                                }
                             }
                         }
                     }
-
-                    if running.is_empty() {
+                    _ = tokio::time::sleep_until(deadline) => {
+                        // 超时：中断所有未完成的节点
+                        for (node_id, handle) in running.drain() {
+                            handle.abort();
+                            interrupted_nodes.push(node_id.clone());
+                            // 被中断的节点回到 ready 队列（下次恢复时重跑）
+                            ready.push(node_id);
+                        }
+                        join_set.abort_all();
+                        // 消耗所有 JoinError
+                        while join_set.join_next().await.is_some() {}
                         break;
                     }
                 }
-                _ = tokio::time::sleep_until(deadline) => {
-                    // 超时：中断所有未完成的节点
-                    for (node_id, handle) in running.drain() {
-                        handle.abort();
-                        interrupted_nodes.push(node_id.clone());
-                        // 被中断的节点回到 ready 队列（下次恢复时重跑）
-                        ready.push(node_id);
+            } else {
+                let Some(joined) = join_set.join_next().await else { break };
+
+                match joined {
+                    Ok(outcome) => {
+                        running.remove(&outcome.node_id);
+                        last_completed = Some(outcome.node_id.clone());
+
+                        match outcome.result {
+                            Ok(result) => {
+                                let _ = self.handle_node_success(
+                                    &outcome.exec_id,
+                                    &outcome.node_id,
+                                    &outcome.info,
+                                    result,
+                                    ready,
+                                ).await;
+                            }
+                            Err(_) => {
+                                // 节点失败 → 不影响安全停止，继续等其他节点
+                            }
+                        }
                     }
-                    join_set.abort_all();
-                    // 消耗所有 JoinError
-                    while join_set.join_next().await.is_some() {}
-                    break;
+                    Err(join_error) => {
+                        if !join_error.is_cancelled() {
+                            // JoinError → 记录但不阻止安全停止
+                        }
+                    }
                 }
             }
         }
     }
 
-    // 2. 保存检查点
+    // 2. （可选）保存检查点
     let checkpoint_saved = if self.checkpoint_store.is_some() {
         let result = self.save_checkpoint(
             last_completed.as_deref().unwrap_or("safe_stop"),
@@ -1208,23 +1252,24 @@ impl WorkflowHandle {
 }
 ```
 
-### 8.5 无 CheckpointStore 时的行为
+### 8.5 无 checkpoint（未启用 feature 或未配置 store）时的行为
 
-| 有 CheckpointStore | 无 CheckpointStore |
+| 启用 checkpoint 且配置 CheckpointStore | 无 checkpoint（未启用 feature 或未配置 store） |
 |---|---|
 | 等待节点完成 → 保存检查点 → SafeStopped | 等待节点完成 → SafeStopped |
 | 下次启动可恢复 | 下次启动从头开始 |
 | `checkpoint_saved: true` | `checkpoint_saved: false` |
 
-无 CheckpointStore 时安全停止仍然有意义：给正在执行的节点时间完成，而不是直接 kill。
+无 checkpoint 时安全停止仍然有意义：给正在执行的节点时间完成，而不是直接 kill。
+此时 safe stop 的核心语义是“停止新调度 + drain running”，并以 `SafeStopped(checkpoint_saved=false)` 结束。
 
 ### 8.6 与现有 Command::Abort 的区别
 
 | | Abort | SafeStop |
 |---|---|---|
-| 正在执行的节点 | 立即中断 | 等待完成（带超时） |
-| 检查点 | 不保存 | 保存 |
-| 可恢复 | 否 | 是 |
+| 正在执行的节点 | 立即中断 | 等待完成（可选超时；无 checkpoint 时不强制中断） |
+| 检查点 | 不保存 | 若启用 checkpoint 且配置 store 则保存（best-effort） |
+| 可恢复 | 否 | 取决于是否启用 checkpoint 且配置 store |
 | 返回状态 | Failed | SafeStopped |
 | 语义 | "出错了，放弃" | "需要停了，但保留进度" |
 
@@ -2004,7 +2049,8 @@ let handle = WorkflowRunner::builder(schema)
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `src/core/checkpoint.rs` | **新建** | CheckpointStore trait, Checkpoint, CheckpointError, ContextFingerprint, ResumeDiagnostic, ResumePolicy, diff_fingerprints(), 序列化辅助函数, SafeStopSignal, 内置 Store 实现 |
+| `src/core/checkpoint/` | **新建** | CheckpointStore trait, Checkpoint, CheckpointError, ContextFingerprint, ResumeDiagnostic, ResumePolicy, diff_fingerprints(), 序列化辅助函数, 内置 Store 实现 |
+| `src/core/safe_stop.rs` | **新建** | SafeStopSignal（core 安全停止信号，独立于 checkpoint） |
 | `src/core/mod.rs` | 修改 | 添加 `#[cfg(feature = "checkpoint")] pub mod checkpoint` |
 | `src/core/dispatcher.rs` | 修改 | 添加 checkpoint_store 字段、save/resume/delete 方法、run() 中两处调用 |
 | `src/core/event_bus.rs` | 修改 | 添加 CheckpointSaved/Resumed/WorkflowPaused/Resumed 事件 |
@@ -2018,7 +2064,7 @@ let handle = WorkflowRunner::builder(schema)
 
 ## 16. 实施顺序
 
-1. `src/core/checkpoint.rs` — 定义 trait 和数据结构（含 ContextFingerprint, ResumePolicy）
+1. `src/core/checkpoint/` — 定义 trait 和数据结构（含 ContextFingerprint, ResumePolicy）
 2. `src/core/variable_pool.rs` — 添加 `snapshot_for_checkpoint` / `restore_from_checkpoint`
 3. `src/core/event_bus.rs` — 新增事件类型（含 ResumeWarning）
 4. `src/core/dispatcher.rs` — 集成检查点逻辑（save/resume/delete + 恢复安全检查）
@@ -2026,7 +2072,7 @@ let handle = WorkflowRunner::builder(schema)
 6. `src/nodes/human_input.rs` — HumanInputExecutor
 7. MemoryCheckpointStore 内置实现
 8. FileCheckpointStore 内置实现
-9. SafeStopSignal + execute_safe_stop
+9. SafeStopSignal（`src/core/safe_stop.rs`）+ execute_safe_stop（core：无 checkpoint 时也可用）
 10. 单元测试 + 集成测试（含 resume safety cases）
 
 ---

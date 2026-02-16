@@ -1,0 +1,8 @@
+# Compiler: Workflow defined in JSON format.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+result = 42

@@ -3,14 +3,19 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use serde_json::Value;
 
-use crate::core::variable_pool::{SegmentType, Selector};
+use crate::domain::model::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
+use crate::domain::model::{SegmentType, Selector};
 use crate::dsl::schema::{
-    AnswerNodeData, CodeNodeData, EndNodeData, HttpRequestNodeData, IfElseNodeData,
-    StartNodeData, TemplateTransformNodeData, VariableAggregatorNodeData,
-    VariableAssignerNodeData, WorkflowSchema,
+    AnswerNodeData, CodeNodeData, EndNodeData, HttpRequestNodeData, HumanInputNodeData,
+    HumanInputResumeMode, IfElseNodeData, QuestionClassifierNodeData, StartNodeData,
+    TemplateTransformNodeData, VariableAggregatorNodeData, VariableAssignerNodeData,
+    WorkflowSchema,
 };
-use crate::nodes::subgraph_nodes::{IterationNodeConfig, ListOperatorNodeConfig, LoopNodeConfig};
-use crate::nodes::utils::selector_from_value;
+
+/// Parse a variable selector from a JSON value.
+fn selector_from_value(value: &Value) -> Option<Selector> {
+    Selector::parse_value(value)
+}
 #[cfg(feature = "builtin-template-jinja")]
 use crate::template::CompiledTemplate;
 
@@ -138,6 +143,63 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                     Some("data".to_string()),
                 )),
             },
+            "question-classifier" => {
+                match serde_json::from_value::<QuestionClassifierNodeData>(config_value.clone()) {
+                    Ok(data) => {
+                        if data.categories.is_empty() {
+                            diags.push(error(
+                                "E218",
+                                "question-classifier categories are empty".to_string(),
+                                Some(node.id.clone()),
+                                Some("categories".to_string()),
+                            ));
+                        }
+
+                        let mut category_ids = HashSet::new();
+                        for (idx, category) in data.categories.iter().enumerate() {
+                            if category.category_id.trim().is_empty() {
+                                diags.push(error(
+                                    "E219",
+                                    "question-classifier category_id is empty".to_string(),
+                                    Some(node.id.clone()),
+                                    Some(format!("categories[{}].category_id", idx)),
+                                ));
+                            }
+                            if category.category_name.trim().is_empty() {
+                                diags.push(error(
+                                    "E220",
+                                    "question-classifier category_name is empty".to_string(),
+                                    Some(node.id.clone()),
+                                    Some(format!("categories[{}].category_name", idx)),
+                                ));
+                            }
+                            if category.category_id == "default" {
+                                diags.push(error(
+                                    "E221",
+                                    "question-classifier category_id cannot be 'default'"
+                                        .to_string(),
+                                    Some(node.id.clone()),
+                                    Some(format!("categories[{}].category_id", idx)),
+                                ));
+                            }
+                            if !category_ids.insert(category.category_id.clone()) {
+                                diags.push(error(
+                                    "E222",
+                                    "Duplicate category_id in question-classifier".to_string(),
+                                    Some(node.id.clone()),
+                                    Some(format!("categories[{}].category_id", idx)),
+                                ));
+                            }
+                        }
+                    }
+                    Err(_) => diags.push(error(
+                        "E217",
+                        "Failed to parse question-classifier node config".to_string(),
+                        Some(node.id.clone()),
+                        Some("data".to_string()),
+                    )),
+                }
+            }
             "code" => {
                 let code = config_value
                     .get("code")
@@ -174,78 +236,84 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                     }
                 }
             }
-            "http-request" => match serde_json::from_value::<HttpRequestNodeData>(config_value.clone()) {
-                Ok(data) => {
-                    if data.url.trim().is_empty() {
-                        diags.push(error(
-                            "E209",
-                            "HTTP url is empty".to_string(),
+            "http-request" => {
+                match serde_json::from_value::<HttpRequestNodeData>(config_value.clone()) {
+                    Ok(data) => {
+                        if data.url.trim().is_empty() {
+                            diags.push(error(
+                                "E209",
+                                "HTTP url is empty".to_string(),
+                                Some(node.id.clone()),
+                                Some("url".to_string()),
+                            ));
+                        }
+                        validate_dify_template(
+                            &data.url,
+                            &node_ids,
+                            &mut diags,
                             Some(node.id.clone()),
-                            Some("url".to_string()),
-                        ));
+                            "url",
+                        );
+                        for (idx, header) in data.headers.iter().enumerate() {
+                            validate_dify_template(
+                                &header.value,
+                                &node_ids,
+                                &mut diags,
+                                Some(node.id.clone()),
+                                &format!("headers[{}].value", idx),
+                            );
+                        }
+                        for (idx, param) in data.params.iter().enumerate() {
+                            validate_dify_template(
+                                &param.value,
+                                &node_ids,
+                                &mut diags,
+                                Some(node.id.clone()),
+                                &format!("params[{}].value", idx),
+                            );
+                        }
                     }
-                    validate_dify_template(
-                        &data.url,
-                        &node_ids,
-                        &mut diags,
+                    Err(_) => diags.push(error(
+                        "E217",
+                        "Failed to parse http-request node config".to_string(),
                         Some(node.id.clone()),
-                        "url",
-                    );
-                    for (idx, header) in data.headers.iter().enumerate() {
-                        validate_dify_template(
-                            &header.value,
-                            &node_ids,
-                            &mut diags,
-                            Some(node.id.clone()),
-                            &format!("headers[{}].value", idx),
-                        );
-                    }
-                    for (idx, param) in data.params.iter().enumerate() {
-                        validate_dify_template(
-                            &param.value,
-                            &node_ids,
-                            &mut diags,
-                            Some(node.id.clone()),
-                            &format!("params[{}].value", idx),
-                        );
-                    }
+                        Some("data".to_string()),
+                    )),
                 }
-                Err(_) => diags.push(error(
-                    "E217",
-                    "Failed to parse http-request node config".to_string(),
-                    Some(node.id.clone()),
-                    Some("data".to_string()),
-                )),
-            },
-            "template-transform" => match serde_json::from_value::<TemplateTransformNodeData>(config_value.clone()) {
-                Ok(data) => {
-                    if data.template.trim().is_empty() {
-                        diags.push(error(
-                            "E210",
-                            "Template is empty".to_string(),
-                            Some(node.id.clone()),
-                            Some("template".to_string()),
-                        ));
+            }
+            "template-transform" => {
+                match serde_json::from_value::<TemplateTransformNodeData>(config_value.clone()) {
+                    Ok(data) => {
+                        if data.template.trim().is_empty() {
+                            diags.push(error(
+                                "E210",
+                                "Template is empty".to_string(),
+                                Some(node.id.clone()),
+                                Some("template".to_string()),
+                            ));
+                        }
+                        #[cfg(feature = "builtin-template-jinja")]
+                        if CompiledTemplate::new(&data.template, None).is_err() {
+                            diags.push(error(
+                                "E501",
+                                "Jinja2 template syntax error".to_string(),
+                                Some(node.id.clone()),
+                                Some("template".to_string()),
+                            ));
+                        }
                     }
-                    #[cfg(feature = "builtin-template-jinja")]
-                    if CompiledTemplate::new(&data.template, None).is_err() {
-                        diags.push(error(
-                            "E501",
-                            "Jinja2 template syntax error".to_string(),
-                            Some(node.id.clone()),
-                            Some("template".to_string()),
-                        ));
-                    }
+                    Err(_) => diags.push(error(
+                        "E217",
+                        "Failed to parse template-transform node config".to_string(),
+                        Some(node.id.clone()),
+                        Some("data".to_string()),
+                    )),
                 }
-                Err(_) => diags.push(error(
-                    "E217",
-                    "Failed to parse template-transform node config".to_string(),
-                    Some(node.id.clone()),
-                    Some("data".to_string()),
-                )),
-            },
+            }
             "variable-aggregator" => {
-                if let Ok(data) = serde_json::from_value::<VariableAggregatorNodeData>(config_value.clone()) {
+                if let Ok(data) =
+                    serde_json::from_value::<VariableAggregatorNodeData>(config_value.clone())
+                {
                     if data.variables.is_empty() {
                         diags.push(error(
                             "E215",
@@ -264,7 +332,8 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                 }
             }
             "assigner" => {
-                if serde_json::from_value::<VariableAssignerNodeData>(config_value.clone()).is_err() {
+                if serde_json::from_value::<VariableAssignerNodeData>(config_value.clone()).is_err()
+                {
                     diags.push(error(
                         "E217",
                         "Failed to parse variable-assigner node config".to_string(),
@@ -273,40 +342,42 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                     ));
                 }
             }
-            "iteration" => match serde_json::from_value::<IterationNodeConfig>(config_value.clone()) {
-                Ok(data) => {
-                    if data.sub_graph.nodes.is_empty() {
-                        diags.push(error(
-                            "E211",
-                            "Iteration sub_graph is missing".to_string(),
-                            Some(node.id.clone()),
-                            Some("sub_graph".to_string()),
-                        ));
+            "iteration" => {
+                match serde_json::from_value::<IterationNodeConfig>(config_value.clone()) {
+                    Ok(data) => {
+                        if data.sub_graph.nodes.is_empty() {
+                            diags.push(error(
+                                "E211",
+                                "Iteration sub_graph is missing".to_string(),
+                                Some(node.id.clone()),
+                                Some("sub_graph".to_string()),
+                            ));
+                        }
+                        let selector_val = data
+                            .input_selector
+                            .as_ref()
+                            .or(data.iterator_selector.as_ref());
+                        if selector_val
+                            .and_then(selector_from_value)
+                            .map(|s| s.is_empty())
+                            .unwrap_or(true)
+                        {
+                            diags.push(error(
+                                "E212",
+                                "Iteration iterator_selector is empty".to_string(),
+                                Some(node.id.clone()),
+                                Some("iterator_selector".to_string()),
+                            ));
+                        }
                     }
-                    let selector_val = data
-                        .input_selector
-                        .as_ref()
-                        .or(data.iterator_selector.as_ref());
-                    if selector_val
-                        .and_then(|v| selector_from_value(v))
-                        .map(|s| s.is_empty())
-                        .unwrap_or(true)
-                    {
-                        diags.push(error(
-                            "E212",
-                            "Iteration iterator_selector is empty".to_string(),
-                            Some(node.id.clone()),
-                            Some("iterator_selector".to_string()),
-                        ));
-                    }
+                    Err(_) => diags.push(error(
+                        "E217",
+                        "Failed to parse iteration node config".to_string(),
+                        Some(node.id.clone()),
+                        Some("data".to_string()),
+                    )),
                 }
-                Err(_) => diags.push(error(
-                    "E217",
-                    "Failed to parse iteration node config".to_string(),
-                    Some(node.id.clone()),
-                    Some("data".to_string()),
-                )),
-            },
+            }
             "loop" => match serde_json::from_value::<LoopNodeConfig>(config_value.clone()) {
                 Ok(data) => {
                     if data.sub_graph.nodes.is_empty() {
@@ -334,7 +405,9 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                 )),
             },
             "list-operator" => {
-                if let Ok(data) = serde_json::from_value::<ListOperatorNodeConfig>(config_value.clone()) {
+                if let Ok(data) =
+                    serde_json::from_value::<ListOperatorNodeConfig>(config_value.clone())
+                {
                     let _ = data.operation;
                 } else {
                     diags.push(error(
@@ -351,13 +424,51 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
 
     // Branch edge validation
     for node in &schema.nodes {
-        let is_branch = BRANCH_NODE_TYPES.iter().any(|t| *t == node.data.node_type);
+        let is_human_input_approval = if node.data.node_type == "human-input" {
+            serde_json::from_value::<HumanInputNodeData>(Value::Object(
+                node.data.extra.clone().into_iter().collect(),
+            ))
+            .map(|cfg| cfg.resume_mode == HumanInputResumeMode::Approval)
+            .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let is_branch =
+            BRANCH_NODE_TYPES.iter().any(|t| *t == node.data.node_type) || is_human_input_approval;
         let edges = edges_by_source.get(&node.id).cloned().unwrap_or_default();
         if is_branch {
-            if let Ok(data) = serde_json::from_value::<IfElseNodeData>(Value::Object(
+            if is_human_input_approval {
+                let mut has_approve = false;
+                let mut has_reject = false;
+                for edge in &edges {
+                    let handle = edge.source_handle.as_deref().unwrap_or("source");
+                    match handle {
+                        "approve" => has_approve = true,
+                        "reject" => has_reject = true,
+                        _ => {
+                            diags.push(error(
+                                "E304",
+                                "approval human-input edge has unknown source_handle".to_string(),
+                                Some(node.id.clone()),
+                                Some("edges".to_string()),
+                            ));
+                        }
+                    }
+                }
+                if !has_approve || !has_reject {
+                    diags.push(error(
+                        "E301",
+                        "approval human-input missing approve/reject edge".to_string(),
+                        Some(node.id.clone()),
+                        None,
+                    ));
+                }
+            } else if let Ok(data) = serde_json::from_value::<IfElseNodeData>(Value::Object(
                 node.data.extra.clone().into_iter().collect(),
             )) {
-                let case_ids: HashSet<String> = data.cases.iter().map(|c| c.case_id.clone()).collect();
+                let case_ids: HashSet<String> =
+                    data.cases.iter().map(|c| c.case_id.clone()).collect();
                 let mut has_false = false;
                 for edge in &edges {
                     let handle = edge.source_handle.as_deref().unwrap_or("source");
@@ -388,7 +499,9 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                     ));
                 }
                 for case_id in case_ids {
-                    let has_edge = edges.iter().any(|e| e.source_handle.as_deref() == Some(&case_id));
+                    let has_edge = edges
+                        .iter()
+                        .any(|e| e.source_handle.as_deref() == Some(&case_id));
                     if !has_edge {
                         diags.push(error(
                             "E302",
@@ -396,6 +509,58 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                             Some(node.id.clone()),
                             None,
                         ));
+                    }
+                }
+            } else if node.data.node_type == "question-classifier" {
+                if let Ok(data) = serde_json::from_value::<QuestionClassifierNodeData>(
+                    Value::Object(node.data.extra.clone().into_iter().collect()),
+                ) {
+                    let category_ids: HashSet<String> = data
+                        .categories
+                        .iter()
+                        .map(|c| c.category_id.clone())
+                        .collect();
+
+                    let mut has_default = false;
+                    let mut covered_categories = HashSet::new();
+
+                    for edge in &edges {
+                        let handle = edge.source_handle.as_deref().unwrap_or("source");
+                        if handle == "default" {
+                            has_default = true;
+                        } else if category_ids.contains(handle) {
+                            covered_categories.insert(handle.to_string());
+                        } else {
+                            diags.push(error(
+                                "E304",
+                                "question-classifier edge has unknown source_handle".to_string(),
+                                Some(node.id.clone()),
+                                Some("edges".to_string()),
+                            ));
+                        }
+                    }
+
+                    if !has_default {
+                        diags.push(error(
+                            "E301",
+                            "question-classifier missing default edge".to_string(),
+                            Some(node.id.clone()),
+                            None,
+                        ));
+                    }
+
+                    for category_id in category_ids {
+                        if !covered_categories.contains(&category_id) {
+                            diags.push(error(
+                                "E302",
+                                format!(
+                                    "question-classifier category missing edge: {}",
+                                    category_id
+                                ),
+                                Some(node.id.clone()),
+                                None,
+                            ));
+                        }
                     }
                 }
             }
@@ -407,7 +572,12 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                             .data
                             .error_strategy
                             .as_ref()
-                            .map(|s| matches!(s.strategy_type, crate::dsl::schema::ErrorStrategyType::FailBranch))
+                            .map(|s| {
+                                matches!(
+                                    s.strategy_type,
+                                    crate::dsl::schema::ErrorStrategyType::FailBranch
+                                )
+                            })
                             .unwrap_or(false);
                         if !(allow_fail_branch && handle == "fail-branch") {
                             diags.push(error(
@@ -450,7 +620,10 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                             validate_selector(
                                 &cond.variable_selector,
                                 &node_id,
-                                &format!("cases[{}].conditions[{}].variable_selector", case_idx, cond_idx),
+                                &format!(
+                                    "cases[{}].conditions[{}].variable_selector",
+                                    case_idx, cond_idx
+                                ),
                                 &node_ids,
                                 topo,
                                 &mut diags,
@@ -460,7 +633,9 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                 }
             }
             "template-transform" => {
-                if let Ok(data) = serde_json::from_value::<TemplateTransformNodeData>(config_value.clone()) {
+                if let Ok(data) =
+                    serde_json::from_value::<TemplateTransformNodeData>(config_value.clone())
+                {
                     for (idx, var) in data.variables.iter().enumerate() {
                         validate_selector(
                             &var.value_selector,
@@ -488,7 +663,9 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                 }
             }
             "variable-aggregator" => {
-                if let Ok(data) = serde_json::from_value::<VariableAggregatorNodeData>(config_value.clone()) {
+                if let Ok(data) =
+                    serde_json::from_value::<VariableAggregatorNodeData>(config_value.clone())
+                {
                     for (idx, selector) in data.variables.iter().enumerate() {
                         validate_selector(
                             selector,
@@ -502,7 +679,9 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                 }
             }
             "assigner" => {
-                if let Ok(data) = serde_json::from_value::<VariableAssignerNodeData>(config_value.clone()) {
+                if let Ok(data) =
+                    serde_json::from_value::<VariableAssignerNodeData>(config_value.clone())
+                {
                     validate_selector(
                         &data.assigned_variable_selector,
                         &node_id,
@@ -524,12 +703,14 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                 }
             }
             "iteration" => {
-                if let Ok(data) = serde_json::from_value::<IterationNodeConfig>(config_value.clone()) {
+                if let Ok(data) =
+                    serde_json::from_value::<IterationNodeConfig>(config_value.clone())
+                {
                     if let Some(selector) = data
                         .input_selector
                         .as_ref()
                         .or(data.iterator_selector.as_ref())
-                        .and_then(|v| selector_from_value(v))
+                        .and_then(selector_from_value)
                     {
                         validate_selector(
                             &selector,
@@ -556,6 +737,61 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
                     }
                 }
             }
+            "human-input" => {
+                if let Ok(data) = serde_json::from_value::<HumanInputNodeData>(config_value.clone())
+                {
+                    for (idx, field) in data.form_fields.iter().enumerate() {
+                        if let Some(selector) = field.default_value_selector.as_ref() {
+                            validate_selector(
+                                selector,
+                                &node_id,
+                                &format!("form_fields[{}].default_value_selector", idx),
+                                &node_ids,
+                                topo,
+                                &mut diags,
+                            );
+                        }
+                    }
+
+                    for (idx, mapping) in data.prompt_variables.iter().enumerate() {
+                        validate_selector(
+                            &mapping.value_selector,
+                            &node_id,
+                            &format!("prompt_variables[{}].value_selector", idx),
+                            &node_ids,
+                            topo,
+                            &mut diags,
+                        );
+                    }
+                }
+            }
+            "question-classifier" => {
+                if let Ok(data) =
+                    serde_json::from_value::<QuestionClassifierNodeData>(config_value.clone())
+                {
+                    validate_selector(
+                        &data.query_variable_selector,
+                        &node_id,
+                        "query_variable_selector",
+                        &node_ids,
+                        topo,
+                        &mut diags,
+                    );
+
+                    if let Some(memory) = data.memory {
+                        if let Some(selector) = memory.variable_selector {
+                            validate_selector(
+                                &selector,
+                                &node_id,
+                                "memory.variable_selector",
+                                &node_ids,
+                                topo,
+                                &mut diags,
+                            );
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -563,10 +799,14 @@ pub fn validate(schema: &WorkflowSchema, topo: &TopologyInfo) -> Vec<Diagnostic>
     diags
 }
 
-fn build_edges_by_source(schema: &WorkflowSchema) -> HashMap<String, Vec<crate::dsl::schema::EdgeSchema>> {
+fn build_edges_by_source(
+    schema: &WorkflowSchema,
+) -> HashMap<String, Vec<crate::dsl::schema::EdgeSchema>> {
     let mut map: HashMap<String, Vec<crate::dsl::schema::EdgeSchema>> = HashMap::new();
     for edge in &schema.edges {
-        map.entry(edge.source.clone()).or_default().push(edge.clone());
+        map.entry(edge.source.clone())
+            .or_default()
+            .push(edge.clone());
     }
     map
 }
@@ -599,10 +839,9 @@ fn validate_selector(
         return;
     }
     if node_ids.contains(root) {
-        if let (Some(cur_level), Some(ref_level)) = (
-            topo.topo_level.get(current_node),
-            topo.topo_level.get(root),
-        ) {
+        if let (Some(cur_level), Some(ref_level)) =
+            (topo.topo_level.get(current_node), topo.topo_level.get(root))
+        {
             if ref_level >= cur_level {
                 diags.push(error(
                     "E403",
@@ -654,7 +893,12 @@ fn validate_dify_template(
     }
 }
 
-fn error(code: &str, message: String, node_id: Option<String>, field_path: Option<String>) -> Diagnostic {
+fn error(
+    code: &str,
+    message: String,
+    node_id: Option<String>,
+    field_path: Option<String>,
+) -> Diagnostic {
     Diagnostic {
         level: DiagnosticLevel::Error,
         code: code.to_string(),
@@ -665,7 +909,12 @@ fn error(code: &str, message: String, node_id: Option<String>, field_path: Optio
     }
 }
 
-fn warn(code: &str, message: String, node_id: Option<String>, field_path: Option<String>) -> Diagnostic {
+fn warn(
+    code: &str,
+    message: String,
+    node_id: Option<String>,
+    field_path: Option<String>,
+) -> Diagnostic {
     Diagnostic {
         level: DiagnosticLevel::Warning,
         code: code.to_string(),

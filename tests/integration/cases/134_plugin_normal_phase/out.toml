@@ -1,0 +1,8 @@
+# Plugin: Normal phase plugin with node executor.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = false
+
+[outputs]
+output = "HELLO"

@@ -5,8 +5,8 @@ use xworkflow::core::variable_pool::{Segment, Selector, VariablePool};
 mod helpers;
 
 use helpers::workflow_builders::{
-    build_deep_branch_chain, build_diamond_workflow, build_fanout_workflow,
-    build_linear_workflow, build_realistic_mixed_workflow,
+    build_deep_branch_chain, build_diamond_workflow, build_fanout_workflow, build_linear_workflow,
+    build_realistic_mixed_workflow,
 };
 use helpers::{bench_runtime, DispatcherSetup};
 
@@ -49,7 +49,10 @@ fn bench_macro_topology(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
-            pool.set(&Selector::new("start", "query"), Segment::String("bench".into()));
+            pool.set(
+                &Selector::new("start", "query"),
+                Segment::String("bench".into()),
+            );
             pool.set(&Selector::new("start", "flag0"), Segment::Boolean(true));
             setup.run_hot(pool).await;
         });
@@ -60,7 +63,10 @@ fn bench_macro_topology(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
-            pool.set(&Selector::new("start", "query"), Segment::String("bench".into()));
+            pool.set(
+                &Selector::new("start", "query"),
+                Segment::String("bench".into()),
+            );
             pool.set(&Selector::new("start", "flag0"), Segment::Boolean(true));
             setup.run_hot(pool).await;
         });
@@ -86,7 +92,10 @@ fn bench_macro_topology(c: &mut Criterion) {
         let setup = DispatcherSetup::from_yaml(&yaml);
         b.to_async(&rt).iter(|| async {
             let mut pool = VariablePool::new();
-            pool.set(&Selector::new("start", "query"), Segment::String("world".into()));
+            pool.set(
+                &Selector::new("start", "query"),
+                Segment::String("world".into()),
+            );
             pool.set(&Selector::new("start", "flag"), Segment::Boolean(true));
             setup.run_hot(pool).await;
         });

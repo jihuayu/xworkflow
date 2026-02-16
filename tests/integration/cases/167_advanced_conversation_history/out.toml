@@ -1,0 +1,7 @@
+# Advanced: Conversation variables with message history management.
+# File: Expected execution result and output values
+
+status = "completed"
+partial_match = true
+
+[outputs]
