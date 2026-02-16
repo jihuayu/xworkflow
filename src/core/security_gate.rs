@@ -593,6 +593,8 @@ mod tests {
       network: None,
       template: None,
       dsl_validation: None,
+      #[cfg(feature = "memory")]
+      memory: None,
       node_limits,
       audit_logger: None,
     };
@@ -629,6 +631,8 @@ mod tests {
       network: None,
       template: None,
       dsl_validation: None,
+      #[cfg(feature = "memory")]
+      memory: None,
       node_limits,
       audit_logger: None,
     };
@@ -670,6 +674,8 @@ mod tests {
       network: None,
       template: None,
       dsl_validation: None,
+      #[cfg(feature = "memory")]
+      memory: None,
       node_limits,
       audit_logger: None,
     };

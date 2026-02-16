@@ -82,6 +82,7 @@ dhat = "0.3"
 [features]
 default = [
 	"security",
+	"memory",
 	"plugin-system",
 	"compiler",
 	"workflow-cache",
@@ -89,12 +90,14 @@ default = [
 	"builtin-core-nodes",
 	"builtin-transform-nodes",
 	"builtin-http-node",
+	"builtin-memory-nodes",
 	"builtin-subgraph-nodes",
 	"builtin-llm-node",
 ]
 compiler = []
 workflow-cache = ["compiler"]
 security = ["xworkflow-sandbox-js?/security"]
+memory = []
 wasm-runtime = ["dep:xworkflow-plugin-wasm"]
 plugin-system = ["libloading"]
 builtin-sandbox-js = ["dep:xworkflow-sandbox-js"]
@@ -103,6 +106,7 @@ builtin-template-jinja = ["dep:minijinja"]
 builtin-core-nodes = []
 builtin-transform-nodes = ["builtin-template-jinja"]
 builtin-http-node = []
+builtin-memory-nodes = ["memory"]
 builtin-code-node = ["builtin-sandbox-js"]
 builtin-docextract-node = ["dep:xworkflow-docextract-builtin"]
 builtin-subgraph-nodes = []

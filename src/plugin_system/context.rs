@@ -8,6 +8,8 @@ use crate::core::runtime_context::{IdGenerator, TimeProvider};
 use crate::llm::LlmProvider;
 use crate::nodes::executor::NodeExecutor;
 use crate::sandbox::{CodeLanguage, CodeSandbox};
+#[cfg(feature = "memory")]
+use crate::memory::MemoryProvider;
 
 use super::error::PluginError;
 use super::extensions::{DslValidator, TemplateFunction};
@@ -167,6 +169,16 @@ impl<'a> PluginContext<'a> {
             }
         }
         self.registry_inner.llm_providers.push(provider);
+        Ok(())
+    }
+
+    #[cfg(feature = "memory")]
+    pub fn register_memory_provider(
+        &mut self,
+        provider: Arc<dyn MemoryProvider>,
+    ) -> Result<(), PluginError> {
+        self.ensure_phase(PluginPhase::Normal)?;
+        self.registry_inner.memory_provider = Some(provider);
         Ok(())
     }
 

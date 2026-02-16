@@ -10,6 +10,8 @@ use crate::core::runtime_group::RuntimeGroup;
 use crate::core::sub_graph_runner::SubGraphRunner;
 use crate::llm::LlmProviderRegistry;
 use crate::nodes::executor::NodeExecutorRegistry;
+#[cfg(feature = "memory")]
+use crate::memory::MemoryProvider;
 
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::TemplateFunction;
@@ -113,6 +115,11 @@ impl WorkflowContext {
         self.runtime_group.http_client_provider.as_ref()
     }
 
+    #[cfg(feature = "memory")]
+    pub fn memory_provider(&self) -> Option<&Arc<dyn MemoryProvider>> {
+        self.runtime_group.memory_provider.as_ref()
+    }
+
     pub fn strict_template(&self) -> bool {
         self.strict_template
     }
@@ -204,6 +211,13 @@ impl WorkflowContext {
     pub fn set_audit_logger(&mut self, logger: Arc<dyn AuditLogger>) {
         self.update_runtime_group(|runtime_group| {
             runtime_group.audit_logger = Some(logger);
+        });
+    }
+
+    #[cfg(feature = "memory")]
+    pub fn set_memory_provider(&mut self, provider: Arc<dyn MemoryProvider>) {
+        self.update_runtime_group(|runtime_group| {
+            runtime_group.memory_provider = Some(provider);
         });
     }
 }

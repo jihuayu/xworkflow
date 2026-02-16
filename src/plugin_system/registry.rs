@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use crate::core::runtime_context::{IdGenerator, TimeProvider};
 use crate::llm::LlmProvider;
+#[cfg(feature = "memory")]
+use crate::memory::MemoryProvider;
 use crate::nodes::executor::NodeExecutor;
 use crate::sandbox::{CodeLanguage, CodeSandbox};
 
@@ -51,6 +53,8 @@ pub(crate) struct PluginRegistryInner {
     pub(crate) dsl_validators: Vec<Arc<dyn DslValidator>>,
     pub(crate) custom_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) custom_id_generator: Option<Arc<dyn IdGenerator>>,
+    #[cfg(feature = "memory")]
+    pub(crate) memory_provider: Option<Arc<dyn MemoryProvider>>,
 }
 
 impl PluginRegistryInner {
@@ -66,6 +70,8 @@ impl PluginRegistryInner {
             dsl_validators: Vec::new(),
             custom_time_provider: None,
             custom_id_generator: None,
+            #[cfg(feature = "memory")]
+            memory_provider: None,
         }
     }
 }
@@ -189,6 +195,11 @@ impl PluginRegistry {
 
     pub fn custom_id_generator(&self) -> Option<Arc<dyn IdGenerator>> {
         self.inner.custom_id_generator.clone()
+    }
+
+    #[cfg(feature = "memory")]
+    pub fn memory_provider(&self) -> Option<Arc<dyn MemoryProvider>> {
+        self.inner.memory_provider.clone()
     }
 
     pub async fn shutdown_all(&self) -> Result<(), PluginError> {

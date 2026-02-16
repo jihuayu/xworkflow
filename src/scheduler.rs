@@ -411,6 +411,12 @@ impl WorkflowRunnerBuilder {
     self
   }
 
+  #[cfg(feature = "memory")]
+  pub fn memory_provider(mut self, provider: Arc<dyn crate::memory::MemoryProvider>) -> Self {
+    self.context.set_memory_provider(provider);
+    self
+  }
+
   /// Enable interactive debugging with the given config.
   pub fn debug(mut self, config: DebugConfig) -> Self {
     self.debug_config = Some(config);

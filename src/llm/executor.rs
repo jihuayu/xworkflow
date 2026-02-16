@@ -15,6 +15,13 @@ use crate::dsl::schema::{
 use crate::error::NodeError;
 use crate::nodes::executor::NodeExecutor;
 use crate::template::render_template_async_with_config;
+#[cfg(feature = "memory")]
+use crate::memory::{
+    resolve_namespace,
+    MemoryEntry,
+    MemoryInjectionPosition,
+    MemoryQuery,
+};
 #[cfg(feature = "security")]
 use crate::security::audit::{EventSeverity, SecurityEvent, SecurityEventType};
 #[cfg(feature = "security")]
@@ -56,6 +63,52 @@ impl NodeExecutor for LlmNodeExecutor {
         let mut messages = Vec::new();
         if let Some(memory) = &data.memory {
             append_memory_messages(&mut messages, memory, variable_pool).await?;
+        }
+
+        #[cfg(feature = "memory")]
+        if let Some(enhanced_memory) = &data.enhanced_memory {
+            if enhanced_memory.enabled {
+                if let Some(provider) = context.memory_provider() {
+                    let namespace = resolve_namespace(
+                        &enhanced_memory.scope,
+                        variable_pool,
+                        context,
+                        node_id,
+                    )
+                    .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
+
+                    let query_text = if let Some(sel) = &enhanced_memory.query_selector {
+                        variable_pool.get_resolved(sel).await.as_string()
+                    } else {
+                        None
+                    };
+
+                    let query = MemoryQuery {
+                        namespace,
+                        key: None,
+                        query_text,
+                        filter: enhanced_memory.filter.clone(),
+                        top_k: enhanced_memory.top_k,
+                    };
+
+                    let entries = provider
+                        .recall(query)
+                        .await
+                        .map_err(|e| NodeError::ExecutionError(e.to_string()))?;
+
+                    if !entries.is_empty() {
+                        let memory_text = format_memory_entries(
+                            &entries,
+                            enhanced_memory.format_template.as_deref(),
+                        );
+                        inject_memory_context(
+                            &mut messages,
+                            &memory_text,
+                            &enhanced_memory.injection_position,
+                        );
+                    }
+                }
+            }
         }
 
         for msg in &data.prompt_template {
@@ -407,6 +460,70 @@ async fn append_memory_messages(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "memory")]
+fn format_memory_entries(entries: &[MemoryEntry], template: Option<&str>) -> String {
+    let mut lines = Vec::with_capacity(entries.len() + 1);
+    lines.push("[Memory Context]".to_string());
+
+    for entry in entries {
+        let line = if let Some(tpl) = template {
+            tpl.replace("{{id}}", &entry.id)
+                .replace("{{namespace}}", &entry.namespace)
+                .replace("{{key}}", &entry.key)
+                .replace("{{value}}", &entry.value.to_string())
+                .replace(
+                    "{{metadata}}",
+                    &entry
+                        .metadata
+                        .as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                )
+        } else {
+            format!("- {}: {}", entry.key, entry.value)
+        };
+        lines.push(line);
+    }
+
+    lines.join("\n")
+}
+
+#[cfg(feature = "memory")]
+fn inject_memory_context(
+    messages: &mut Vec<ChatMessage>,
+    memory_text: &str,
+    position: &MemoryInjectionPosition,
+) {
+    let memory_msg = ChatMessage {
+        role: ChatRole::System,
+        content: ChatContent::Text(memory_text.to_string()),
+    };
+
+    match position {
+        MemoryInjectionPosition::BeforeSystem => {
+            if let Some(index) = messages.iter().position(|m| matches!(m.role, ChatRole::System)) {
+                messages.insert(index, memory_msg);
+            } else {
+                messages.insert(0, memory_msg);
+            }
+        }
+        MemoryInjectionPosition::AfterSystem => {
+            if let Some(index) = messages.iter().rposition(|m| matches!(m.role, ChatRole::System)) {
+                messages.insert(index + 1, memory_msg);
+            } else {
+                messages.insert(0, memory_msg);
+            }
+        }
+        MemoryInjectionPosition::BeforeUser => {
+            if let Some(index) = messages.iter().position(|m| matches!(m.role, ChatRole::User)) {
+                messages.insert(index, memory_msg);
+            } else {
+                messages.push(memory_msg);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

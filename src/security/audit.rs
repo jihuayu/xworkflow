@@ -27,6 +27,13 @@ pub enum SecurityEventType {
     TemplateRenderingAnomaly { template_length: usize },
     DslValidationFailed { errors: Vec<String> },
     OutputSizeExceeded { node_id: String, max: usize, actual: usize },
+    #[cfg(feature = "memory")]
+    MemoryAccess {
+        namespace: String,
+        operation: String,
+        node_id: String,
+        success: bool,
+    },
 }
 
 /// Severity level attached to a [`SecurityEvent`].

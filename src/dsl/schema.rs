@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::core::variable_pool::{Selector, Segment, SegmentStream};
+#[cfg(feature = "memory")]
+use crate::memory::EnhancedMemoryConfig;
 
 // ================================
 // Variable Selector
@@ -212,6 +214,10 @@ pub enum NodeType {
     ListOperator,
     Agent,
     HumanInput,
+    #[cfg(feature = "memory")]
+    MemoryRecall,
+    #[cfg(feature = "memory")]
+    MemoryStore,
 }
 
 impl std::fmt::Display for NodeType {
@@ -653,6 +659,9 @@ pub struct LlmNodeData {
     pub vision: Option<VisionConfig>,
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
+    #[cfg(feature = "memory")]
+    #[serde(default)]
+    pub enhanced_memory: Option<EnhancedMemoryConfig>,
     #[serde(default)]
     pub stream: Option<bool>,
 }
@@ -978,6 +987,10 @@ mod tests {
             NodeType::Iteration,
             NodeType::Loop,
             NodeType::ListOperator,
+            #[cfg(feature = "memory")]
+            NodeType::MemoryRecall,
+            #[cfg(feature = "memory")]
+            NodeType::MemoryStore,
         ];
         for nt in node_types {
             let json = serde_json::to_value(&nt).unwrap();

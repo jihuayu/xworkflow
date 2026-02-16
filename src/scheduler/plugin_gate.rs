@@ -297,6 +297,10 @@ mod real {
         if let Some(id_gen) = reg.custom_id_generator() {
           context.id_generator = id_gen;
         }
+        #[cfg(feature = "memory")]
+        if let Some(memory_provider) = reg.memory_provider() {
+          context.set_memory_provider(memory_provider);
+        }
         if !reg.template_functions().is_empty() {
           context.update_runtime_group(|group| {
             group.template_functions = Some(Arc::new(reg.template_functions().clone()));

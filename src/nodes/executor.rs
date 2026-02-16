@@ -117,6 +117,12 @@ impl NodeExecutorRegistry {
             );
         }
 
+        #[cfg(feature = "builtin-memory-nodes")]
+        {
+            registry.register("memory-recall", Box::new(super::memory::MemoryRecallExecutor));
+            registry.register("memory-store", Box::new(super::memory::MemoryStoreExecutor));
+        }
+
         // Stub executors for types that need external services
         // LLM executor is injected via set_llm_provider_registry
         registry.register("knowledge-retrieval", Box::new(StubExecutor("knowledge-retrieval")));
@@ -276,6 +282,11 @@ mod tests {
         assert!(registry.get("list-operator").is_some());
         assert!(registry.get("iteration").is_some());
         assert!(registry.get("loop").is_some());
+        #[cfg(feature = "builtin-memory-nodes")]
+        {
+            assert!(registry.get("memory-recall").is_some());
+            assert!(registry.get("memory-store").is_some());
+        }
         // stub nodes
         assert!(registry.get("knowledge-retrieval").is_some());
         assert!(registry.get("question-classifier").is_some());

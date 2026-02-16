@@ -17,5 +17,7 @@ pub mod gather;
 pub mod subgraph;
 pub mod subgraph_nodes;
 pub mod utils;
+#[cfg(feature = "memory")]
+pub mod memory;
 
 pub use executor::*;

@@ -71,8 +71,17 @@ pub struct SecurityPolicy {
     pub network: Option<NetworkPolicy>,
     pub template: Option<TemplateSafetyConfig>,
     pub dsl_validation: Option<DslValidationConfig>,
+    #[cfg(feature = "memory")]
+    pub memory: Option<MemorySecurityPolicy>,
     pub node_limits: HashMap<String, NodeResourceLimits>,
     pub audit_logger: Option<Arc<dyn AuditLogger>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySecurityPolicy {
+    pub allowed_namespace_prefixes: Vec<String>,
+    pub max_entries_per_namespace: Option<usize>,
+    pub max_value_bytes: Option<usize>,
 }
 
 impl SecurityPolicy {
@@ -91,6 +100,8 @@ impl SecurityPolicy {
             network: None,
             template: None,
             dsl_validation: None,
+            #[cfg(feature = "memory")]
+            memory: None,
             node_limits: HashMap::new(),
             audit_logger: None,
         }
@@ -102,6 +113,8 @@ impl SecurityPolicy {
             network: Some(NetworkPolicy::default()),
             template: Some(TemplateSafetyConfig::default()),
             dsl_validation: Some(DslValidationConfig::default()),
+            #[cfg(feature = "memory")]
+            memory: None,
             node_limits: default_node_limits(),
             audit_logger: Some(Arc::new(TracingAuditLogger)),
         }
@@ -136,6 +149,8 @@ impl SecurityPolicy {
                 max_node_config_bytes: 16 * 1024,
                 ..DslValidationConfig::default()
             }),
+            #[cfg(feature = "memory")]
+            memory: None,
             node_limits: strict_node_limits(),
             audit_logger: Some(Arc::new(TracingAuditLogger)),
         }

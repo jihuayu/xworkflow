@@ -82,6 +82,11 @@ mod tests {
         assert!(is_known_node_type("llm"));
         assert!(is_known_node_type("answer"));
         assert!(is_known_node_type("gather"));
+        #[cfg(feature = "memory")]
+        {
+            assert!(is_known_node_type("memory-recall"));
+            assert!(is_known_node_type("memory-store"));
+        }
     }
 
     #[test]

@@ -313,6 +313,8 @@ mod tests {
         max_nodes: 2,
         ..Default::default()
       }),
+      #[cfg(feature = "memory")]
+      memory: None,
       node_limits: std::collections::HashMap::new(),
       audit_logger: None,
     };
@@ -344,6 +346,8 @@ mod tests {
         }),
         ..Default::default()
       }),
+      #[cfg(feature = "memory")]
+      memory: None,
       node_limits: std::collections::HashMap::new(),
       audit_logger: None,
     };

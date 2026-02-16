@@ -64,6 +64,8 @@ pub mod sandbox;
 pub mod template;
 pub mod scheduler;
 pub mod llm;
+#[cfg(feature = "memory")]
+pub mod memory;
 #[cfg(feature = "security")]
 pub mod security;
 #[cfg(feature = "plugin-system")]
@@ -123,6 +125,8 @@ pub use crate::compiler::{
 pub use crate::nodes::NodeExecutorRegistry;
 pub use crate::core::dispatcher::{Command, EngineConfig};
 pub use crate::scheduler::{ExecutionStatus, WorkflowHandle, WorkflowRunner, WorkflowRunnerBuilder};
+#[cfg(feature = "memory")]
+pub use crate::memory::*;
 #[cfg(feature = "security")]
 pub use crate::security::*;
 #[cfg(feature = "plugin-system")]
