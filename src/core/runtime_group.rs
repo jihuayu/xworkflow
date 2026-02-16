@@ -4,6 +4,8 @@ use std::sync::Arc;
 use crate::core::http_client::{HttpClientProvider, HttpPoolConfig};
 use crate::llm::LlmProviderRegistry;
 use crate::nodes::executor::NodeExecutorRegistry;
+#[cfg(feature = "memory")]
+use crate::memory::MemoryProvider;
 
 #[cfg(feature = "plugin-system")]
 use crate::plugin_system::TemplateFunction;
@@ -23,6 +25,8 @@ pub struct RuntimeGroup {
     pub llm_provider_registry: Arc<LlmProviderRegistry>,
     #[cfg(feature = "plugin-system")]
     pub template_functions: Option<Arc<HashMap<String, Arc<dyn TemplateFunction>>>>,
+    #[cfg(feature = "memory")]
+    pub memory_provider: Option<Arc<dyn MemoryProvider>>,
     pub sandbox_pool: Option<Arc<dyn SandboxPool>>,
     pub http_client_provider: Option<Arc<HttpClientProvider>>,
     #[cfg(feature = "security")]
@@ -50,6 +54,8 @@ impl Default for RuntimeGroup {
             llm_provider_registry: Arc::new(LlmProviderRegistry::new()),
             #[cfg(feature = "plugin-system")]
             template_functions: Some(Arc::new(HashMap::new())),
+            #[cfg(feature = "memory")]
+            memory_provider: None,
             sandbox_pool: Some(Arc::new(DefaultSandboxPool::new())),
             http_client_provider: Some(Arc::new(
                 HttpClientProvider::new(HttpPoolConfig::default()),
@@ -131,6 +137,12 @@ impl RuntimeGroupBuilder {
         functions: Arc<HashMap<String, Arc<dyn TemplateFunction>>>,
     ) -> Self {
         self.group.template_functions = Some(functions);
+        self
+    }
+
+    #[cfg(feature = "memory")]
+    pub fn memory_provider(mut self, provider: Arc<dyn MemoryProvider>) -> Self {
+        self.group.memory_provider = Some(provider);
         self
     }
 

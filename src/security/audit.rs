@@ -53,6 +53,13 @@ pub enum SecurityEventType {
         max: usize,
         actual: usize,
     },
+    #[cfg(feature = "memory")]
+    MemoryAccess {
+        namespace: String,
+        operation: String,
+        node_id: String,
+        success: bool,
+    },
 }
 
 /// Severity level attached to a [`SecurityEvent`].

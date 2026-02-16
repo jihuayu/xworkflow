@@ -60,6 +60,8 @@ pub mod error;
 pub mod evaluator;
 pub mod graph;
 pub mod llm;
+#[cfg(feature = "memory")]
+pub mod memory;
 #[cfg(feature = "builtin-agent-node")]
 pub mod mcp;
 pub mod nodes;
@@ -107,6 +109,8 @@ pub use crate::dsl::{
 pub use crate::error::{NodeError, WorkflowError};
 pub use crate::graph::{build_graph, Graph};
 pub use crate::nodes::NodeExecutorRegistry;
+#[cfg(feature = "memory")]
+pub use crate::memory::*;
 #[cfg(feature = "plugin-system")]
 pub use crate::plugin_system::{
     Plugin, PluginCategory, PluginContext, PluginError, PluginLoadSource, PluginLoader,
